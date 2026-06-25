@@ -21,7 +21,13 @@ export default function App() {
   const { state, derived } = useApp();
   const [page, setPage] = useState<Page>('dashboard');
   const info = phaseInfo(derived.today, state.settings);
-  const phaseColor = info.phase === 1 ? '#22c55e' : info.phase === 2 ? '#f59e0b' : '#ef4444';
+  const phaseColor = info.blackout
+    ? '#a78bfa'
+    : info.phase === 1
+      ? '#22c55e'
+      : info.phase === 2
+        ? '#f59e0b'
+        : '#ef4444';
 
   return (
     <div className="mx-auto flex min-h-screen max-w-7xl flex-col px-4 pb-16">

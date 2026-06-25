@@ -54,7 +54,18 @@ export const PHASE_CAPACITY: Record<Phase, number> = {
   3: 5.0,
 };
 
+/** Strict maintenance boundary during a University Exam Blackout (1.0–1.5h). */
+export const MAINTENANCE_CAP = 1.5;
+
+/** Is this calendar date inside an active exam-blackout window? */
+export function isBlackoutDay(iso: string, settings: Settings): boolean {
+  const bo = settings.examBlackout;
+  if (!bo) return false;
+  return iso >= bo.startDate && iso <= bo.endDate;
+}
+
 export function dailyCapacity(iso: string, settings: Settings): number {
+  if (isBlackoutDay(iso, settings)) return MAINTENANCE_CAP;
   return PHASE_CAPACITY[getPhase(iso, settings)];
 }
 
@@ -63,16 +74,28 @@ export interface PhaseInfo {
   capacity: number;
   label: string;
   description: string;
+  /** True when an exam blackout overrides the normal phase budget. */
+  blackout: boolean;
 }
 
 export function phaseInfo(iso: string, settings: Settings): PhaseInfo {
   const phase = getPhase(iso, settings);
+  if (isBlackoutDay(iso, settings)) {
+    return {
+      phase,
+      capacity: MAINTENANCE_CAP,
+      label: 'Exam Blackout: Maintenance Mode',
+      description: `${MAINTENANCE_CAP}h Maintenance Boundary`,
+      blackout: true,
+    };
+  }
   if (phase === 1) {
     return {
       phase,
       capacity: 8.5,
       label: 'Phase 1: Pre-College',
       description: '8.5h Budget',
+      blackout: false,
     };
   }
   if (phase === 2) {
@@ -81,6 +104,7 @@ export function phaseInfo(iso: string, settings: Settings): PhaseInfo {
       capacity: 5.0,
       label: 'Phase 2: VIT-AP Balance',
       description: '5h Budget',
+      blackout: false,
     };
   }
   return {
@@ -88,6 +112,7 @@ export function phaseInfo(iso: string, settings: Settings): PhaseInfo {
     capacity: 5.0,
     label: 'Phase 3: Terminal Revision',
     description: 'Mocks + Weak-Link Drilling',
+    blackout: false,
   };
 }
 

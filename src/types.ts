@@ -41,7 +41,14 @@ export interface UnitEntry {
   state: BlockState;
 }
 
-export type BlockKind = 'study' | 'englr' | 'mock' | 'erroranalysis' | 'revision';
+export type BlockKind =
+  | 'study'
+  | 'englr'
+  | 'mock'
+  | 'erroranalysis'
+  | 'revision'
+  | 'formula'
+  | 'drill';
 
 /** A concrete, time-bounded block placed on a calendar day by the engine. */
 export interface ScheduledBlock {
@@ -80,6 +87,18 @@ export interface ErrorLogEntry {
   note: string;
 }
 
+/** University Semester Exam Blackout window (mid-terms / term-end). */
+export interface ExamBlackout {
+  startDate: string;
+  endDate: string;
+  label: string;
+  /**
+   * Set true once the post-exam Iterative Re-balancing Engine has auto-fired
+   * on reaching the End Date, so it only triggers once.
+   */
+  resolved: boolean;
+}
+
 export interface Settings {
   /** ISO date of the BITSAT exam. */
   examDate: string;
@@ -87,6 +106,8 @@ export interface Settings {
   collegeStartDate: string;
   /** Hour of day (0-23) the study schedule starts. */
   studyStartHour: number;
+  /** Active University Semester Exam Blackout, or null when none scheduled. */
+  examBlackout: ExamBlackout | null;
 }
 
 export interface AppState {

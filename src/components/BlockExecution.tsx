@@ -11,6 +11,8 @@ const KIND_LABEL: Record<ScheduledBlock['kind'], string> = {
   mock: 'Mock Test',
   erroranalysis: 'Error Analysis',
   revision: 'Revision',
+  formula: 'Formula Flash',
+  drill: 'Speed Drill',
 };
 
 function subjectColor(b: ScheduledBlock): string {
@@ -30,6 +32,8 @@ export function BlockCard({ block }: { block: ScheduledBlock }) {
 
   const color = subjectColor(block);
   const trackable = !!block.unitId;
+  // Formula Flash is qualitative (no new theory, no question target).
+  const quantified = trackable && block.targetQuestions > 0;
   const currentState = resolvedToday?.state ?? 'pending';
 
   const resolve = (s: 'green' | 'red') => {
@@ -86,28 +90,35 @@ export function BlockCard({ block }: { block: ScheduledBlock }) {
       {trackable ? (
         <>
           {/* Quantifiable target */}
-          <div className="mt-4 grid grid-cols-2 gap-3 pl-2">
-            <label className="block">
-              <span className="label">Target Questions</span>
-              <input
-                type="number"
-                min={0}
-                className="input mt-1"
-                value={target}
-                onChange={(e) => setTarget(Math.max(0, Number(e.target.value)))}
-              />
-            </label>
-            <label className="block">
-              <span className="label">Actual Solved</span>
-              <input
-                type="number"
-                min={0}
-                className="input mt-1"
-                value={actual}
-                onChange={(e) => setActual(Math.max(0, Number(e.target.value)))}
-              />
-            </label>
-          </div>
+          {quantified ? (
+            <div className="mt-4 grid grid-cols-2 gap-3 pl-2">
+              <label className="block">
+                <span className="label">Target Questions</span>
+                <input
+                  type="number"
+                  min={0}
+                  className="input mt-1"
+                  value={target}
+                  onChange={(e) => setTarget(Math.max(0, Number(e.target.value)))}
+                />
+              </label>
+              <label className="block">
+                <span className="label">Actual Solved</span>
+                <input
+                  type="number"
+                  min={0}
+                  className="input mt-1"
+                  value={actual}
+                  onChange={(e) => setActual(Math.max(0, Number(e.target.value)))}
+                />
+              </label>
+            </div>
+          ) : (
+            <div className="mt-3 pl-2 text-sm text-slate-400">
+              Qualitative maintenance block — no question target. Read through and
+              mark done.
+            </div>
+          )}
 
           {/* Binary state toggle */}
           <div className="mt-4 grid grid-cols-2 gap-3 pl-2">

@@ -5,12 +5,19 @@ import type {
   SubjectKey,
   Topic,
 } from '../types';
-import { ALL_TOPIC_IDS, CHAPTERS, TOPIC_INDEX, SUBJECT_META } from '../data/syllabus';
+import {
+  ALL_TOPIC_IDS,
+  CHAPTERS,
+  CHAPTER_BY_ID,
+  TOPIC_INDEX,
+  SUBJECT_META,
+} from '../data/syllabus';
 import {
   addDays,
   clockLabel,
   dailyCapacity,
   getPhase,
+  isBlackoutDay,
   isEngLrDay,
   phase3StartISO,
   todayISO,
@@ -132,7 +139,16 @@ function timeline(
  * ordered pending queue into daily blocks without breaching the phase hour cap.
  * Phase 3 days are locked into revision + mock + error-analysis blocks.
  */
-export function buildSchedule(state: AppState, fromISO = todayISO()): ScheduleResult {
+export interface ScheduleOptions {
+  /** When true, ignore the exam blackout (used to compute deferred chapters). */
+  ignoreBlackout?: boolean;
+}
+
+export function buildSchedule(
+  state: AppState,
+  fromISO = todayISO(),
+  options: ScheduleOptions = {}
+): ScheduleResult {
   const { settings } = state;
   const queue = buildPendingQueue(state);
   const englishQueue = pendingEnglishUnits(state);
@@ -146,6 +162,7 @@ export function buildSchedule(state: AppState, fromISO = todayISO()): ScheduleRe
 
   for (const date of days) {
     const phase = getPhase(date, settings);
+    const blackout = !options.ignoreBlackout && isBlackoutDay(date, settings);
     const blocks: ScheduledBlock[] = [];
     let clock = settings.studyStartHour;
     let idx = 0;
@@ -166,6 +183,30 @@ export function buildSchedule(state: AppState, fromISO = todayISO()): ScheduleRe
       // Insert a short break after blocks longer than 1h.
       clock = end + (partial.durationHours >= 1 ? 1 / 6 : 0);
     };
+
+    if (blackout) {
+      // University Semester Exam Blackout — suspend syllabus progression.
+      // Exactly two low-overhead maintenance blocks (anti-memory-fade).
+      push({
+        kind: 'formula',
+        subject: 'mixed',
+        unitId: `mnt-formula-${date}`,
+        topicName:
+          'Active Formula Flash — read Formula Diary / Short Notes for high-weightage covered topics (no new theory)',
+        durationHours: 0.75,
+        targetQuestions: 0,
+      });
+      push({
+        kind: 'drill',
+        subject: 'mixed',
+        unitId: `mnt-drill-${date}`,
+        topicName: 'Micro Speed Drill — 15 high-yield, mixed-subject questions (keep calculation speed active)',
+        durationHours: 0.75,
+        targetQuestions: 15,
+      });
+      byDate.set(date, blocks);
+      continue;
+    }
 
     if (phase === 3) {
       // Terminal revision: full mock + error analysis + weak-link drilling.
@@ -299,6 +340,12 @@ function remainingNewSyllabusCapacity(state: AppState, fromISO = todayISO()): nu
   let cur = fromISO;
   let guard = 0;
   while (cur <= end && guard < 1200) {
+    if (isBlackoutDay(cur, settings)) {
+      // Exam-blackout days are fully consumed by maintenance — no new syllabus.
+      cur = addDays(cur, 1);
+      guard++;
+      continue;
+    }
     let cap = dailyCapacity(cur, settings);
     if (isEngLrDay(cur)) cap -= 0.75; // reserve the Eng/LR slot
     total += Math.max(0, cap);
@@ -425,6 +472,50 @@ export function backlogUnits(state: AppState): PendingUnit[] {
     }
   }
   return out;
+}
+
+export interface BlackoutStatus {
+  blackout: import('../types').ExamBlackout | null;
+  activeToday: boolean;
+  /** Chapters whose study would land inside the blackout window — held in a
+   *  buffer and labelled "Delayed by Exam Blackout" (never marked RED). */
+  deferredChapters: Chapter[];
+  deferredUnitCount: number;
+}
+
+/**
+ * Chapters intentionally held in the buffer because their natural schedule
+ * lands inside the exam-blackout window. Computed by running a hypothetical
+ * no-blackout schedule and collecting the study units that fall in-range.
+ * These are NOT flagged RED — they must not skew consistency metrics.
+ */
+export function blackoutStatus(state: AppState, fromISO = todayISO()): BlackoutStatus {
+  const bo = state.settings.examBlackout;
+  if (!bo) {
+    return { blackout: null, activeToday: false, deferredChapters: [], deferredUnitCount: 0 };
+  }
+  const activeToday = fromISO >= bo.startDate && fromISO <= bo.endDate;
+
+  // Build the schedule as if the blackout did not exist, then read off the
+  // study blocks that would have occupied the blackout dates.
+  const shadow = buildSchedule(state, fromISO, { ignoreBlackout: true });
+  const chapterSet = new Map<string, Chapter>();
+  let unitCount = 0;
+  for (const [date, blocks] of shadow.byDate) {
+    if (date < bo.startDate || date > bo.endDate) continue;
+    for (const b of blocks) {
+      if (b.kind !== 'study' || !b.chapterId) continue;
+      unitCount++;
+      const ch = CHAPTER_BY_ID[b.chapterId];
+      if (ch) chapterSet.set(ch.id, ch);
+    }
+  }
+  return {
+    blackout: bo,
+    activeToday,
+    deferredChapters: [...chapterSet.values()],
+    deferredUnitCount: unitCount,
+  };
 }
 
 // --------------------------- Daily metrics ---------------------------------

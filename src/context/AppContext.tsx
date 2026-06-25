@@ -9,6 +9,7 @@ import type {
   AppState,
   BlockState,
   ErrorLogEntry,
+  ExamBlackout,
   MockEntry,
   Settings,
 } from '../types';
@@ -17,6 +18,7 @@ import { todayISO } from '../lib/dates';
 import {
   analyseFeasibility,
   backlogUnits,
+  blackoutStatus,
   buildSchedule,
   overallProgress,
   subjectProgress,
@@ -29,6 +31,9 @@ type Action =
   | { type: 'RESTORE_CHAPTER'; chapterId: string }
   | { type: 'APPLY_DROPS'; chapterIds: string[] }
   | { type: 'REBALANCE' }
+  | { type: 'SET_BLACKOUT'; blackout: ExamBlackout }
+  | { type: 'CLEAR_BLACKOUT' }
+  | { type: 'RESOLVE_BLACKOUT' }
   | { type: 'ADD_MOCK'; mock: MockEntry }
   | { type: 'DELETE_MOCK'; id: string }
   | { type: 'ADD_ERROR'; error: ErrorLogEntry }
@@ -77,6 +82,32 @@ function reducer(state: AppState, action: Action): AppState {
     }
     case 'REBALANCE':
       return { ...state, lastRebalance: Date.now() };
+    case 'SET_BLACKOUT':
+      return {
+        ...state,
+        settings: { ...state.settings, examBlackout: action.blackout },
+        lastRebalance: Date.now(),
+      };
+    case 'CLEAR_BLACKOUT':
+      return {
+        ...state,
+        settings: { ...state.settings, examBlackout: null },
+        lastRebalance: Date.now(),
+      };
+    case 'RESOLVE_BLACKOUT': {
+      // Auto-fired when the calendar passes the blackout End Date: mark the
+      // window resolved and re-trigger the Iterative Re-balancing Engine so the
+      // buffered chapters smooth across the remaining Phase-2 days.
+      if (!state.settings.examBlackout || state.settings.examBlackout.resolved) return state;
+      return {
+        ...state,
+        settings: {
+          ...state.settings,
+          examBlackout: { ...state.settings.examBlackout, resolved: true },
+        },
+        lastRebalance: Date.now(),
+      };
+    }
     case 'ADD_MOCK':
       return { ...state, mocks: [action.mock, ...state.mocks] };
     case 'DELETE_MOCK':
@@ -107,6 +138,7 @@ interface AppContextValue {
     backlog: ReturnType<typeof backlogUnits>;
     progress: ReturnType<typeof subjectProgress>;
     overall: number;
+    blackout: ReturnType<typeof blackoutStatus>;
   };
 }
 
@@ -119,6 +151,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     saveState(state);
   }, [state]);
 
+  // Auto-trigger the re-balancing engine the moment the calendar passes the
+  // exam-blackout End Date (anti-skew buffer release).
+  useEffect(() => {
+    const bo = state.settings.examBlackout;
+    if (bo && !bo.resolved && todayISO() > bo.endDate) {
+      dispatch({ type: 'RESOLVE_BLACKOUT' });
+    }
+  }, [state.settings.examBlackout]);
+
   const derived = useMemo(() => {
     const today = todayISO();
     const schedule = buildSchedule(state, today);
@@ -130,6 +171,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       backlog: backlogUnits(state),
       progress: subjectProgress(state),
       overall: overallProgress(state),
+      blackout: blackoutStatus(state, today),
     };
     // Re-derive whenever entries, drops, settings, or a manual rebalance change.
   }, [state.entries, state.droppedChapters, state.settings, state.lastRebalance]);

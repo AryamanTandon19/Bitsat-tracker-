@@ -59,7 +59,26 @@ changes or the real calendar rolls into a new phase.
 
 Prioritisation order: `RED backlog → Tier-1 → chapter weight → subject interleave`.
 
-### 3. High-weightage register (pre-populated)
+### 3. University Semester Exam Blackout Mode
+
+For VIT-AP mid-terms / term-end weeks, hit **Schedule Exam Week** on the
+Dashboard and enter a start/end date. During that window:
+
+- Daily capacity auto-drops from 5 h to a strict **1.5 h maintenance boundary**.
+- Syllabus progression and large question targets are **suspended**; the day
+  generates exactly **two maintenance blocks** (anti-memory-fade):
+  - **Active Formula Flash (45 min)** — read the Formula Diary / short notes
+    for high-weightage covered topics; no new theory.
+  - **Micro Speed Drill (45 min)** — a strict **15 high-yield, mixed-subject**
+    questions to keep calculation speed alive.
+- Chapters that would have fallen in the window are labelled **"Delayed by
+  Exam Blackout"** and held in a buffer — they are **never** marked RED, so the
+  consistency metric stays clean.
+- The moment the calendar passes the End Date, the **Iterative Re-balancing
+  Engine auto-fires**, smoothing the buffered chapters across the remaining
+  Phase-2 days inside the 5 h college-day limit.
+
+### 4. High-weightage register (pre-populated)
 
 - **Mathematics:** Coordinate Geometry (Straight Lines, Circles, Conics),
   Vectors & 3D, Calculus (Limits, Continuity, AoD, Integrals), Matrices &

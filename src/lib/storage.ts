@@ -22,6 +22,7 @@ export function defaultSettings(): Settings {
     examDate: toISO(exam),
     collegeStartDate: toISO(collegeStart),
     studyStartHour: 6.5, // 6:30 AM
+    examBlackout: null,
   };
 }
 

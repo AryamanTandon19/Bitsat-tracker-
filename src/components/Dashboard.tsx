@@ -10,6 +10,7 @@ import {
 import { TARGET, dailyMetrics } from '../lib/engine';
 import { ProgressBar, SectionTitle, Pill } from './ui';
 import { BlockCard } from './BlockExecution';
+import BlackoutPanel from './BlackoutPanel';
 
 function useCountdown(targetISO: string): Countdown {
   const [, setTick] = useState(0);
@@ -46,7 +47,13 @@ export default function Dashboard({ goTo }: { goTo: (page: string) => void }) {
   const metrics = dailyMetrics(state, blocks, today);
 
   const lastMock = state.mocks[0];
-  const phaseColor = info.phase === 1 ? '#22c55e' : info.phase === 2 ? '#f59e0b' : '#ef4444';
+  const phaseColor = info.blackout
+    ? '#a78bfa'
+    : info.phase === 1
+      ? '#22c55e'
+      : info.phase === 2
+        ? '#f59e0b'
+        : '#ef4444';
 
   return (
     <div className="space-y-5">
@@ -85,6 +92,9 @@ export default function Dashboard({ goTo }: { goTo: (page: string) => void }) {
           </div>
         </div>
       </div>
+
+      {/* University Semester Exam Blackout Mode */}
+      <BlackoutPanel />
 
       {/* Daily metric bar */}
       <div className="card">
