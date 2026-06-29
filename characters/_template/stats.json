@@ -1,0 +1,15 @@
+{
+  "id": "template",
+  "name": "FIGHTER NAME",
+  "title": "",
+  "homeStage": "",
+  "stats": { "power": 0, "speed": 0, "range": 0, "defense": 0, "tricky": 0 },
+  "specials": [
+    { "slot": "poke",      "name": "", "input": "", "meterCost": 1, "damage": 0 },
+    { "slot": "launcher",  "name": "", "input": "", "meterCost": 2, "damage": 0 },
+    { "slot": "heavy",     "name": "", "input": "", "meterCost": 2, "damage": 0 },
+    { "slot": "signature", "name": "", "input": "", "meterCost": 4, "damage": 0 }
+  ],
+  "strength": "",
+  "weakness": ""
+}
