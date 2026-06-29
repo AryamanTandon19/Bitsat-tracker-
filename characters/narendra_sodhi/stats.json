@@ -1,0 +1,15 @@
+{
+  "id": "narendra_sodhi",
+  "name": "Narendra Sodhi",
+  "title": "The Beard / The Statesman",
+  "homeStage": "big_parliament",
+  "stats": { "power": 8, "speed": 4, "range": 6, "defense": 8, "tricky": 4 },
+  "specials": [
+    { "slot": "poke",      "name": "Mann Ki Jab",  "input": "fwd P",          "meterCost": 1, "damage": 6 },
+    { "slot": "launcher",  "name": "Stole Flick",  "input": "down-fwd K",     "meterCost": 2, "damage": 10 },
+    { "slot": "heavy",     "name": "Namaste Clap", "input": "fwd fwd P+K",    "meterCost": 2, "damage": 16 },
+    { "slot": "signature", "name": "Unity Wave",   "input": "down down P+K",  "meterCost": 4, "damage": 24 }
+  ],
+  "strength": "Power + Defense, controls space and punishes mistakes",
+  "weakness": "Slow speed, weak vs fast rushdown"
+}
