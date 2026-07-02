@@ -175,6 +175,57 @@ input:focus { border-color: var(--accent2); }
   max-width: 86vw;
   pointer-events: none;
   z-index: 5;
+  animation: msg-slam .35s cubic-bezier(.2,1.6,.4,1);
+}
+@keyframes msg-slam {
+  0% { transform: translateX(-50%) scale(2.2); opacity: 0; }
+  100% { transform: translateX(-50%) scale(1); opacity: 1; }
+}
+
+#danger {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+  opacity: 0;
+  transition: opacity .3s;
+  background: radial-gradient(ellipse at center, rgba(0,0,0,0) 52%, rgba(255,40,60,.4) 100%);
+}
+#danger.on { opacity: 1; animation: danger-pulse 1s infinite; }
+@keyframes danger-pulse {
+  0%, 100% { opacity: .55; }
+  50% { opacity: 1; }
+}
+
+#emote-col {
+  position: absolute;
+  left: 18px;
+  bottom: calc(150px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 3;
+}
+.emote-btn {
+  width: 46px; height: 46px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,.18);
+  background: rgba(30,25,48,.6);
+  font-size: 22px;
+  cursor: pointer;
+}
+.emote-btn:active { transform: scale(.9); background: rgba(124,92,255,.6); }
+
+.hud-chip.bump { animation: chip-bump .4s cubic-bezier(.2,1.8,.4,1); }
+@keyframes chip-bump {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.35); }
+  100% { transform: scale(1); }
+}
+.hud-timer.low { animation: timer-pulse 1s infinite; }
+@keyframes timer-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.12); }
 }
 
 #hud-bottom {

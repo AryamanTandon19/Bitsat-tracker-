@@ -72,6 +72,16 @@ window.RENDER3D = (function () {
   }
   function shake(amt) { shakeAmt = Math.min(1, shakeAmt + amt); }
 
+  // slight FOV widening while running = sense of speed
+  let fovTarget = 60;
+  function setMoving(m) { fovTarget = m ? 66 : 60; }
+  function tickFov(dt) {
+    if (Math.abs(camera.fov - fovTarget) > 0.05) {
+      camera.fov += (fovTarget - camera.fov) * Math.min(1, dt * 5);
+      camera.updateProjectionMatrix();
+    }
+  }
+
   const MOODS = {
     day:  { sky: 0x9fd4e8, fog: 0xaed6e6, sun: 1.25, hemi: 0.85, sunC: 0xfff2d8 },
     dusk: { sky: 0x1e2340, fog: 0x1e2340, sun: 0.28, hemi: 0.32, sunC: 0x9bb0ff },
@@ -106,7 +116,7 @@ window.RENDER3D = (function () {
     scene.add(sun);
 
     // seeker flashlight
-    flash = new THREE.SpotLight(0xffe9b0, 0, 16, 0.42, 0.45, 1.1);
+    flash = new THREE.SpotLight(0xffe9b0, 1.55, 16, 0.42, 0.45, 1.1);
     flash.visible = false;
     flashTarget = new THREE.Object3D();
     scene.add(flashTarget);
@@ -141,12 +151,16 @@ window.RENDER3D = (function () {
     scene.fog.color.lerp(new THREE.Color(m.fog), 0.08);
   }
 
-  // pos {x,z}, yaw — orient the flashlight from the seeker's hand
+  // pos {x,z}, yaw — orient the flashlight from the seeker's hand,
+  // with a gentle handheld sway and a subtle flicker
   function setFlashlight(on, pos, yaw) {
     flash.visible = coneMesh.visible = !!on && mood === "dusk";
     if (!on || !pos) return;
-    const fx = Math.sin(yaw), fz = Math.cos(yaw);
-    flash.position.set(pos.x, 1.6, pos.z);
+    const sway = Math.sin(time * 2.1) * 0.035 + Math.sin(time * 5.3) * 0.012;
+    const y2 = yaw + sway;
+    const fx = Math.sin(y2), fz = Math.cos(y2);
+    flash.intensity = 1.55 + Math.sin(time * 23) * 0.08 + Math.random() * 0.05;
+    flash.position.set(pos.x, 1.6 + Math.sin(time * 3.3) * 0.04, pos.z);
     flashTarget.position.set(pos.x + fx * 10, 0.6, pos.z + fz * 10);
     coneMesh.position.set(pos.x + fx * 5.5, 1.15, pos.z + fz * 5.5);
     coneMesh.quaternion.setFromUnitVectors(
@@ -232,6 +246,7 @@ window.RENDER3D = (function () {
     lerpMood(dt);
     WORLD3D.tick(time, dt);
     tickParticles(dt);
+    tickFov(dt);
     shakeAmt = Math.max(0, shakeAmt - dt * 2.2);
     for (const id in orbMeshes) {
       orbMeshes[id].position.y = 0.9 + Math.sin(time * 3 + orbMeshes[id].position.x) * 0.15;
@@ -253,7 +268,7 @@ window.RENDER3D = (function () {
 
   return {
     init, setMood, setFlashlight, syncOrbs, clearOrbs,
-    updateCamera, render, pickFigure, burst, shake,
+    updateCamera, render, pickFigure, burst, shake, setMoving,
     scene: () => scene,
     camera: () => camera,
   };

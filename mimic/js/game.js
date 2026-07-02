@@ -61,6 +61,9 @@ window.GAME = (function () {
   function showMsg(text, ms) {
     ui.msg.textContent = text;
     ui.msg.classList.remove("hidden");
+    ui.msg.style.animation = "none";
+    void ui.msg.offsetWidth; // restart the slam-in animation
+    ui.msg.style.animation = "";
     L.msgT = L.time + (ms || 2.4);
   }
   function serializePose(p) {
@@ -306,6 +309,9 @@ window.GAME = (function () {
       onVerdict(p);
     } else if (t === "orbtaken") {
       onOrbTaken(p);
+    } else if (t === "emote") {
+      const rig = L.rigs[p.from];
+      if (rig) rig.showEmote(p.e);
     } else if (t === "dpaint") {
       if (!S) return;
       const d = S.decoys.find((d) => d.id === p.id);
@@ -385,8 +391,12 @@ window.GAME = (function () {
     ui.results.classList.add("hidden");
     ui.cover.classList.add("hidden");
 
+    ui.danger.classList.remove("on");
+    if (L) L.inDanger = false;
+
     if (phase === "setup") {
       SND.phase();
+      SND.setAmbient("day");
       RENDER3D.setMood("day");
       RENDER3D.clearOrbs();
       if (myRole() !== "spectator") {
@@ -415,6 +425,8 @@ window.GAME = (function () {
       cb.showGame();
     } else if (phase === "hunt") {
       SND.phase();
+      SND.click(); // flashlight snaps on
+      SND.setAmbient("dusk");
       RENDER3D.setMood("dusk");
       ui.cover.classList.add("hidden");
       if (myRole() === "seeker") showMsg("🔦 Find the fakes! Tap a statue to accuse", 3);
@@ -426,6 +438,7 @@ window.GAME = (function () {
       showResults(true);
     } else if (phase === "lobby") {
       S = null;
+      SND.setAmbient(null);
       disposeRigs();
       cb.showLobby();
     }
@@ -448,6 +461,28 @@ window.GAME = (function () {
     const meP = me();
 
     L.camYaw -= INPUT.orbitKeys() * dt * 2.2;
+
+    // urgency ticks in the last 10 seconds of a phase
+    if (S.endsAt && (S.phase === "setup" || S.phase === "hunt")) {
+      const remain = S.endsAt - now();
+      if (remain > 0 && remain < 10500) {
+        const sec = Math.ceil(remain / 1000);
+        if (L.lastTickSec !== sec) { L.lastTickSec = sec; SND.tick(); }
+      }
+    }
+
+    // podium confetti
+    if (S.phase === "final") {
+      L.confettiAcc = (L.confettiAcc || 0) + dt;
+      if (L.confettiAcc > 0.55) {
+        L.confettiAcc = 0;
+        const c = MU.choice([0xff5d6c, 0xffb43a, 0x4cd97b, 0x3ecbe8, 0xf068c0, 0xffe066]);
+        RENDER3D.burst(
+          L.freeCam.x + MU.rand(-5, 5), MU.rand(3, 6), L.freeCam.z + MU.rand(-5, 5),
+          c, 14, { spread: 3, up: 1, size: 0.14, grav: 2 }
+        );
+      }
+    }
 
     // ---- my movement (camera-relative) ----
     const v = INPUT.vec();
@@ -476,10 +511,14 @@ window.GAME = (function () {
         meP.lastMoveAt = performance.now();
         markConeMove(meP);
         L.posDirty = true;
+        // footstep foley, cadence scales with speed
+        L.stepAcc = (L.stepAcc || 0) + dt * speed;
+        if (L.stepAcc > 1.35 && !(meP.jy > 0)) { L.stepAcc = 0; SND.step(); }
       } else {
         if (meP.mv) L.posDirty = true;
         meP.mv = 0;
       }
+      RENDER3D.setMoving(moving && speed > 3);
 
       // jump! (visible, so jumping mid-hunt is a gamble)
       if (speed > 0) {
@@ -487,6 +526,7 @@ window.GAME = (function () {
         meP.vy = meP.vy || 0;
         if (INPUT.jump() && meP.jy === 0) {
           meP.vy = 4.6;
+          SND.whoosh();
           meP.lastMoveAt = performance.now();
           markConeMove(meP);
         }
@@ -495,11 +535,31 @@ window.GAME = (function () {
           meP.jy = Math.max(0, meP.jy + meP.vy * dt);
           if (meP.jy === 0 && meP.vy < 0) {
             meP.vy = 0;
+            SND.thud();
             RENDER3D.burst(meP.x, 0.15, meP.z, 0xcfc8bc, 8, { spread: 1.6, up: 0.7, size: 0.09 });
           }
           meP.lastMoveAt = performance.now();
           L.posDirty = true;
         }
+      }
+
+      // danger vignette + heartbeat while the flashlight is on you
+      if (role === "hider" && S.phase === "hunt") {
+        const sp2 = seekerPos();
+        const inDanger = sp2 && sp2 !== meP &&
+          AI.inCone(meP, { x: sp2.x, z: sp2.z, yaw: sp2.yaw || 0, range: CONE_RANGE });
+        if (inDanger !== L.inDanger) {
+          L.inDanger = inDanger;
+          ui.danger.classList.toggle("on", !!inDanger);
+          if (inDanger && navigator.vibrate) navigator.vibrate(80);
+        }
+        if (inDanger) {
+          L.heartAcc = (L.heartAcc || 0) + dt;
+          if (L.heartAcc > 0.95) { L.heartAcc = 0; SND.heart(); }
+        }
+      } else if (L.inDanger) {
+        L.inDanger = false;
+        ui.danger.classList.remove("on");
       }
 
       // hider orb pickup
@@ -876,7 +936,14 @@ window.GAME = (function () {
     const remain = S.endsAt ? S.endsAt - now() : 0;
     ui.timer.textContent = MU.fmtTime(remain);
     ui.timer.classList.toggle("low", remain > 0 && remain < 11000);
-    ui.score.textContent = "⭐ " + (S.scores[L.meId] || 0);
+    const myScore = S.scores[L.meId] || 0;
+    if (L.shownScore != null && myScore !== L.shownScore) {
+      ui.score.classList.remove("bump");
+      void ui.score.offsetWidth;
+      ui.score.classList.add("bump");
+    }
+    L.shownScore = myScore;
+    ui.score.textContent = "⭐ " + myScore;
     ui.coverTimer.textContent = Math.max(0, Math.ceil(remain / 1000));
 
     const setupHider = S.phase === "setup" && role === "hider";
@@ -886,6 +953,7 @@ window.GAME = (function () {
     const canJump = role !== "spectator" && (S.phase === "setup" || S.phase === "hunt") &&
       !(role === "seeker" && S.phase === "setup") && !panelOpen;
     ui.jumpBtn.classList.toggle("hidden", !canJump);
+    ui.emoteCol.classList.toggle("hidden", !canJump);
 
     let hint = "";
     if (setupHider) hint = "Move 🕹 · drag to look · tap mannequins to repaint";
@@ -985,6 +1053,8 @@ window.GAME = (function () {
       poseBtn: document.getElementById("btn-pose"),
       paintBtn: document.getElementById("btn-paint"),
       jumpBtn: document.getElementById("btn-jump"),
+      danger: document.getElementById("danger"),
+      emoteCol: document.getElementById("emote-col"),
       cover: document.getElementById("cover"),
       coverTimer: document.getElementById("cover-timer"),
       coverTip: document.getElementById("cover-tip"),
@@ -1002,6 +1072,17 @@ window.GAME = (function () {
       syncHud();
     });
     ui.paintBtn.addEventListener("click", () => { openPaintSelf(); syncHud(); });
+    ui.emoteCol.querySelectorAll(".emote-btn").forEach((b) => {
+      b.addEventListener("click", () => {
+        const t = performance.now();
+        if (L.lastEmote && t - L.lastEmote < 1500) return; // no spam
+        L.lastEmote = t;
+        const e = b.dataset.emote;
+        const rig = L.rigs[L.meId];
+        if (rig) rig.showEmote(e);
+        if (L.mode !== "solo") NET.send("emote", { e });
+      });
+    });
     ui.btnAgain.addEventListener("click", () => {
       ui.results.classList.add("hidden");
       if (L.mode === "solo") hostStartMatch();
@@ -1047,6 +1128,8 @@ window.GAME = (function () {
     }
     L = null;
     S = null;
+    SND.setAmbient(null);
+    if (ui.danger) ui.danger.classList.remove("on");
     POSE_EDITOR.close();
     PAINT.close();
   }

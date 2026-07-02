@@ -53,6 +53,19 @@ window.WORLD3D = (function () {
     return t;
   }
 
+  // gentle wind: canopy meshes drift around their base position
+  function swayCanopy(meshes, s) {
+    const bases = meshes.map((m) => ({ m, x: m.position.x, z: m.position.z, k: 0.5 + m.position.y * 0.02 }));
+    const ph = Math.random() * 9;
+    animated.push((t) => {
+      const w = Math.sin(t * 1.15 + ph) * 0.05 * s + Math.sin(t * 2.3 + ph * 2) * 0.02 * s;
+      for (const b of bases) {
+        b.m.position.x = b.x + w * b.k;
+        b.m.position.z = b.z + w * b.k * 0.4;
+      }
+    });
+  }
+
   // ---------- pieces ----------
   function tree(scene, x, z, kind, s) {
     s = s || 1;
@@ -63,6 +76,7 @@ window.WORLD3D = (function () {
       t.rotation.z = lean;
       const g = M(0x2e6b3e);
       const g2 = M(0x38804a);
+      const canopy = [];
       for (let i = 0; i < 3; i++) {
         const r = (1.5 - i * 0.38) * s, y = (1.7 + i * 1.0) * s;
         const cone = new THREE.Mesh(new THREE.ConeGeometry(r, 1.7 * s, 14), i % 2 ? g2 : g);
@@ -70,7 +84,9 @@ window.WORLD3D = (function () {
         cone.rotation.y = i * 0.4;
         cone.castShadow = true;
         scene.add(cone);
+        canopy.push(cone);
       }
+      swayCanopy(canopy, s);
       col(x, z, 0.5 * s);
     } else {
       const t = cyl(scene, 0.15 * s, 0.24 * s, 1.9 * s, x, 0.95 * s, z, trunk, 12);
@@ -80,12 +96,15 @@ window.WORLD3D = (function () {
       const gLight = M(kind === "autumn" ? 0xd6924e : 0x5c9c5c);
       const blobs = [[0, 2.7, 0, 1.35], [0.85, 2.3, 0.3, 0.95], [-0.75, 2.4, -0.4, 1.0],
                      [0.1, 3.35, 0.5, 0.85], [-0.3, 3.1, -0.6, 0.7]];
+      const canopy = [];
       blobs.forEach(([bx, by, bz, br], i) => {
         const s2 = new THREE.Mesh(new THREE.SphereGeometry(br * s, 14, 11), i % 2 ? gLight : g);
         s2.position.set(x + bx * s, by * s, z + bz * s);
         s2.castShadow = true;
         scene.add(s2);
+        canopy.push(s2);
       });
+      swayCanopy(canopy, s);
       col(x, z, 0.5 * s);
     }
   }

@@ -149,6 +149,7 @@ window.FIG3D = (function () {
     let labelSprite = null;
     let topY = 1.8;
     let paint = defaultPaint();
+    let emoteSprite = null, emoteT = 0;
     // animation state: composed every tick() so effects stack cleanly
     const A = {
       px: 0, pz: 0, py: 0, pyaw: 0,
@@ -264,6 +265,38 @@ window.FIG3D = (function () {
           const p = 1 + Math.sin(t * 10) * 0.12;
           ring.scale.set(p, p, 1);
         }
+        // emote bubble: pop in, hover, fade out
+        if (emoteSprite) {
+          emoteT -= dt;
+          const age = 2.2 - emoteT;
+          const sIn = Math.min(1, age * 5);
+          const sOut = Math.min(1, Math.max(0, emoteT) * 3);
+          const sc = 0.9 * easeOutBack(sIn) * sOut;
+          emoteSprite.scale.set(sc, sc, 1);
+          emoteSprite.position.y = topY + 0.95 + Math.sin(t * 3) * 0.05;
+          if (emoteT <= 0) { group.remove(emoteSprite); emoteSprite = null; }
+        }
+      },
+      showEmote(char) {
+        if (emoteSprite) group.remove(emoteSprite);
+        const c = document.createElement("canvas");
+        c.width = c.height = 96;
+        const x = c.getContext("2d");
+        x.beginPath();
+        x.arc(48, 48, 42, 0, Math.PI * 2);
+        x.fillStyle = "rgba(255,255,255,.92)";
+        x.fill();
+        x.font = "52px serif";
+        x.textAlign = "center";
+        x.textBaseline = "middle";
+        x.fillText(char, 48, 52);
+        const tex = new THREE.CanvasTexture(c);
+        if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+        emoteSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false }));
+        emoteSprite.position.y = topY + 0.95;
+        emoteSprite.scale.set(0.01, 0.01, 1);
+        group.add(emoteSprite);
+        emoteT = 2.2;
       },
       setPaint(p) {
         paint = Object.assign(defaultPaint(), p);
