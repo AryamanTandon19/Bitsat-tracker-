@@ -1,134 +1,149 @@
-// AI actors. The AI seeker runs solo-practice rounds; AI hider bots pad out
-// small lobbies (and are comedy gold when they panic-run for orbs).
+// AI actors on the 2D ground plane (x,z). The AI seeker runs solo practice;
+// AI hider bots pad out small lobbies and panic-run for orbs.
 window.AI = (function () {
   const BOT_NAMES = ["Bolt", "Pebbles", "Waldo", "Gnocchi", "Sir Still"];
 
+  function dist(a, b) { return Math.hypot(a.x - b.x, a.z - b.z); }
+  function stepToward(e, tx, tz, speed, dt) {
+    const dx = tx - e.x, dz = tz - e.z;
+    const d = Math.hypot(dx, dz);
+    if (d < 0.05) return true;
+    const s = Math.min(d, speed * dt);
+    e.x += (dx / d) * s;
+    e.z += (dz / d) * s;
+    e.yaw = Math.atan2(dx, dz);
+    WORLD3D.clampPos(e);
+    return d < 0.4;
+  }
+
   // ---------------- seeker ----------------
-  function createSeeker(worldW) {
+  function createSeeker() {
+    const p = WORLD3D.randomOpenSpot();
     return {
-      x: 120, dir: 1, speed: 150,
-      mode: "patrol", targetX: worldW * 0.4,
-      pause: 1.2, inspected: {}, suspect: null,
-      worldW,
+      x: p.x, z: p.z, yaw: 0, speed: 3.4,
+      mode: "patrol", target: WORLD3D.randomOpenSpot(),
+      pause: 1.4, inspected: {}, suspect: null, mv: 0,
     };
   }
 
-  // figures: [{kind:'decoy'|'player', id, x, cleared, caught, movedInConeAt}]
-  // cb.accuse(kind, id) is called when the AI commits to a guess.
   function updateSeeker(ai, dt, figures, now, cb) {
+    ai.mv = 0;
     const live = figures.filter((f) => !f.cleared && !f.caught);
 
-    // spotted someone moving in the light? go get 'em
     for (const f of live) {
       if (f.kind === "player" && f.movedInConeAt && now - f.movedInConeAt < 500 &&
           ai.suspect !== f.id) {
         ai.suspect = f.id;
         ai.mode = "inspect";
-        ai.targetX = f.x;
-        ai.pause = 0.55; // reaction time
+        ai.target = { x: f.x, z: f.z };
+        ai.pause = 0.55;
       }
     }
 
     if (ai.pause > 0) { ai.pause -= dt; return; }
 
     if (ai.mode === "patrol") {
-      const d = ai.targetX - ai.x;
-      if (Math.abs(d) < 12) {
-        // arrived: maybe inspect the nearest unvisited figure
+      const arrived = stepToward(ai, ai.target.x, ai.target.z, ai.speed, dt);
+      ai.mv = arrived ? 0 : 1;
+      if (arrived) {
         const near = live
           .filter((f) => !ai.inspected[f.kind + f.id])
-          .sort((a, b) => Math.abs(a.x - ai.x) - Math.abs(b.x - ai.x))[0];
-        if (near && Math.abs(near.x - ai.x) < 420 && Math.random() < 0.75) {
+          .sort((a, b) => dist(a, ai) - dist(b, ai))[0];
+        if (near && dist(near, ai) < 18 && Math.random() < 0.75) {
           ai.mode = "inspect";
-          ai.targetX = near.x;
+          ai.target = { x: near.x, z: near.z };
           ai.suspect = null;
         } else {
-          ai.targetX = 80 + Math.random() * (ai.worldW - 160);
+          ai.target = WORLD3D.randomOpenSpot();
           ai.pause = 0.5 + Math.random() * 1.2;
         }
-      } else {
-        ai.dir = d > 0 ? 1 : -1;
-        ai.x += ai.dir * ai.speed * dt;
       }
     } else if (ai.mode === "inspect") {
-      const d = ai.targetX - ai.x;
-      if (Math.abs(d) < 60) {
-        // stare at it, then decide
+      const closeEnough = dist(ai, ai.target) < 2.6;
+      if (!closeEnough) {
+        stepToward(ai, ai.target.x, ai.target.z, ai.speed, dt);
+        ai.mv = 1;
+      } else {
         ai.pause = 0.7 + Math.random() * 0.8;
-        const f = live.sort((a, b) => Math.abs(a.x - ai.x) - Math.abs(b.x - ai.x))[0];
+        const f = live.sort((a, b) => dist(a, ai) - dist(b, ai))[0];
         ai.mode = "patrol";
-        if (f) {
+        if (f && dist(f, ai) < 4) {
           ai.inspected[f.kind + f.id] = true;
           const sawIt = ai.suspect && f.kind === "player" && f.id === ai.suspect;
           const p = sawIt ? 0.95 : 0.22;
           if (Math.random() < p) cb.accuse(f.kind, f.id);
         }
         ai.suspect = null;
-      } else {
-        ai.dir = d > 0 ? 1 : -1;
-        ai.x += ai.dir * ai.speed * dt;
       }
     }
   }
 
   // ---------------- hider bots ----------------
-  function createBot(i, worldW) {
+  function createBot(i) {
+    const p = WORLD3D.randomOpenSpot();
     return {
       id: "bot" + i,
       name: BOT_NAMES[i % BOT_NAMES.length],
-      color: ["#8a8f98", "#a58e6f", "#7d9c86", "#9a7f9e", "#6f8ea5"][i % 5],
+      color: ["#9aa0b4", "#c9b458", "#7d9c86", "#9a7f9e", "#6f8ea5"][i % 5],
       bot: true,
-      x: 100 + Math.random() * (worldW - 200),
-      dir: Math.random() < 0.5 ? -1 : 1,
+      x: p.x, z: p.z, yaw: Math.random() * 6.28,
       pose: FIG.randomPose(),
-      mode: "idle", targetX: 0, think: 2 + Math.random() * 6,
+      paint: FIG3D.randomPaint(),
+      mode: "idle", target: null, think: 2 + Math.random() * 6,
       moved: false,
     };
   }
 
-  // seekerX/seekerDir/coneRange let bots know when the light is on them.
-  function updateBot(b, dt, phase, seeker, orbs, worldW) {
+  function inCone(b, seeker) {
+    if (!seeker) return false;
+    const dx = b.x - seeker.x, dz = b.z - seeker.z;
+    const d = Math.hypot(dx, dz);
+    if (d > seeker.range) return false;
+    const ang = Math.atan2(dx, dz);
+    let diff = ang - seeker.yaw;
+    while (diff > Math.PI) diff -= 2 * Math.PI;
+    while (diff < -Math.PI) diff += 2 * Math.PI;
+    return Math.abs(diff) < 0.55;
+  }
+
+  function updateBot(b, dt, phase, seeker, orbs) {
     b.moved = false;
     if (phase === "setup") {
-      // wander to a fresh spot, then settle into a pose
       if (b.mode === "idle") {
         b.think -= dt;
         if (b.think <= 0) {
           b.mode = "walk";
-          b.targetX = MU.clamp(b.x + MU.rand(-300, 300), 80, worldW - 80);
+          const p = WORLD3D.randomOpenSpot();
+          b.target = p;
         }
       } else {
-        const d = b.targetX - b.x;
-        if (Math.abs(d) < 8) { b.mode = "idle"; b.think = 99; b.pose = FIG.randomPose(); }
-        else { b.dir = d > 0 ? 1 : -1; b.x += b.dir * 160 * dt; b.moved = true; }
+        const arrived = stepToward(b, b.target.x, b.target.z, 3.4, dt);
+        b.moved = !arrived;
+        if (arrived) { b.mode = "idle"; b.think = 99; b.pose = FIG.randomPose(); }
       }
       return;
     }
     if (phase !== "hunt") return;
 
-    const inCone = seeker &&
-      (b.x - seeker.x) * seeker.dir > 0 &&
-      Math.abs(b.x - seeker.x) < seeker.range;
-
+    const lit = inCone(b, seeker);
     if (b.mode === "idle") {
       b.think -= dt;
-      const twitchy = inCone && Math.random() < 0.0008; // rare panic twitch
-      if ((b.think <= 0 && !inCone) || twitchy) {
-        // go for a nearby orb, or nervously shuffle
+      const twitchy = lit && Math.random() < 0.0008;
+      if ((b.think <= 0 && !lit) || twitchy) {
         const orb = orbs.filter((o) => !o.taken)
-          .sort((a, c) => Math.abs(a.x - b.x) - Math.abs(c.x - b.x))[0];
-        b.targetX = orb && Math.abs(orb.x - b.x) < 500
-          ? orb.x
-          : MU.clamp(b.x + MU.rand(-70, 70), 80, worldW - 80);
+          .sort((a, c) => dist(a, b) - dist(c, b))[0];
+        b.target = orb && dist(orb, b) < 20
+          ? { x: orb.x, z: orb.z }
+          : { x: b.x + MU.rand(-3, 3), z: b.z + MU.rand(-3, 3) };
         b.mode = "walk";
       }
     } else {
-      if (inCone && Math.random() < 0.9) { b.mode = "idle"; b.think = 3 + Math.random() * 5; return; }
-      const d = b.targetX - b.x;
-      if (Math.abs(d) < 6) { b.mode = "idle"; b.think = 5 + Math.random() * 8; }
-      else { b.dir = d > 0 ? 1 : -1; b.x += b.dir * 65 * dt; b.moved = true; }
+      if (lit && Math.random() < 0.9) { b.mode = "idle"; b.think = 3 + Math.random() * 5; return; }
+      const arrived = stepToward(b, b.target.x, b.target.z, 1.4, dt);
+      b.moved = !arrived;
+      if (arrived) { b.mode = "idle"; b.think = 5 + Math.random() * 8; }
     }
   }
 
-  return { createSeeker, updateSeeker, createBot, updateBot, BOT_NAMES };
+  return { createSeeker, updateSeeker, createBot, updateBot, inCone, BOT_NAMES };
 })();

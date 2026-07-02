@@ -187,17 +187,26 @@ input:focus { border-color: var(--accent2); }
   padding: 0 14px;
   gap: 10px;
 }
-.ctl-btn {
-  width: 74px; height: 74px;
+#joystick {
+  width: 118px; height: 118px;
   border-radius: 50%;
-  border: none;
-  font-size: 30px;
-  color: var(--ink);
-  background: rgba(60,50,95,.55);
-  backdrop-filter: blur(3px);
-  cursor: pointer;
+  background: rgba(60,50,95,.4);
+  border: 2px solid rgba(255,255,255,.15);
+  position: relative;
+  touch-action: none;
+  flex: 0 0 auto;
 }
-.ctl-btn:active { background: rgba(124,92,255,.7); }
+#joystick-knob {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 52px; height: 52px;
+  margin: -26px 0 0 -26px;
+  border-radius: 50%;
+  background: rgba(124,92,255,.75);
+  box-shadow: 0 4px 12px rgba(0,0,0,.4);
+  pointer-events: none;
+}
+.hud-actions { display: flex; flex-direction: column; gap: 8px; }
 .hud-hint {
   flex: 1;
   text-align: center;
@@ -207,6 +216,39 @@ input:focus { border-color: var(--accent2); }
   text-shadow: 0 2px 4px #000;
 }
 .btn-pose-toggle { background: var(--accent); color: #201700; }
+.btn-paint-toggle { background: #f068c0; color: #2b0a1e; }
+
+/* ---------- paint studio ---------- */
+#paint-panel {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  background: rgba(26,21,40,.97);
+  border-radius: 20px 20px 0 0;
+  padding: 10px 12px calc(12px + env(safe-area-inset-bottom));
+  z-index: 8;
+  box-shadow: 0 -10px 40px rgba(0,0,0,.6);
+}
+.paint-parts { display: flex; gap: 6px; overflow-x: auto; padding: 6px 0; }
+.paint-chip { flex: 0 0 auto; font-size: 13px; padding: 7px 11px; background: var(--card2); border-radius: 10px 10px 6px 6px; }
+.paint-chip.sel { outline: 2px solid var(--accent); }
+.paint-row { display: flex; gap: 12px; align-items: stretch; margin-top: 6px; }
+.paint-doodle-wrap { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+#paint-doodle {
+  width: 132px; height: 132px;
+  border-radius: 12px;
+  border: 2px solid var(--card2);
+  touch-action: none;
+  background: #fff;
+}
+.paint-doodle-label { font-size: 11px; color: var(--muted); }
+.paint-palette {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+  align-content: center;
+}
+.pal-dot { width: 30px; height: 30px; justify-self: center; }
 
 /* ---------- pose editor ---------- */
 #pose-panel {

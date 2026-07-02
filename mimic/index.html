@@ -35,10 +35,11 @@
 
     <details class="howto">
       <summary>How to play</summary>
-      <p><b>Hiders</b> get 40 seconds to walk around the museum and strike a pose
-      among the mannequins. Then… <b>freeze!</b></p>
-      <p>The <b>Seeker</b> patrols with a flashlight and taps statues to accuse them.
-      Wrong guess = lose points. If you move while the light is on you, you flash red!</p>
+      <p><b>Hiders</b> get 45 seconds to explore the park — museum, houses, gardens —
+      strike a pose among the mannequins, and <b>paint themselves</b> to blend in.
+      You can even repaint the mannequins (or copy their look). Then… <b>freeze!</b></p>
+      <p>At dusk the <b>Seeker</b> patrols with a flashlight and taps statues to accuse
+      them. Wrong guess = lose points. Move in the light and you flash red!</p>
       <p>Glowing orbs are worth points — but you have to <i>move</i> to grab them. 😈</p>
     </details>
   </div>
@@ -75,10 +76,33 @@
 
   <!-- bottom controls -->
   <div id="hud-bottom">
-    <button id="btn-left" class="ctl-btn">◀</button>
+    <div id="joystick"><div id="joystick-knob"></div></div>
     <div id="hud-hint" class="hud-hint"></div>
-    <button id="btn-pose" class="btn btn-pose-toggle hidden">🖐 Pose</button>
-    <button id="btn-right" class="ctl-btn">▶</button>
+    <div class="hud-actions">
+      <button id="btn-pose" class="btn btn-pose-toggle hidden">🖐 Pose</button>
+      <button id="btn-paint" class="btn btn-paint-toggle hidden">🎨 Paint</button>
+    </div>
+  </div>
+
+  <!-- paint studio bottom sheet -->
+  <div id="paint-panel" class="hidden">
+    <div class="pose-head">
+      <span id="paint-title">🎨 Painting yourself</span>
+      <button id="btn-paint-done" class="btn btn-small btn-primary">Done ✔</button>
+    </div>
+    <div id="paint-parts" class="paint-parts"></div>
+    <div class="paint-row">
+      <div class="paint-doodle-wrap">
+        <canvas id="paint-doodle" width="128" height="128"></canvas>
+        <span class="paint-doodle-label">draw on your body!</span>
+      </div>
+      <div id="paint-palette" class="paint-palette"></div>
+    </div>
+    <div class="pose-actions">
+      <button id="btn-paint-copy" class="btn btn-small hidden">🦎 Copy to me</button>
+      <button id="btn-paint-random" class="btn btn-small">🎲 Random</button>
+      <button id="btn-paint-clear" class="btn btn-small">🧽 Clear drawing</button>
+    </div>
   </div>
 
   <!-- pose editor bottom sheet -->
@@ -123,15 +147,19 @@
 </div>
 
 <script src="vendor/supabase.min.js"></script>
+<script src="vendor/three.min.js"></script>
 <script src="js/config.js"></script>
 <script src="js/util.js"></script>
 <script src="js/figure.js"></script>
 <script src="js/sound.js"></script>
 <script src="js/input.js"></script>
 <script src="js/net.js"></script>
+<script src="js/world3d.js"></script>
+<script src="js/figure3d.js"></script>
+<script src="js/render3d.js"></script>
 <script src="js/ai.js"></script>
 <script src="js/poseEditor.js"></script>
-<script src="js/render.js"></script>
+<script src="js/paint.js"></script>
 <script src="js/game.js"></script>
 <script src="js/main.js"></script>
 </body>
