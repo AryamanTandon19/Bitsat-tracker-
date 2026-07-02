@@ -1,11 +1,11 @@
 // 3D poseable figure. Reuses FIG.joints() (the 2D skeleton) mapped into the
 // figure's local Y-up/Z-forward plane, with arms/legs offset sideways for
-// depth. Each body part has its own paintable material; the torso carries a
-// canvas texture so players can doodle on themselves.
+// depth. Limbs are smooth capsules with sphere joints; each body part has a
+// paintable material and the torso carries a canvas texture for doodles.
 window.FIG3D = (function () {
-  const S = 0.0125; // px -> meters (150px figure ≈ 1.87m)
-  const RAD = { torso: 0.125, limb: 0.062, head: 0.175 };
-  const ARM_X = 0.27, LEG_X = 0.15;
+  const S = 0.0135; // px -> meters (figure ≈ 1.7m tall)
+  const RAD = { torso: 0.145, limb: 0.058, head: 0.165 };
+  const ARM_X = 0.26, LEG_X = 0.145;
   const UP = new THREE.Vector3(0, 1, 0);
 
   const PALETTE = [
@@ -23,7 +23,6 @@ window.FIG3D = (function () {
   function randomPaint(rng) {
     rng = rng || Math.random;
     const pick = () => PALETTE[(rng() * PALETTE.length) | 0];
-    // mannequins are usually mostly one colour with a couple of accents
     const base = pick();
     const p = defaultPaint(base);
     if (rng() < 0.7) p.torso = pick();
@@ -33,14 +32,18 @@ window.FIG3D = (function () {
     return p;
   }
 
-  function seg(mat, r, rTop) {
-    const g = new THREE.CylinderGeometry(rTop || r, r * 0.85, 1, 8);
-    const m = new THREE.Mesh(g, mat);
+  function std(opts) {
+    return new THREE.MeshStandardMaterial(Object.assign({ roughness: 0.65, metalness: 0.05 }, opts));
+  }
+
+  // fixed-length smooth capsule (limb lengths never change, only rotate)
+  function capsule(mat, r, lenPx) {
+    const m = new THREE.Mesh(new THREE.CapsuleGeometry(r, lenPx * S, 6, 14), mat);
     m.castShadow = true;
     return m;
   }
-  function ball(mat, r) {
-    const m = new THREE.Mesh(new THREE.SphereGeometry(r, 10, 8), mat);
+  function ball(mat, r, w, h) {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(r, w || 20, h || 16), mat);
     m.castShadow = true;
     return m;
   }
@@ -57,6 +60,7 @@ window.FIG3D = (function () {
     x.fillStyle = color || "#fff";
     x.fillText(text, 128, 40);
     const tex = new THREE.CanvasTexture(c);
+    if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
     const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false }));
     sp.scale.set(1.35, 0.34, 1);
     return sp;
@@ -71,39 +75,50 @@ window.FIG3D = (function () {
     texCanvas.width = texCanvas.height = 128;
     const texCtx = texCanvas.getContext("2d");
     const torsoTex = new THREE.CanvasTexture(texCanvas);
+    if (THREE.SRGBColorSpace) torsoTex.colorSpace = THREE.SRGBColorSpace;
 
     const mats = {
-      head: new THREE.MeshLambertMaterial({ color: "#e9e4d6" }),
-      torso: new THREE.MeshLambertMaterial({ map: torsoTex }),
-      armL: new THREE.MeshLambertMaterial({ color: "#e9e4d6" }),
-      armR: new THREE.MeshLambertMaterial({ color: "#e9e4d6" }),
-      legL: new THREE.MeshLambertMaterial({ color: "#e9e4d6" }),
-      legR: new THREE.MeshLambertMaterial({ color: "#e9e4d6" }),
+      head: std({ color: "#e9e4d6" }),
+      torso: std({ map: torsoTex }),
+      armL: std({ color: "#e9e4d6" }),
+      armR: std({ color: "#e9e4d6" }),
+      legL: std({ color: "#e9e4d6" }),
+      legR: std({ color: "#e9e4d6" }),
     };
-
+    const LEN = FIG.L;
     const parts = {
-      // wider at the shoulders, narrow at the waist
-      torso: seg(mats.torso, RAD.torso, RAD.torso * 1.5),
-      head: ball(mats.head, RAD.head),
-      armL1: seg(mats.armL, RAD.limb), armL2: seg(mats.armL, RAD.limb),
-      armR1: seg(mats.armR, RAD.limb), armR2: seg(mats.armR, RAD.limb),
-      legL1: seg(mats.legL, RAD.limb * 1.15), legL2: seg(mats.legL, RAD.limb * 1.15),
-      legR1: seg(mats.legR, RAD.limb * 1.15), legR2: seg(mats.legR, RAD.limb * 1.15),
-      hip: ball(mats.torso, RAD.torso * 0.95),
+      torso: capsule(mats.torso, RAD.torso, LEN.TORSO),
+      head: ball(mats.head, RAD.head, 24, 18),
+      armL1: capsule(mats.armL, RAD.limb, LEN.A1), armL2: capsule(mats.armL, RAD.limb, LEN.A2),
+      armR1: capsule(mats.armR, RAD.limb, LEN.A1), armR2: capsule(mats.armR, RAD.limb, LEN.A2),
+      legL1: capsule(mats.legL, RAD.limb * 1.2, LEN.L1), legL2: capsule(mats.legL, RAD.limb * 1.15, LEN.L2),
+      legR1: capsule(mats.legR, RAD.limb * 1.2, LEN.L1), legR2: capsule(mats.legR, RAD.limb * 1.15, LEN.L2),
+      hip: ball(mats.torso, RAD.torso * 0.9, 18, 14),
+      shoulders: ball(mats.torso, RAD.torso * 0.8, 18, 14),
+      handL: ball(mats.armL, RAD.limb * 1.25, 12, 10), handR: ball(mats.armR, RAD.limb * 1.25, 12, 10),
+      footL: ball(mats.legL, RAD.limb * 1.35, 12, 10), footR: ball(mats.legR, RAD.limb * 1.35, 12, 10),
     };
     for (const k in parts) group.add(parts[k]);
 
+    // a gentle mannequin face (everyone gets the same one — no tells)
+    const eyeMat = std({ color: "#26222e", roughness: 0.35 });
+    const eyeL = ball(eyeMat, 0.021, 8, 6), eyeR = ball(eyeMat, 0.021, 8, 6);
+    eyeL.castShadow = eyeR.castShadow = false;
+    parts.head.add(eyeL); parts.head.add(eyeR);
+    eyeL.position.set(-0.055, 0.025, RAD.head - 0.02);
+    eyeR.position.set(0.055, 0.025, RAD.head - 0.02);
+
     // invisible hit capsule for tap raycasting
     const hit = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.55, 0.55, 2.1, 6),
+      new THREE.CylinderGeometry(0.52, 0.52, 1.9, 6),
       new THREE.MeshBasicMaterial({ visible: false })
     );
-    hit.position.y = 1.05;
+    hit.position.y = 0.95;
     group.add(hit);
 
     // "this is you" marker + spotted flash ring
     const marker = new THREE.Mesh(
-      new THREE.ConeGeometry(0.18, 0.34, 4),
+      new THREE.ConeGeometry(0.16, 0.3, 16),
       new THREE.MeshBasicMaterial({ color: 0xffffff })
     );
     marker.rotation.x = Math.PI;
@@ -111,7 +126,7 @@ window.FIG3D = (function () {
     group.add(marker);
 
     const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(0.62, 0.05, 8, 24),
+      new THREE.TorusGeometry(0.58, 0.045, 10, 36),
       new THREE.MeshBasicMaterial({ color: 0xff4455 })
     );
     ring.rotation.x = Math.PI / 2;
@@ -127,36 +142,36 @@ window.FIG3D = (function () {
     xx.beginPath(); xx.moveTo(14, 14); xx.lineTo(50, 50); xx.moveTo(50, 14); xx.lineTo(14, 50); xx.stroke();
     const clearedSp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(xc), depthTest: false }));
     clearedSp.scale.set(0.5, 0.5, 1);
-    clearedSp.position.y = 2.3;
+    clearedSp.position.y = 2.1;
     clearedSp.visible = false;
     group.add(clearedSp);
 
     let labelSprite = null;
-    let curPose = null, topY = 2.0;
+    let topY = 1.8;
     let paint = defaultPaint();
 
+    const _dir = new THREE.Vector3();
     function place(mesh, a, b) {
-      // stretch a unit cylinder between two local-space points
-      const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
-      const len = Math.max(0.01, Math.hypot(dx, dy, dz));
+      _dir.set(b.x - a.x, b.y - a.y, b.z - a.z);
+      const len = Math.max(0.001, _dir.length());
       mesh.position.set((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
-      mesh.scale.set(1, len, 1);
-      mesh.quaternion.setFromUnitVectors(UP, new THREE.Vector3(dx / len, dy / len, dz / len));
+      mesh.quaternion.setFromUnitVectors(UP, _dir.multiplyScalar(1 / len));
     }
 
     const rig = {
       group, mats,
       setPose(pose) {
-        curPose = pose;
         const J = FIG.joints(pose);
-        // 2D (x right, y down) -> local 3D (z forward, y up)
+        // 2D (x right, y down) -> local 3D (z forward, y up), uniform scale
         const j = {};
-        for (const k in J) j[k] = { y: -J[k].y * S * 1.28, z: J[k].x * S };
+        for (const k in J) j[k] = { y: -J[k].y * S, z: J[k].x * S };
         const P = (k, x) => new THREE.Vector3(x, j[k].y, j[k].z);
         place(parts.torso, P("hip", 0), P("chest", 0));
-        parts.torso.scale.x = parts.torso.scale.z = 1;
-        parts.head.position.set(0, j.headC.y + 0.04, j.headC.z);
+        parts.head.position.set(0, j.headC.y + 0.03, j.headC.z);
+        // face the head along the head tilt a bit
+        parts.head.rotation.x = Math.atan2(j.headC.z - j.chest.z, j.headC.y - j.chest.y) * 0.8;
         parts.hip.position.set(0, j.hip.y, j.hip.z);
+        parts.shoulders.position.set(0, j.chest.y, j.chest.z);
         place(parts.armL1, P("chest", -ARM_X), P("elbL", -ARM_X));
         place(parts.armL2, P("elbL", -ARM_X), P("handL", -ARM_X));
         place(parts.armR1, P("chest", ARM_X), P("elbR", ARM_X));
@@ -165,9 +180,13 @@ window.FIG3D = (function () {
         place(parts.legL2, P("kneeL", -LEG_X), P("footL", -LEG_X));
         place(parts.legR1, P("hip", LEG_X), P("kneeR", LEG_X));
         place(parts.legR2, P("kneeR", LEG_X), P("footR", LEG_X));
-        topY = Math.max(j.headC.y + 0.28, 1.4);
+        parts.handL.position.set(-ARM_X, j.handL.y, j.handL.z);
+        parts.handR.position.set(ARM_X, j.handR.y, j.handR.z);
+        parts.footL.position.set(-LEG_X, j.footL.y + 0.02, j.footL.z);
+        parts.footR.position.set(LEG_X, j.footR.y + 0.02, j.footR.z);
+        topY = Math.max(j.headC.y + 0.26, 1.3);
         marker.position.set(0, topY + 0.25, 0);
-        if (labelSprite) labelSprite.position.y = topY + 0.75;
+        if (labelSprite) labelSprite.position.y = topY + 0.6;
       },
       setPos(x, z, yaw) {
         group.position.x = x;
@@ -193,13 +212,13 @@ window.FIG3D = (function () {
       getPaint: () => paint,
       setFallen(f) {
         group.rotation.x = f ? -Math.PI / 2 + 0.12 : 0;
-        group.position.y = f ? 0.5 : 0;
+        group.position.y = f ? 0.42 : 0;
       },
       setLabel(text, color) {
         if (labelSprite) { group.remove(labelSprite); labelSprite = null; }
         if (text) {
           labelSprite = makeLabel(text, color);
-          labelSprite.position.y = topY + 0.75;
+          labelSprite.position.y = topY + 0.6;
           group.add(labelSprite);
         }
       },
@@ -232,8 +251,8 @@ window.FIG3D = (function () {
 
   function createPedestal(scene, x, z) {
     const m = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.7, 0.85, 0.24, 10),
-      new THREE.MeshLambertMaterial({ color: 0x8d8398 })
+      new THREE.CylinderGeometry(0.7, 0.85, 0.24, 20),
+      std({ color: 0x8d8398 })
     );
     m.position.set(x, 0.12, z);
     m.receiveShadow = true;

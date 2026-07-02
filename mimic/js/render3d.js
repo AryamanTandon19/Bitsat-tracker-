@@ -10,8 +10,8 @@ window.RENDER3D = (function () {
   let time = 0;
 
   const MOODS = {
-    day:  { sky: 0x9fd4e8, fog: 0xaed6e6, sun: 1.1, hemi: 0.75, flash: 0 },
-    dusk: { sky: 0x232742, fog: 0x232742, sun: 0.22, hemi: 0.3, flash: 1 },
+    day:  { sky: 0x9fd4e8, fog: 0xaed6e6, sun: 1.25, hemi: 0.85, sunC: 0xfff2d8 },
+    dusk: { sky: 0x1e2340, fog: 0x1e2340, sun: 0.28, hemi: 0.32, sunC: 0x9bb0ff },
   };
   let mood = "day", moodT = 1;
 
@@ -20,7 +20,10 @@ window.RENDER3D = (function () {
     renderer = new THREE.WebGLRenderer({ canvas: c, antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFShadowMap;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.12;
+    if (THREE.SRGBColorSpace) renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     scene = new THREE.Scene();
     scene.background = new THREE.Color(MOODS.day.sky);
@@ -69,6 +72,7 @@ window.RENDER3D = (function () {
     const m = MOODS[mood];
     sun.intensity += (m.sun - sun.intensity) * 0.08;
     hemi.intensity += (m.hemi - hemi.intensity) * 0.08;
+    sun.color.lerp(new THREE.Color(m.sunC), 0.08);
     scene.background.lerp(new THREE.Color(m.sky), 0.08);
     scene.fog.color.lerp(new THREE.Color(m.fog), 0.08);
   }
@@ -98,17 +102,25 @@ window.RENDER3D = (function () {
       if (!orbMeshes[o.id]) {
         const g = new THREE.Group();
         const core = new THREE.Mesh(
-          new THREE.SphereGeometry(0.22, 10, 8),
+          new THREE.IcosahedronGeometry(0.2, 1),
           new THREE.MeshBasicMaterial({ color: 0x9dffe2 })
         );
         const halo = new THREE.Mesh(
-          new THREE.SphereGeometry(0.5, 10, 8),
+          new THREE.SphereGeometry(0.5, 16, 12),
           new THREE.MeshBasicMaterial({
             color: 0x66ffd0, transparent: true, opacity: 0.25,
             blending: THREE.AdditiveBlending, depthWrite: false,
           })
         );
-        g.add(core); g.add(halo);
+        const orbit = new THREE.Mesh(
+          new THREE.TorusGeometry(0.36, 0.025, 8, 28),
+          new THREE.MeshBasicMaterial({
+            color: 0xc2ffe9, transparent: true, opacity: 0.7,
+            blending: THREE.AdditiveBlending, depthWrite: false,
+          })
+        );
+        orbit.rotation.x = Math.PI / 2.6;
+        g.add(core); g.add(halo); g.add(orbit);
         g.position.set(o.x, 0.9, o.z);
         scene.add(g);
         orbMeshes[o.id] = g;
@@ -149,6 +161,7 @@ window.RENDER3D = (function () {
     time += dt;
     resize();
     lerpMood(dt);
+    WORLD3D.tick(time, dt);
     for (const id in orbMeshes) {
       orbMeshes[id].position.y = 0.9 + Math.sin(time * 3 + orbMeshes[id].position.x) * 0.15;
       orbMeshes[id].rotation.y += dt * 2;
