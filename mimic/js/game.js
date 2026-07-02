@@ -289,7 +289,8 @@ window.GAME = (function () {
         pose: FIG.defaultPose(), paint: FIG3D.defaultPaint(), mv: 0, lastMoveAt: 0,
       });
       pl.x = p.x; pl.z = p.z; pl.yaw = p.yaw || 0; pl.mv = p.mv;
-      if (p.mv) { pl.lastMoveAt = performance.now(); markConeMove(pl); }
+      pl.jy = p.y || 0;
+      if (p.mv || pl.jy > 0) { pl.lastMoveAt = performance.now(); markConeMove(pl); }
       if (p.pose) pl.pose = p.pose;
       if (p.paint) pl.paint = p.paint;
     } else if (t === "state") {
@@ -343,10 +344,24 @@ window.GAME = (function () {
     if (p.kind === "decoy") {
       S.cleared[p.id] = true;
       SND.wrong();
-      if (p.seekerId === L.meId) showMsg("Nope, just a mannequin. " + PTS.wrong + " pts", 1.6);
+      const d = S.decoys.find((d) => d.id === p.id);
+      if (d) {
+        RENDER3D.burst(d.x, 1.1, d.z, 0x9aa0b4, 14, { spread: 1.8, up: 1.4, size: 0.1 });
+        if (L.rigs[p.id]) L.rigs[p.id].wobble();
+      }
+      if (p.seekerId === L.meId) {
+        RENDER3D.shake(0.25);
+        showMsg("Nope, just a mannequin. " + PTS.wrong + " pts", 1.6);
+      }
     } else {
       S.caught[p.id] = true;
       SND.catch_();
+      const pl = L.players[p.id];
+      if (pl) {
+        RENDER3D.burst(pl.sx != null ? pl.sx : pl.x, 1.3, pl.sz != null ? pl.sz : pl.z, 0xffd166, 22, { spread: 2.6, up: 2.6, size: 0.13 });
+        RENDER3D.burst(pl.sx != null ? pl.sx : pl.x, 1.0, pl.sz != null ? pl.sz : pl.z, 0xff5d6c, 14, { spread: 2.0, up: 2.0, size: 0.11 });
+      }
+      if (p.id === L.meId || p.seekerId === L.meId) RENDER3D.shake(0.55);
       const who = S.roster.find((r) => r.id === p.id);
       if (p.id === L.meId) showMsg("😱 You were CAUGHT!", 3);
       else showMsg((who ? who.name : "A hider") + " was caught!", 2);
@@ -356,7 +371,10 @@ window.GAME = (function () {
   function onOrbTaken(p) {
     if (!S) return;
     const o = S.orbs.find((o) => o.id === p.id);
-    if (o) o.taken = true;
+    if (o) {
+      o.taken = true;
+      RENDER3D.burst(o.x, 1.0, o.z, 0x9dffe2, 18, { spread: 2.0, up: 2.4, size: 0.12, grav: 2.5 });
+    }
     if (p.by === L.meId) { SND.orb(); showMsg("+" + PTS.orb + " ✨", 1.2); }
   }
 
@@ -463,6 +481,27 @@ window.GAME = (function () {
         meP.mv = 0;
       }
 
+      // jump! (visible, so jumping mid-hunt is a gamble)
+      if (speed > 0) {
+        meP.jy = meP.jy || 0;
+        meP.vy = meP.vy || 0;
+        if (INPUT.jump() && meP.jy === 0) {
+          meP.vy = 4.6;
+          meP.lastMoveAt = performance.now();
+          markConeMove(meP);
+        }
+        if (meP.jy > 0 || meP.vy !== 0) {
+          meP.vy -= 12.5 * dt;
+          meP.jy = Math.max(0, meP.jy + meP.vy * dt);
+          if (meP.jy === 0 && meP.vy < 0) {
+            meP.vy = 0;
+            RENDER3D.burst(meP.x, 0.15, meP.z, 0xcfc8bc, 8, { spread: 1.6, up: 0.7, size: 0.09 });
+          }
+          meP.lastMoveAt = performance.now();
+          L.posDirty = true;
+        }
+      }
+
       // hider orb pickup
       if (S.phase === "hunt" && role === "hider") {
         for (const o of S.orbs) {
@@ -548,6 +587,7 @@ window.GAME = (function () {
           id: L.meId,
           x: Math.round(meP.x * 100) / 100, z: Math.round(meP.z * 100) / 100,
           yaw: Math.round(meP.yaw * 100) / 100, mv: meP.mv,
+          y: Math.round((meP.jy || 0) * 100) / 100,
           pose: serializePose(meP.pose),
         };
         if (L.paintDirty || L.keepAcc > 1.8) { msg.paint = meP.paint; L.paintDirty = false; }
@@ -587,9 +627,17 @@ window.GAME = (function () {
     if (!L.rigs[id]) {
       const rig = FIG3D.create(RENDER3D.scene());
       rig.hitMesh.userData.figId = id;
+      rig.pop(); // bouncy spawn-in
       L.rigs[id] = rig;
     }
     return L.rigs[id];
+  }
+
+  function paintSplash(rig, paint, x, z) {
+    const t = performance.now();
+    if (rig._lastSplash && t - rig._lastSplash < 350) return;
+    rig._lastSplash = t;
+    RENDER3D.burst(x, 1.25, z, paint.torso || "#ffffff", 12, { spread: 1.6, up: 1.6, size: 0.11, grav: 3 });
   }
 
   function walkCycle(pose, t) {
@@ -616,8 +664,14 @@ window.GAME = (function () {
       const rig = ensureRig(d.id);
       rig.setPos(d.x, d.z, d.yaw);
       if (rig._pose !== d.pose) { rig.setPose(d.pose); rig._pose = d.pose; }
-      if (rig._paint !== d.paint) { rig.setPaint(d.paint); rig._paint = d.paint; }
+      if (rig._paint !== d.paint) {
+        rig.setPaint(d.paint);
+        if (rig._paint) paintSplash(rig, d.paint, d.x, d.z); // repainted live
+        rig._paint = d.paint;
+      }
       rig.setCleared(!!S.cleared[d.id]);
+      rig.setMode("frozen");
+      rig.tick(L.time, dt);
     }
 
     for (const p of S.roster) {
@@ -640,7 +694,7 @@ window.GAME = (function () {
       while (dy < -Math.PI) dy += 2 * Math.PI;
       pl.syaw += dy * k;
 
-      rig.setPos(pl.sx, pl.sz, pl.syaw);
+      rig.setPos(pl.sx, pl.sz, pl.syaw, pl.jy || 0);
       rig.setFallen(caught);
       const moving = pl.mv && (isMe || tNow - pl.lastMoveAt < 300);
       if (moving && !caught) {
@@ -650,7 +704,19 @@ window.GAME = (function () {
         rig.setPose(pl.pose);
         rig._pose = pl.pose;
       }
-      if (rig._paint !== pl.paint) { rig.setPaint(pl.paint); rig._paint = pl.paint; }
+      if (rig._paint !== pl.paint) {
+        rig.setPaint(pl.paint);
+        if (rig._paint) paintSplash(rig, pl.paint, pl.sx, pl.sz);
+        rig._paint = pl.paint;
+      }
+      // remote players landing from a jump puff dust too
+      if (pl._prevJy > 0.05 && !(pl.jy > 0) && !isMe) {
+        RENDER3D.burst(pl.sx, 0.15, pl.sz, 0xcfc8bc, 8, { spread: 1.6, up: 0.7, size: 0.09 });
+      }
+      pl._prevJy = pl.jy || 0;
+      // statues hold perfectly still during the hunt; otherwise breathe
+      rig.setMode(caught ? "frozen" : moving ? "walk" : hunt && !isSeekerFig ? "frozen" : "idle");
+      rig.tick(L.time, dt);
 
       // labels: setup + reveal show names; seeker always labelled during hunt
       const wantLabel = (!hunt && !caught) || isSeekerFig;
@@ -677,6 +743,8 @@ window.GAME = (function () {
       rig.setPos(L.aiSeeker.x, L.aiSeeker.z, L.aiSeeker.yaw);
       rig.setPose(L.aiSeeker.mv ? walkCycle(FIG.defaultPose(), tNow) : FIG.defaultPose());
       rig._pose = null;
+      rig.setMode(L.aiSeeker.mv ? "walk" : "idle");
+      rig.tick(L.time, dt);
       if (!rig._painted) {
         rig.setPaint(FIG3D.defaultPaint("#c9b458"));
         rig.setLabel("🔦 Inspector Botto", "#ffdd88");
@@ -815,6 +883,9 @@ window.GAME = (function () {
     const panelOpen = POSE_EDITOR.isOpen() || PAINT.isOpen();
     ui.poseBtn.classList.toggle("hidden", !setupHider || panelOpen);
     ui.paintBtn.classList.toggle("hidden", !setupHider || panelOpen);
+    const canJump = role !== "spectator" && (S.phase === "setup" || S.phase === "hunt") &&
+      !(role === "seeker" && S.phase === "setup") && !panelOpen;
+    ui.jumpBtn.classList.toggle("hidden", !canJump);
 
     let hint = "";
     if (setupHider) hint = "Move 🕹 · drag to look · tap mannequins to repaint";
@@ -913,6 +984,7 @@ window.GAME = (function () {
       hint: document.getElementById("hud-hint"),
       poseBtn: document.getElementById("btn-pose"),
       paintBtn: document.getElementById("btn-paint"),
+      jumpBtn: document.getElementById("btn-jump"),
       cover: document.getElementById("cover"),
       coverTimer: document.getElementById("cover-timer"),
       coverTip: document.getElementById("cover-tip"),

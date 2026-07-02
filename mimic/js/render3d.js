@@ -8,6 +8,69 @@ window.RENDER3D = (function () {
   let canvas;
   let camPos = new THREE.Vector3(0, 8, 14);
   let time = 0;
+  let shakeAmt = 0;
+
+  // ---- particle pool (sprites with velocity + gravity) ----
+  const POOL = 140;
+  const particles = [];
+  function makeDotTexture() {
+    const c = document.createElement("canvas");
+    c.width = c.height = 32;
+    const x = c.getContext("2d");
+    const g = x.createRadialGradient(16, 16, 1, 16, 16, 15);
+    g.addColorStop(0, "rgba(255,255,255,1)");
+    g.addColorStop(0.55, "rgba(255,255,255,.65)");
+    g.addColorStop(1, "rgba(255,255,255,0)");
+    x.fillStyle = g;
+    x.fillRect(0, 0, 32, 32);
+    return new THREE.CanvasTexture(c);
+  }
+  function initParticles() {
+    const dot = makeDotTexture();
+    for (let i = 0; i < POOL; i++) {
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: dot, color: 0xffffff, transparent: true, opacity: 0,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      }));
+      sp.visible = false;
+      scene.add(sp);
+      particles.push({ sp, vel: new THREE.Vector3(), life: 0, max: 1, size: 0.1, grav: 6 });
+    }
+  }
+  let poolIdx = 0;
+  function burst(x, y, z, color, count, opts) {
+    opts = opts || {};
+    const spread = opts.spread || 2.2;
+    const up = opts.up != null ? opts.up : 2.4;
+    for (let i = 0; i < (count || 16); i++) {
+      const p = particles[poolIdx];
+      poolIdx = (poolIdx + 1) % POOL;
+      p.sp.material.color.set(color);
+      p.sp.position.set(x, y, z);
+      p.vel.set(
+        (Math.random() - 0.5) * spread,
+        Math.random() * up + 0.6,
+        (Math.random() - 0.5) * spread
+      );
+      p.max = p.life = 0.5 + Math.random() * 0.5;
+      p.size = (opts.size || 0.12) * (0.6 + Math.random() * 0.8);
+      p.grav = opts.grav != null ? opts.grav : 6;
+      p.sp.visible = true;
+    }
+  }
+  function tickParticles(dt) {
+    for (const p of particles) {
+      if (p.life <= 0) { if (p.sp.visible) p.sp.visible = false; continue; }
+      p.life -= dt;
+      p.vel.y -= p.grav * dt;
+      p.sp.position.addScaledVector(p.vel, dt);
+      const k = Math.max(0, p.life / p.max);
+      p.sp.material.opacity = k;
+      const s = p.size * (0.5 + k);
+      p.sp.scale.set(s, s, 1);
+    }
+  }
+  function shake(amt) { shakeAmt = Math.min(1, shakeAmt + amt); }
 
   const MOODS = {
     day:  { sky: 0x9fd4e8, fog: 0xaed6e6, sun: 1.25, hemi: 0.85, sunC: 0xfff2d8 },
@@ -61,6 +124,7 @@ window.RENDER3D = (function () {
     scene.add(coneMesh);
 
     WORLD3D.build(scene);
+    initParticles();
     return { scene, camera };
   }
 
@@ -145,6 +209,11 @@ window.RENDER3D = (function () {
     const k = Math.min(1, dt * 6);
     camPos.lerp(want, k);
     camera.position.copy(camPos);
+    if (shakeAmt > 0.002) {
+      camera.position.x += (Math.random() - 0.5) * shakeAmt * 0.5;
+      camera.position.y += (Math.random() - 0.5) * shakeAmt * 0.35;
+      camera.position.z += (Math.random() - 0.5) * shakeAmt * 0.5;
+    }
     camera.lookAt(target.x, 1.3, target.z);
   }
 
@@ -162,6 +231,8 @@ window.RENDER3D = (function () {
     resize();
     lerpMood(dt);
     WORLD3D.tick(time, dt);
+    tickParticles(dt);
+    shakeAmt = Math.max(0, shakeAmt - dt * 2.2);
     for (const id in orbMeshes) {
       orbMeshes[id].position.y = 0.9 + Math.sin(time * 3 + orbMeshes[id].position.x) * 0.15;
       orbMeshes[id].rotation.y += dt * 2;
@@ -182,7 +253,7 @@ window.RENDER3D = (function () {
 
   return {
     init, setMood, setFlashlight, syncOrbs, clearOrbs,
-    updateCamera, render, pickFigure,
+    updateCamera, render, pickFigure, burst, shake,
     scene: () => scene,
     camera: () => camera,
   };

@@ -413,6 +413,282 @@ window.WORLD3D = (function () {
     scene.add(inst);
   }
 
+  // ---------- playground: swings, slide, seesaw ----------
+  function playground(scene, x, z) {
+    const wood = M(0xc98d4e, { roughness: 0.8 });
+    const metal = M(0xd8535f, { metalness: 0.35, roughness: 0.4 });
+    const metal2 = M(0x3ecbe8, { metalness: 0.35, roughness: 0.4 });
+
+    // --- swing frame + two animated swings ---
+    const sx = x - 3, sz = z;
+    for (const off of [-1.6, 1.6]) {
+      const legL = cyl(scene, 0.07, 0.09, 2.6, sx + off, 1.3, sz - 0.7, metal, 10);
+      legL.rotation.x = 0.25;
+      const legR = cyl(scene, 0.07, 0.09, 2.6, sx + off, 1.3, sz + 0.7, metal, 10);
+      legR.rotation.x = -0.25;
+    }
+    const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 3.4, 10), metal);
+    bar.rotation.z = Math.PI / 2;
+    bar.position.set(sx, 2.5, sz);
+    bar.castShadow = true;
+    scene.add(bar);
+    for (const off of [-0.8, 0.8]) {
+      const sw = new THREE.Group();
+      const ropeM = M(0x9a8a6a);
+      for (const rx of [-0.25, 0.25]) {
+        const rope = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 1.7, 6), ropeM);
+        rope.position.set(rx, -0.85, 0);
+        sw.add(rope);
+      }
+      const seat = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.06, 0.3), wood);
+      seat.position.y = -1.72;
+      seat.castShadow = true;
+      sw.add(seat);
+      sw.position.set(sx + off, 2.5, sz);
+      scene.add(sw);
+      const ph = Math.random() * 6;
+      animated.push((t) => { sw.rotation.x = Math.sin(t * 1.6 + ph) * 0.38; });
+    }
+    col(sx, sz - 0.7, 0.4); col(sx, sz + 0.7, 0.4);
+
+    // --- slide ---
+    const lx = x + 2.5, lz = z - 1;
+    const ladder = new THREE.Mesh(new THREE.BoxGeometry(0.6, 1.7, 0.12), wood);
+    ladder.position.set(lx - 0.9, 0.85, lz);
+    ladder.rotation.z = 0.18;
+    scene.add(ladder);
+    const platform = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.1, 0.7), wood);
+    platform.position.set(lx - 0.3, 1.65, lz);
+    platform.castShadow = true;
+    scene.add(platform);
+    const chute = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.09, 0.65), metal2);
+    chute.position.set(lx + 0.85, 0.95, lz);
+    chute.rotation.z = -0.62;
+    chute.castShadow = true;
+    scene.add(chute);
+    for (const cz2 of [-0.34, 0.34]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.16, 0.05), metal2);
+      rail.position.set(lx + 0.85, 1.03, lz + cz2);
+      rail.rotation.z = -0.62;
+      scene.add(rail);
+    }
+    col(lx, lz, 0.9);
+
+    // --- seesaw ---
+    const ssx = x, ssz = z + 3.2;
+    const base = new THREE.Mesh(new THREE.ConeGeometry(0.35, 0.6, 12), metal);
+    base.position.set(ssx, 0.3, ssz);
+    base.castShadow = true;
+    scene.add(base);
+    const plank = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.09, 0.42), wood);
+    plank.position.set(ssx, 0.62, ssz);
+    plank.castShadow = true;
+    scene.add(plank);
+    for (const hx of [-1.5, 1.5]) {
+      const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.3, 8), metal);
+      grip.rotation.x = Math.PI / 2;
+      grip.position.set(hx, 0.12, 0);
+      plank.add(grip);
+    }
+    animated.push((t) => { plank.rotation.z = Math.sin(t * 0.9) * 0.16; });
+    col(ssx, ssz, 0.5);
+
+    spot(x - 5.5, z + 1.5, 1.2); spot(x + 4.5, z + 2.5, -1.9); spot(x - 1, z - 2.5, 0.2);
+  }
+
+  // ---------- pond with ducks, reeds and lily pads ----------
+  function pond(scene, x, z, r) {
+    const water = new THREE.Mesh(
+      new THREE.CylinderGeometry(r, r, 0.1, 36),
+      M(0x3f9fc0, { roughness: 0.12, transparent: true, opacity: 0.92, emissive: 0x0a2e3a })
+    );
+    water.position.set(x, 0.06, z);
+    scene.add(water);
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(r, 0.22, 10, 40), M(0x6b5a40, { roughness: 1 }));
+    rim.rotation.x = Math.PI / 2;
+    rim.position.set(x, 0.1, z);
+    scene.add(rim);
+    animated.push((t) => { water.rotation.y = t * 0.12; });
+    // reeds
+    const reedM = M(0x3f7a3a);
+    for (let i = 0; i < 10; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const rr = r + 0.35 + Math.random() * 0.4;
+      const h = 0.7 + Math.random() * 0.6;
+      const reed = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.035, h, 6), reedM);
+      reed.position.set(x + Math.cos(a) * rr, h / 2, z + Math.sin(a) * rr);
+      reed.rotation.z = (Math.random() - 0.5) * 0.2;
+      scene.add(reed);
+      const tip = new THREE.Mesh(new THREE.CapsuleGeometry(0.05, 0.18, 4, 8), M(0x8a5a3c));
+      tip.position.set(reed.position.x, h + 0.1, reed.position.z);
+      scene.add(tip);
+    }
+    // lily pads
+    for (let i = 0; i < 4; i++) {
+      const a = Math.random() * Math.PI * 2, rr = Math.random() * (r - 1);
+      const pad = new THREE.Mesh(new THREE.CircleGeometry(0.3 + Math.random() * 0.2, 12), M(0x4a9a4a));
+      pad.rotation.x = -Math.PI / 2;
+      pad.position.set(x + Math.cos(a) * rr, 0.13, z + Math.sin(a) * rr);
+      scene.add(pad);
+    }
+    // ducks paddling in circles
+    for (let i = 0; i < 3; i++) {
+      const g = new THREE.Group();
+      const bodyC = i === 2 ? 0xf5e6c4 : 0xf0c04a;
+      const body = new THREE.Mesh(new THREE.SphereGeometry(0.24, 14, 10), M(bodyC, { roughness: 0.7 }));
+      body.scale.set(1.25, 0.85, 1);
+      g.add(body);
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.13, 12, 9), M(i === 1 ? 0x2e6b3e : bodyC));
+      head.position.set(0.22, 0.24, 0);
+      g.add(head);
+      const beak = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.14, 8), M(0xff8b4a));
+      beak.rotation.z = -Math.PI / 2;
+      beak.position.set(0.38, 0.22, 0);
+      g.add(beak);
+      scene.add(g);
+      const orbitR = 0.8 + i * 0.75, speed = 0.4 + i * 0.15, ph = i * 2.2;
+      animated.push((t) => {
+        const a = t * speed + ph;
+        g.position.set(x + Math.cos(a) * orbitR, 0.16 + Math.sin(t * 3 + ph) * 0.02, z + Math.sin(a) * orbitR);
+        g.rotation.y = -a;
+      });
+    }
+    col(x, z, r + 0.35);
+    spot(x + r + 1.6, z - 1, -0.8); spot(x - r - 1.4, z + 1.5, 1.9);
+  }
+
+  // ---------- windmill with rotating blades ----------
+  function windmill(scene, x, z) {
+    const towerM = M(0xd9cdb8, { roughness: 0.8 });
+    const tower = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.6, 5.5, 14), towerM);
+    tower.position.set(x, 2.75, z);
+    tower.castShadow = true;
+    tower.receiveShadow = true;
+    scene.add(tower);
+    const cap = new THREE.Mesh(new THREE.ConeGeometry(1.25, 1.3, 14), M(0xa8503e, { roughness: 0.7 }));
+    cap.position.set(x, 6.1, z);
+    cap.castShadow = true;
+    scene.add(cap);
+    const door = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.3, 0.1), M(0x5b4030));
+    door.position.set(x, 0.65, z + 1.52);
+    scene.add(door);
+    const win = new THREE.Mesh(new THREE.CircleGeometry(0.28, 12), M(0xbfe3ef, { emissive: 0x3a5866 }));
+    win.position.set(x, 3.6, z + 1.23);
+    scene.add(win);
+    // hub + 4 blades on the front face
+    const hub = new THREE.Group();
+    const hubBall = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), M(0x5b4030));
+    hub.add(hubBall);
+    const bladeM = M(0xf2ede2, { side: THREE.DoubleSide, roughness: 0.85 });
+    const armM = M(0x8a6844);
+    for (let i = 0; i < 4; i++) {
+      const arm = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.6, 0.1), armM);
+      arm.position.y = 1.3;
+      const blade = new THREE.Mesh(new THREE.PlaneGeometry(0.75, 2.1), bladeM);
+      blade.position.set(0.42, 1.5, 0);
+      const wing = new THREE.Group();
+      wing.add(arm); wing.add(blade);
+      wing.rotation.z = (i * Math.PI) / 2;
+      hub.add(wing);
+    }
+    hub.position.set(x, 5.4, z + 1.35);
+    scene.add(hub);
+    animated.push((t) => { hub.rotation.z = t * 0.55; });
+    col(x, z, 1.9);
+    spot(x - 2.6, z + 1.2, 1.4); spot(x + 2.4, z - 1.6, -2.2);
+  }
+
+  // ---------- balloon stand ----------
+  function balloons(scene, x, z) {
+    const cart = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.7, 0.6), M(0xd8535f, { roughness: 0.6 }));
+    cart.position.set(x, 0.45, z);
+    cart.castShadow = true;
+    scene.add(cart);
+    for (const wz of [-0.32, 0.32]) {
+      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.06, 12), M(0x3a3f4c));
+      wheel.rotation.x = Math.PI / 2;
+      wheel.position.set(x - 0.25, 0.16, z + wz);
+      scene.add(wheel);
+    }
+    const stringM = M(0xdddddd);
+    const cols = [0xff5d6c, 0xffb43a, 0x4cd97b, 0x3ecbe8, 0xf068c0];
+    cols.forEach((c, i) => {
+      const a = (i / cols.length) * Math.PI * 2;
+      const bx = Math.cos(a) * 0.28, bz = Math.sin(a) * 0.28;
+      const str = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 1.5, 4), stringM);
+      str.position.set(x + bx, 1.55, z + bz);
+      scene.add(str);
+      const b = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), M(c, { roughness: 0.3 }));
+      b.scale.y = 1.15;
+      scene.add(b);
+      const ph = i * 1.4;
+      animated.push((t) => {
+        b.position.set(
+          x + bx + Math.sin(t * 1.1 + ph) * 0.06,
+          2.42 + Math.sin(t * 1.7 + ph) * 0.08,
+          z + bz + Math.cos(t * 0.9 + ph) * 0.06
+        );
+      });
+    });
+    col(x, z, 0.55);
+  }
+
+  // ---------- birds circling overhead ----------
+  function birds(scene) {
+    for (let i = 0; i < 4; i++) {
+      const g = new THREE.Group();
+      const wm = M(0x3a3f4c, { side: THREE.DoubleSide });
+      const wingGeo = new THREE.PlaneGeometry(0.5, 0.2);
+      const w1 = new THREE.Mesh(wingGeo, wm);
+      const w2 = new THREE.Mesh(wingGeo, wm);
+      w1.position.x = -0.25; w2.position.x = 0.25;
+      g.add(w1); g.add(w2);
+      scene.add(g);
+      const cx = MU.rand(-25, 25), cz = MU.rand(-18, 18);
+      const r = MU.rand(10, 22), h = MU.rand(9, 15), sp = MU.rand(0.12, 0.22), ph = Math.random() * 9;
+      animated.push((t) => {
+        const flap = Math.sin(t * 9 + ph) * 0.7;
+        w1.rotation.y = flap; w2.rotation.y = -flap;
+        const a = t * sp + ph;
+        g.position.set(cx + Math.cos(a) * r, h + Math.sin(t * 0.7 + ph), cz + Math.sin(a) * r);
+        g.rotation.y = -a;
+      });
+    }
+  }
+
+  // ---------- small props ----------
+  function mushrooms(scene, x, z) {
+    for (let i = 0; i < 3; i++) {
+      const mx = x + MU.rand(-0.7, 0.7), mz = z + MU.rand(-0.7, 0.7);
+      const h = 0.14 + Math.random() * 0.12;
+      const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, h, 8), M(0xf2ede2));
+      stem.position.set(mx, h / 2, mz);
+      scene.add(stem);
+      const cap = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2), M(0xd8535f));
+      cap.position.set(mx, h, mz);
+      cap.castShadow = true;
+      scene.add(cap);
+    }
+  }
+  function stump(scene, x, z) {
+    const s = cyl(scene, 0.4, 0.5, 0.5, x, 0.25, z, M(0x7a5230, { roughness: 1 }), 14);
+    const top = new THREE.Mesh(new THREE.CircleGeometry(0.4, 14), M(0xc9a878));
+    top.rotation.x = -Math.PI / 2;
+    top.position.set(x, 0.51, z);
+    scene.add(top);
+    col(x, z, 0.55);
+  }
+  function pumpkin(scene, x, z) {
+    const p = new THREE.Mesh(new THREE.SphereGeometry(0.3, 14, 10), M(0xe8762c, { roughness: 0.6 }));
+    p.scale.y = 0.8;
+    p.position.set(x, 0.24, z);
+    p.castShadow = true;
+    scene.add(p);
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.06, 0.16, 8), M(0x3f7a3a));
+    stem.position.set(x, 0.52, z);
+    scene.add(stem);
+  }
+
   function rocks(scene) {
     const mat = M(0x8d93a3, { roughness: 0.9 });
     const mat2 = M(0x767c8c, { roughness: 0.9 });
@@ -501,6 +777,17 @@ window.WORLD3D = (function () {
     box(scene, 92.4, 0.14, 0.1, 0, 0.55, 31, fenceMat);
     box(scene, 0.1, 0.14, 62.4, -46, 0.55, 0, fenceMat);
     box(scene, 0.1, 0.14, 62.4, 46, 0.55, 0, fenceMat);
+
+    // new attractions
+    playground(scene, -33, 22);
+    pond(scene, -27, -23, 4.5);
+    windmill(scene, 42, 26);
+    balloons(scene, -3, -9);
+    birds(scene);
+    mushrooms(scene, -15, -21); mushrooms(scene, 11, -8); mushrooms(scene, 37, 20);
+    mushrooms(scene, -25, 3); mushrooms(scene, 8, 26);
+    stump(scene, -9, 14); stump(scene, 24, -27);
+    pumpkin(scene, 5, 15.6); pumpkin(scene, 29, -22.4); pumpkin(scene, -26.6, 3.6);
 
     rocks(scene);
     grassTufts(scene);

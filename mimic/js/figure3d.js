@@ -149,6 +149,28 @@ window.FIG3D = (function () {
     let labelSprite = null;
     let topY = 1.8;
     let paint = defaultPaint();
+    // animation state: composed every tick() so effects stack cleanly
+    const A = {
+      px: 0, pz: 0, py: 0, pyaw: 0,
+      mode: "idle",            // idle | walk | frozen
+      pop: 1,                  // spawn pop-in progress (1 = done)
+      wobble: 0,               // wrong-accusation shake timer
+      fall: 0, fallTarget: 0,  // caught fall-over progress
+      phase: Math.random() * 9,
+      headBaseY: 0, headBaseZ: 0,
+    };
+
+    function easeOutBack(t) {
+      const c = 1.70158;
+      return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2);
+    }
+    function easeOutBounce(t) {
+      const n1 = 7.5625, d1 = 2.75;
+      if (t < 1 / d1) return n1 * t * t;
+      if (t < 2 / d1) return n1 * (t -= 1.5 / d1) * t + 0.75;
+      if (t < 2.5 / d1) return n1 * (t -= 2.25 / d1) * t + 0.9375;
+      return n1 * (t -= 2.625 / d1) * t + 0.984375;
+    }
 
     const _dir = new THREE.Vector3();
     function place(mesh, a, b) {
@@ -186,12 +208,62 @@ window.FIG3D = (function () {
         parts.footR.position.set(LEG_X, j.footR.y + 0.02, j.footR.z);
         topY = Math.max(j.headC.y + 0.26, 1.3);
         marker.position.set(0, topY + 0.25, 0);
+        A.headBaseY = parts.head.position.y;
+        A.headBaseZ = parts.head.position.z;
         if (labelSprite) labelSprite.position.y = topY + 0.6;
       },
-      setPos(x, z, yaw) {
+      setPos(x, z, yaw, y) {
+        A.px = x; A.pz = z; A.pyaw = yaw || 0; A.py = y || 0;
         group.position.x = x;
         group.position.z = z;
-        group.rotation.y = yaw || 0;
+        group.rotation.y = A.pyaw;
+      },
+      setMode(m) { A.mode = m; },
+      pop() { A.pop = 0; },
+      wobble() { A.wobble = 0.6; },
+      // compose all animation layers; call once per frame
+      tick(t, dt) {
+        // spawn pop-in with overshoot
+        if (A.pop < 1) {
+          A.pop = Math.min(1, A.pop + dt * 2.4);
+          const s = 0.25 + 0.75 * easeOutBack(A.pop);
+          group.scale.setScalar(Math.max(0.05, s));
+        }
+        // fall over (caught) with a bounce; snap back up instantly on reset
+        if (A.fall < A.fallTarget) A.fall = Math.min(1, A.fall + dt * 1.9);
+        else if (A.fall > A.fallTarget) A.fall = 0;
+        const falling = A.fall > 0;
+        const fallRot = falling ? -Math.PI * 0.47 * easeOutBounce(A.fall) : 0;
+
+        // walk bounce-hop / idle breathing / statue stillness
+        let hopY = 0, lean = 0;
+        if (!falling) {
+          if (A.mode === "walk") {
+            hopY = Math.abs(Math.sin(t * 9 + A.phase)) * 0.075;
+            lean = 0.07;
+          } else if (A.mode === "idle") {
+            parts.head.position.y = A.headBaseY + Math.sin(t * 2.1 + A.phase) * 0.012;
+            hopY = Math.sin(t * 2.1 + A.phase) * 0.006;
+          }
+        }
+        if (A.mode !== "idle") parts.head.position.y = A.headBaseY;
+
+        // wrong-accusation wobble
+        let wob = 0;
+        if (A.wobble > 0) {
+          A.wobble = Math.max(0, A.wobble - dt);
+          wob = Math.sin(A.wobble * 34) * 0.16 * A.wobble;
+        }
+
+        group.position.y = (falling ? 0.42 * A.fall : 0) + A.py + hopY;
+        group.rotation.x = fallRot + lean;
+        group.rotation.z = wob;
+
+        // spotted ring pulse
+        if (ring.visible) {
+          const p = 1 + Math.sin(t * 10) * 0.12;
+          ring.scale.set(p, p, 1);
+        }
       },
       setPaint(p) {
         paint = Object.assign(defaultPaint(), p);
@@ -210,10 +282,7 @@ window.FIG3D = (function () {
         torsoTex.needsUpdate = true;
       },
       getPaint: () => paint,
-      setFallen(f) {
-        group.rotation.x = f ? -Math.PI / 2 + 0.12 : 0;
-        group.position.y = f ? 0.42 : 0;
-      },
+      setFallen(f) { A.fallTarget = f ? 1 : 0; },
       setLabel(text, color) {
         if (labelSprite) { group.remove(labelSprite); labelSprite = null; }
         if (text) {

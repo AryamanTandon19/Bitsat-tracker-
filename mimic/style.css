@@ -207,6 +207,19 @@ input:focus { border-color: var(--accent2); }
   pointer-events: none;
 }
 .hud-actions { display: flex; flex-direction: column; gap: 8px; }
+#btn-jump {
+  position: absolute;
+  right: 18px;
+  bottom: calc(140px + env(safe-area-inset-bottom));
+  width: 64px; height: 64px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,.2);
+  background: rgba(60,50,95,.5);
+  color: var(--ink);
+  font-size: 28px;
+  cursor: pointer;
+}
+#btn-jump:active { background: rgba(124,92,255,.7); }
 .hud-hint {
   flex: 1;
   text-align: center;

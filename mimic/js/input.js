@@ -5,7 +5,16 @@ window.INPUT = (function () {
   let stick = { x: 0, y: 0, active: false, pid: null, cx: 0, cy: 0 };
   let tapCb = null, orbitCb = null;
 
-  window.addEventListener("keydown", (e) => { keys[e.key.toLowerCase()] = true; });
+  let jumpQueued = false;
+
+  window.addEventListener("keydown", (e) => {
+    const k = e.key.toLowerCase();
+    if (k === " " || k.startsWith("arrow")) {
+      if (e.target === document.body) e.preventDefault(); // don't scroll the page
+    }
+    if (k === " " && !keys[" "]) jumpQueued = true;
+    keys[k] = true;
+  });
   window.addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
   window.addEventListener("blur", () => { for (const k in keys) keys[k] = false; });
 
@@ -74,6 +83,12 @@ window.INPUT = (function () {
   function init(canvas) {
     initJoystick();
     initCanvas(canvas);
+    const jb = document.getElementById("btn-jump");
+    if (jb) jb.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      SND.unlock();
+      jumpQueued = true;
+    });
   }
 
   // movement vector in screen space: x = strafe right, y = forward
@@ -98,6 +113,7 @@ window.INPUT = (function () {
 
   return {
     init, vec, orbitKeys,
+    jump() { const j = jumpQueued; jumpQueued = false; return j; },
     onTap(cb) { tapCb = cb; },
     onOrbit(cb) { orbitCb = cb; },
   };
