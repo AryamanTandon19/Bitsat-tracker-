@@ -63,6 +63,33 @@ window.SND = (function () {
     for (let i = 0; i < 3; i++) tone(4200 + Math.random() * 400, 0.03, "sine", 0.012, null, i * 0.07);
   }
 
+  // ---- lightweight generative music ----
+  let musicTimer = null, musicMode = null, beat = 0;
+  const PENTA = [220, 261.6, 293.7, 329.6, 392, 440, 523.3];
+  function setMusic(mode) {
+    if (mode === musicMode) return;
+    musicMode = mode;
+    beat = 0;
+    if (musicTimer) { clearInterval(musicTimer); musicTimer = null; }
+    if (!mode) return;
+    musicTimer = setInterval(() => {
+      if (!ctx || ctx.state !== "running" || document.hidden) return;
+      beat++;
+      if (musicMode === "setup") {
+        // relaxed marimba-ish plucks
+        if (beat % 2 === 0 && Math.random() < 0.75) {
+          tone(PENTA[(Math.random() * PENTA.length) | 0], 0.28, "triangle", 0.028);
+        }
+        if (beat % 8 === 0) tone(110, 0.6, "sine", 0.03);
+      } else if (musicMode === "hunt") {
+        // tense low pulse
+        if (beat % 4 === 0) tone(55, 0.3, "sine", 0.05, 50);
+        if (beat % 4 === 2) tone(58.3, 0.22, "sine", 0.035);
+        if (beat % 16 === 7) tone(466, 0.5, "sine", 0.018, 440);
+      }
+    }, 240);
+  }
+
   function setAmbient(mode) {
     if (mode === ambientMode) return;
     ambientMode = mode;
@@ -91,7 +118,9 @@ window.SND = (function () {
     whoosh()  { noise(0.22, 0.07, 500, 0.8, 1600); },
     thud()    { noise(0.12, 0.1, 160, 1); tone(90, 0.12, "sine", 0.08, 55); },
     heart()   { tone(58, 0.12, "sine", 0.14, 42); setTimeout(() => tone(52, 0.14, "sine", 0.11, 38), 160); },
-    // ambient soundscape
-    setAmbient,
+    throw_()  { noise(0.16, 0.06, 900, 0.9, 300); },
+    pop()     { tone(720, 0.07, "square", 0.06, 900); },
+    // ambient soundscape + music
+    setAmbient, setMusic,
   };
 })();

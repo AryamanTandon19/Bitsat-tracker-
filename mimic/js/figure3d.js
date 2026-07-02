@@ -150,6 +150,9 @@ window.FIG3D = (function () {
     let topY = 1.8;
     let paint = defaultPaint();
     let emoteSprite = null, emoteT = 0;
+    let hatGroup = null, hatName = "none";
+    // pose blending (walk -> statue transitions)
+    let curPose = null, blendFrom = null, blendTo = null, blendT = 1;
     // animation state: composed every tick() so effects stack cleanly
     const A = {
       px: 0, pz: 0, py: 0, pyaw: 0,
@@ -181,9 +184,37 @@ window.FIG3D = (function () {
       mesh.quaternion.setFromUnitVectors(UP, _dir.multiplyScalar(1 / len));
     }
 
+    function lerpAngle(a, b, t) {
+      let d = b - a;
+      while (d > Math.PI) d -= 2 * Math.PI;
+      while (d < -Math.PI) d += 2 * Math.PI;
+      return a + d * t;
+    }
+    function lerpPose(p1, p2, t) {
+      const o = {};
+      for (const k in p2) o[k] = lerpAngle(p1[k] != null ? p1[k] : p2[k], p2[k], t);
+      return o;
+    }
+
     const rig = {
       group, mats,
-      setPose(pose) {
+      // snap=true applies instantly (walk cycle frames); otherwise blends
+      setPose(pose, snap) {
+        if (snap || !curPose) {
+          curPose = pose;
+          blendT = 1;
+          applyPose(pose);
+        } else {
+          blendFrom = curPose;
+          blendTo = pose;
+          blendT = 0;
+        }
+      },
+      applyPose,
+    };
+
+    function applyPose(pose) {
+        curPose = pose;
         const J = FIG.joints(pose);
         // 2D (x right, y down) -> local 3D (z forward, y up), uniform scale
         const j = {};
@@ -212,7 +243,13 @@ window.FIG3D = (function () {
         A.headBaseY = parts.head.position.y;
         A.headBaseZ = parts.head.position.z;
         if (labelSprite) labelSprite.position.y = topY + 0.6;
-      },
+        if (hatGroup) {
+          hatGroup.position.copy(parts.head.position);
+          hatGroup.rotation.copy(parts.head.rotation);
+        }
+    }
+
+    Object.assign(rig, {
       setPos(x, z, yaw, y) {
         A.px = x; A.pz = z; A.pyaw = yaw || 0; A.py = y || 0;
         group.position.x = x;
@@ -224,6 +261,17 @@ window.FIG3D = (function () {
       wobble() { A.wobble = 0.6; },
       // compose all animation layers; call once per frame
       tick(t, dt) {
+        // pose transition blending (walk -> statue etc.)
+        if (blendT < 1 && blendTo) {
+          blendT = Math.min(1, blendT + dt / 0.22);
+          applyPose(blendT >= 1 ? blendTo : lerpPose(blendFrom, blendTo, blendT));
+        }
+        // flinch hop physics
+        if (A.fvy || A.fy) {
+          A.fvy = (A.fvy || 0) - 11 * dt;
+          A.fy = Math.max(0, (A.fy || 0) + A.fvy * dt);
+          if (A.fy === 0 && A.fvy < 0) A.fvy = 0;
+        }
         // spawn pop-in with overshoot
         if (A.pop < 1) {
           A.pop = Math.min(1, A.pop + dt * 2.4);
@@ -256,7 +304,7 @@ window.FIG3D = (function () {
           wob = Math.sin(A.wobble * 34) * 0.16 * A.wobble;
         }
 
-        group.position.y = (falling ? 0.42 * A.fall : 0) + A.py + hopY;
+        group.position.y = (falling ? 0.42 * A.fall : 0) + A.py + hopY + (A.fy || 0);
         group.rotation.x = fallRot + lean;
         group.rotation.z = wob;
 
@@ -337,6 +385,20 @@ window.FIG3D = (function () {
         }
       },
       setVisible(v) { group.visible = v; },
+      setHat(name) {
+        if (name === hatName) return;
+        hatName = name;
+        if (hatGroup) { group.remove(hatGroup); hatGroup = null; }
+        if (!name || name === "none") return;
+        hatGroup = buildHat(name);
+        hatGroup.position.copy(parts.head.position);
+        group.add(hatGroup);
+      },
+      // startled hop + wobble (hit by a seeker ball, or a ghost's nudge)
+      flinch() {
+        A.wobble = 0.55;
+        A.fvy = 2.4;
+      },
       hitMesh: hit,
       dispose() {
         scene.remove(group);
@@ -345,10 +407,67 @@ window.FIG3D = (function () {
         });
         torsoTex.dispose();
       },
-    };
+    });
     rig.setPose(FIG.defaultPose());
     rig.setPaint(defaultPaint());
     return rig;
+  }
+
+  // ---------- procedural hats ----------
+  const HATS = ["none", "cap", "party", "tophat", "crown", "halo"];
+  function buildHat(name) {
+    const g = new THREE.Group();
+    const r = RAD.head;
+    if (name === "cap") {
+      const dome = new THREE.Mesh(
+        new THREE.SphereGeometry(r * 1.02, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2.6),
+        std({ color: 0xd8535f })
+      );
+      dome.position.y = r * 0.28;
+      g.add(dome);
+      const brim = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.75, r * 0.75, 0.02, 14), std({ color: 0xb03a46 }));
+      brim.position.set(0, r * 0.42, r * 0.9);
+      g.add(brim);
+    } else if (name === "party") {
+      const cone = new THREE.Mesh(new THREE.ConeGeometry(r * 0.65, r * 1.9, 12), std({ color: 0x3ecbe8 }));
+      cone.position.y = r * 1.55;
+      cone.rotation.z = 0.12;
+      g.add(cone);
+      const pom = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), std({ color: 0xffe066 }));
+      pom.position.set(-0.028, r * 2.5, 0);
+      g.add(pom);
+    } else if (name === "tophat") {
+      const tube = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.78, r * 0.82, r * 1.5, 14), std({ color: 0x26222e }));
+      tube.position.y = r * 1.3;
+      g.add(tube);
+      const brim = new THREE.Mesh(new THREE.CylinderGeometry(r * 1.35, r * 1.35, 0.03, 16), std({ color: 0x26222e }));
+      brim.position.y = r * 0.6;
+      g.add(brim);
+      const band = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.84, r * 0.84, 0.09, 14), std({ color: 0xd8535f }));
+      band.position.y = r * 0.75;
+      g.add(band);
+    } else if (name === "crown") {
+      const mat = std({ color: 0xf5c93c, metalness: 0.7, roughness: 0.25 });
+      const ringM = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.85, r * 0.9, r * 0.5, 12, 1, true), mat);
+      ringM.position.y = r * 0.85;
+      g.add(ringM);
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * Math.PI * 2;
+        const spike = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.13, 6), mat);
+        spike.position.set(Math.cos(a) * r * 0.85, r * 1.18, Math.sin(a) * r * 0.85);
+        g.add(spike);
+      }
+    } else if (name === "halo") {
+      const halo = new THREE.Mesh(
+        new THREE.TorusGeometry(r * 0.8, 0.035, 8, 24),
+        std({ color: 0xffe066, emissive: 0xbb8a1f, metalness: 0.4 })
+      );
+      halo.rotation.x = Math.PI / 2;
+      halo.position.y = r * 1.9;
+      g.add(halo);
+    }
+    g.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+    return g;
   }
 
   function createPedestal(scene, x, z) {
@@ -362,5 +481,5 @@ window.FIG3D = (function () {
     return m;
   }
 
-  return { create, createPedestal, defaultPaint, randomPaint, PALETTE };
+  return { create, createPedestal, defaultPaint, randomPaint, PALETTE, HATS };
 })();

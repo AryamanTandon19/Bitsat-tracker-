@@ -8,7 +8,8 @@ window.GAME = (function () {
   const SETUP_MS = 45000, HUNT_MS = 100000, RESULTS_MS = 8000;
   const CONE_RANGE = 11, ACCUSE_RANGE = 4.4, ORB_PICK = 1.15, PAINT_RANGE = 4.5;
   const SPEED = { setup: 4.8, hunt: 1.55, seeker: 3.4, spec: 11 };
-  const PTS = { orb: 10, survive: 25, catch: 30, wrong: -10, sweep: 20 };
+  const PTS = { orb: 10, survive: 25, catch: 30, wrong: -10, sweep: 20, dare: 5 };
+  const BALLS_PER_ROUND = 3, BALL_RADIUS = 2.4, BALL_RANGE = 15;
   const TIPS = [
     "Watch for statues that twitch when your light passes…",
     "Wrong accusations cost 10 points. Stare first, tap second.",
@@ -35,6 +36,8 @@ window.GAME = (function () {
       sendAcc: 0, snapAcc: 0, keepAcc: 0, botAcc: 0, dpaintAcc: 0,
       lastAccuse: 0, lastSpotSnd: 0, msgT: 0, time: 0,
       paintTarget: null, pendingDpaint: null,
+      aiming: false, fx: [], dangerSince: 0, appliedTheme: null,
+      wasHost: false, tut: null,
     };
   }
 
@@ -75,19 +78,20 @@ window.GAME = (function () {
   // =============== round lifecycle (host only) ===============
   function botRosterEntry(i) {
     const b = AI.createBot(i);
-    return { id: b.id, name: b.name + " 🤖", color: b.color, bot: true };
+    const hat = Math.random() < 0.35 ? FIG3D.HATS[1 + ((Math.random() * (FIG3D.HATS.length - 1)) | 0)] : "none";
+    return { id: b.id, name: b.name + " 🤖", color: b.color, bot: true, hat };
   }
 
   function buildRoster() {
     let roster;
     if (L.mode === "solo") {
       roster = [
-        { id: "me", name: L.profile.name, color: L.profile.color },
+        { id: "me", name: L.profile.name, color: L.profile.color, hat: L.profile.hat || "none" },
         { id: "ai", name: "Inspector Botto", color: "#c9b458", bot: true, aiSeeker: true },
       ];
       for (let i = 0; i < 3; i++) roster.push(botRosterEntry(i));
     } else {
-      roster = NET.players().map((p) => ({ id: p.id, name: p.name, color: p.color }));
+      roster = NET.players().map((p) => ({ id: p.id, name: p.name, color: p.color, hat: p.hat || "none" }));
       const nBots = Math.max(0, 4 - roster.length);
       for (let i = 0; i < nBots; i++) roster.push(botRosterEntry(i));
     }
@@ -95,9 +99,11 @@ window.GAME = (function () {
   }
 
   function hostStartMatch() {
+    if (L) L.xpAwarded = false;
     const roster = buildRoster();
     S = {
       phase: "setup", endsAt: 0,
+      theme: MU.choice(WORLD3D.THEME_NAMES),
       round: 0,
       totalRounds: L.mode === "solo" ? 3 : Math.min(6, Math.max(2, humans(roster).length)),
       seed: 1, seekerId: null, roster,
@@ -114,6 +120,7 @@ window.GAME = (function () {
     S.endsAt = now() + SETUP_MS;
     S.seed = (Math.random() * 1e9) | 0;
     S.cleared = {}; S.caught = {}; S.orbs = []; S.deltas = {};
+    S.balls = BALLS_PER_ROUND; S.nudges = {}; S.dareCd = {};
 
     if (L.mode !== "solo") {
       S.roster = buildRoster();
@@ -138,6 +145,7 @@ window.GAME = (function () {
       yaw: Math.round((sp.yaw + (rng() - 0.5) * 0.8) * 100) / 100,
       pose: serializePose(FIG.randomPose(rng)),
       paint: FIG3D.randomPaint(rng),
+      hat: rng() < 0.3 ? FIG3D.HATS[1 + ((rng() * (FIG3D.HATS.length - 1)) | 0)] : "none",
     }));
 
     // spawn bot hiders
@@ -235,6 +243,56 @@ window.GAME = (function () {
     hostBroadcast();
   }
 
+  function hostResolveBall(throwerId, x0, z0, x1, z1) {
+    if (S.phase !== "hunt" || throwerId !== S.seekerId || S.balls <= 0) return;
+    S.balls--;
+    const payload = { x0, z0, x1, z1, from: throwerId };
+    if (L.mode !== "solo") NET.send("balln", payload);
+    onBall(payload);
+    // resolve hits when the ball lands (0.75s flight)
+    setTimeout(() => {
+      if (!S || S.phase !== "hunt") return;
+      for (const id of hiderIds()) {
+        const pl = L.players[id];
+        if (!pl || S.caught[id]) continue;
+        if (Math.hypot(pl.x - x1, pl.z - z1) < BALL_RADIUS) {
+          const fl = { id };
+          if (L.mode !== "solo") NET.send("flinch", fl);
+          onFlinch(fl);
+        }
+      }
+      hostBroadcast();
+    }, 750);
+  }
+
+  function hostResolveDare(playerId) {
+    if (S.phase !== "hunt" || S.caught[playerId]) return;
+    const t = now();
+    if (S.dareCd[playerId] && t - S.dareCd[playerId] < 10000) return;
+    const pl = L.players[playerId];
+    const sp = seekerPos();
+    if (!pl || !sp || dist2(pl, sp) > CONE_RANGE + 2) return; // must actually be near
+    S.dareCd[playerId] = t;
+    S.scores[playerId] = (S.scores[playerId] || 0) + PTS.dare;
+    S.deltas[playerId] = (S.deltas[playerId] || 0) + PTS.dare;
+    if (L.mode !== "solo") NET.send("dared", { id: playerId });
+    onDared({ id: playerId });
+    hostBroadcast();
+  }
+
+  function hostResolveNudge(ghostId, decoyId) {
+    if (S.phase !== "hunt") return;
+    if (!S.caught[ghostId]) return;          // only ghosts may nudge
+    if (S.nudges[ghostId]) return;           // once per round
+    const d = S.decoys.find((d) => d.id === decoyId);
+    if (!d || S.cleared[decoyId]) return;
+    S.nudges[ghostId] = true;
+    const payload = { id: decoyId };
+    if (L.mode !== "solo") NET.send("nudge2", payload);
+    onNudge(payload);
+    hostBroadcast();
+  }
+
   function hostApplyDecoyPaint(id, paint) {
     const d = S.decoys.find((d) => d.id === id);
     if (!d || S.phase !== "setup") return;
@@ -253,8 +311,15 @@ window.GAME = (function () {
         if (alive < 3 && (!S.nextOrbAt || t >= S.nextOrbAt)) {
           if (S.nextOrbAt) {
             const sp = seekerPos();
+            // spawn in the seeker's general area: reward = risk
             let p = WORLD3D.randomOpenSpot();
-            if (sp && dist2(p, sp) < 8) p = WORLD3D.randomOpenSpot();
+            if (sp) {
+              for (let i = 0; i < 8; i++) {
+                const a = Math.random() * Math.PI * 2, r = MU.rand(6, 13);
+                const q = WORLD3D.clampPos({ x: sp.x + Math.cos(a) * r, z: sp.z + Math.sin(a) * r });
+                if (dist2(q, sp) > 4) { p = q; break; }
+              }
+            }
             S.orbs.push({
               id: "o" + ((Math.random() * 1e6) | 0),
               x: Math.round(p.x * 10) / 10, z: Math.round(p.z * 10) / 10,
@@ -309,6 +374,20 @@ window.GAME = (function () {
       onVerdict(p);
     } else if (t === "orbtaken") {
       onOrbTaken(p);
+    } else if (t === "ball") {
+      if (isHost()) hostResolveBall(p.from, p.x0, p.z0, p.x1, p.z1);
+    } else if (t === "balln") {
+      onBall(p);
+    } else if (t === "flinch") {
+      onFlinch(p);
+    } else if (t === "dare") {
+      if (isHost()) hostResolveDare(p.from);
+    } else if (t === "dared") {
+      onDared(p);
+    } else if (t === "nudge") {
+      if (isHost()) hostResolveNudge(p.from, p.id);
+    } else if (t === "nudge2") {
+      onNudge(p);
     } else if (t === "emote") {
       const rig = L.rigs[p.from];
       if (rig) rig.showEmote(p.e);
@@ -374,6 +453,28 @@ window.GAME = (function () {
     }
   }
 
+  function onBall(p) {
+    SND.throw_();
+    L.fx.push({ type: "ball", x0: p.x0, z0: p.z0, x1: p.x1, z1: p.z1, t: 0 });
+  }
+
+  function onFlinch(p) {
+    const rig = L.rigs[p.id];
+    if (rig) rig.flinch();
+    SND.pop();
+    if (p.id === L.meId) showMsg("💥 The ball got you — you flinched!", 2);
+  }
+
+  function onDared(p) {
+    if (p.id === L.meId) { SND.orb(); showMsg("😎 Nerves of steel! +" + PTS.dare, 1.6); }
+  }
+
+  function onNudge(p) {
+    const rig = L.rigs[p.id];
+    if (rig) rig.flinch();
+    SND.pop();
+  }
+
   function onOrbTaken(p) {
     if (!S) return;
     const o = S.orbs.find((o) => o.id === p.id);
@@ -397,6 +498,12 @@ window.GAME = (function () {
     if (phase === "setup") {
       SND.phase();
       SND.setAmbient("day");
+      SND.setMusic("setup");
+      if (S.theme && S.theme !== L.appliedTheme) {
+        // new map theme: rebuild the world (rigs live outside the world group)
+        RENDER3D.setTheme(S.theme);
+        L.appliedTheme = S.theme;
+      }
       RENDER3D.setMood("day");
       RENDER3D.clearOrbs();
       if (myRole() !== "spectator") {
@@ -427,18 +534,23 @@ window.GAME = (function () {
       SND.phase();
       SND.click(); // flashlight snaps on
       SND.setAmbient("dusk");
+      SND.setMusic("hunt");
       RENDER3D.setMood("dusk");
       ui.cover.classList.add("hidden");
       if (myRole() === "seeker") showMsg("🔦 Find the fakes! Tap a statue to accuse", 3);
       else if (myRole() === "hider") showMsg("FREEZE! Don't get caught 🤫", 3);
     } else if (phase === "results") {
+      SND.setMusic(null);
       showResults(false);
     } else if (phase === "final") {
+      SND.setMusic(null);
       SND.win();
+      awardXp();
       showResults(true);
     } else if (phase === "lobby") {
       S = null;
       SND.setAmbient(null);
+      SND.setMusic(null);
       disposeRigs();
       cb.showLobby();
     }
@@ -455,6 +567,21 @@ window.GAME = (function () {
     if (!S || !L) return;
     L.time += dt;
     if (L.msgT && L.time > L.msgT) { ui.msg.classList.add("hidden"); L.msgT = 0; }
+
+    // host migration: if we just inherited host duty, adopt the bots
+    const hostNow = isHost();
+    if (hostNow && !L.wasHost && L.mode !== "solo" && (S.phase === "setup" || S.phase === "hunt")) {
+      for (const p of S.roster) {
+        if (!p.bot || p.id === S.seekerId || L.bots[p.id]) continue;
+        const b = AI.createBot(parseInt(p.id.slice(3), 10) || 0);
+        b.id = p.id;
+        const pl = L.players[p.id];
+        if (pl) { b.x = pl.x; b.z = pl.z; b.yaw = pl.yaw; b.pose = pl.pose; b.paint = pl.paint; }
+        else L.players[p.id] = { x: b.x, z: b.z, yaw: b.yaw, pose: b.pose, paint: b.paint, mv: 0, lastMoveAt: 0 };
+        L.bots[p.id] = b;
+      }
+    }
+    L.wasHost = hostNow;
 
     hostTick();
     const role = myRole();
@@ -551,7 +678,14 @@ window.GAME = (function () {
         if (inDanger !== L.inDanger) {
           L.inDanger = inDanger;
           ui.danger.classList.toggle("on", !!inDanger);
-          if (inDanger && navigator.vibrate) navigator.vibrate(80);
+          if (inDanger) {
+            L.dangerSince = L.time;
+            if (navigator.vibrate) navigator.vibrate(80);
+          } else if (L.time - L.dangerSince > 1.1 && !S.caught[L.meId]) {
+            // survived the light: claim the close-call bonus
+            if (isHost()) hostResolveDare(L.meId);
+            else NET.send("dare", {});
+          }
         }
         if (inDanger) {
           L.heartAcc = (L.heartAcc || 0) + dt;
@@ -560,6 +694,15 @@ window.GAME = (function () {
       } else if (L.inDanger) {
         L.inDanger = false;
         ui.danger.classList.remove("on");
+      }
+
+      // camouflage hint during setup: how much do you stand out here?
+      if (role === "hider" && S.phase === "setup") {
+        L.blendAcc = (L.blendAcc || 0) + dt;
+        if (L.blendAcc > 0.8) {
+          L.blendAcc = 0;
+          updateBlendHint(meP);
+        }
       }
 
       // hider orb pickup
@@ -614,10 +757,70 @@ window.GAME = (function () {
       }
     }
 
+    tickBalls(dt);
+    tickTutorial();
     netFlush(dt);
     syncRigs(dt);
     syncCamera(dt, role, meP);
     syncHud();
+  }
+
+  // lobbed ball projectiles (visual on every client)
+  function tickBalls(dt) {
+    for (let i = L.fx.length - 1; i >= 0; i--) {
+      const f = L.fx[i];
+      f.t += dt / 0.75;
+      if (!f.mesh) {
+        f.mesh = new THREE.Mesh(
+          new THREE.SphereGeometry(0.14, 12, 10),
+          new THREE.MeshStandardMaterial({ color: 0xffd166, roughness: 0.4 })
+        );
+        f.mesh.castShadow = true;
+        RENDER3D.scene().add(f.mesh);
+      }
+      if (f.t >= 1) {
+        RENDER3D.burst(f.x1, 0.3, f.z1, 0xffd166, 10, { spread: 1.8, up: 1.2, size: 0.1 });
+        RENDER3D.scene().remove(f.mesh);
+        f.mesh.geometry.dispose();
+        L.fx.splice(i, 1);
+        continue;
+      }
+      const t = f.t;
+      f.mesh.position.set(
+        MU.lerp(f.x0, f.x1, t),
+        1.4 + Math.sin(t * Math.PI) * 3.2, // arc
+        MU.lerp(f.z0, f.z1, t)
+      );
+    }
+  }
+
+  // "you stand out!" camouflage feedback vs the 3 nearest mannequins
+  function updateBlendHint(meP) {
+    const near = S.decoys
+      .map((d) => ({ d, dist: dist2(d, meP) }))
+      .sort((a, b) => a.dist - b.dist)
+      .slice(0, 3);
+    if (!near.length || near[0].dist > 9) {
+      ui.blend.textContent = "🚶 No mannequins nearby";
+      ui.blend.className = "hud-chip blend-bad";
+      return;
+    }
+    const mine = meP.paint;
+    const rgb = (hex) => [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)];
+    let diff = 0, cnt = 0;
+    for (const { d } of near) {
+      for (const part of ["torso", "head", "armL", "legL"]) {
+        try {
+          const a = rgb(mine[part]), b = rgb(d.paint[part]);
+          diff += Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+          cnt++;
+        } catch (e) {}
+      }
+    }
+    const avg = cnt ? diff / cnt : 999;
+    if (avg < 90) { ui.blend.textContent = "🦎 Blending in!"; ui.blend.className = "hud-chip blend-good"; }
+    else if (avg < 190) { ui.blend.textContent = "🤔 Could blend better"; ui.blend.className = "hud-chip blend-mid"; }
+    else { ui.blend.textContent = "⚠️ You stand out!"; ui.blend.className = "hud-chip blend-bad"; }
   }
 
   function aiFigureList() {
@@ -730,6 +933,7 @@ window.GAME = (function () {
         rig._paint = d.paint;
       }
       rig.setCleared(!!S.cleared[d.id]);
+      rig.setHat(d.hat || "none");
       rig.setMode("frozen");
       rig.tick(L.time, dt);
     }
@@ -758,10 +962,10 @@ window.GAME = (function () {
       rig.setFallen(caught);
       const moving = pl.mv && (isMe || tNow - pl.lastMoveAt < 300);
       if (moving && !caught) {
-        rig.setPose(walkCycle(pl.pose, tNow));
+        rig.setPose(walkCycle(pl.pose, tNow), true); // snap: per-frame anim
         rig._pose = null;
       } else if (rig._pose !== pl.pose) {
-        rig.setPose(pl.pose);
+        rig.setPose(pl.pose); // blend into the statue pose
         rig._pose = pl.pose;
       }
       if (rig._paint !== pl.paint) {
@@ -787,6 +991,7 @@ window.GAME = (function () {
       }
 
       rig.setMarker(isMe && !caught, p.color);
+      rig.setHat(p.hat || "none");
 
       // twitch flash ring for seeker & spectators
       let flashOn = false;
@@ -801,8 +1006,9 @@ window.GAME = (function () {
       seen["ai"] = true;
       const rig = ensureRig("ai");
       rig.setPos(L.aiSeeker.x, L.aiSeeker.z, L.aiSeeker.yaw);
-      rig.setPose(L.aiSeeker.mv ? walkCycle(FIG.defaultPose(), tNow) : FIG.defaultPose());
-      rig._pose = null;
+      if (L.aiSeeker.mv) rig.setPose(walkCycle(FIG.defaultPose(), tNow), true);
+      else if (rig._pose !== "idle") { rig.setPose(FIG.defaultPose()); rig._pose = "idle"; }
+      if (L.aiSeeker.mv) rig._pose = null;
       rig.setMode(L.aiSeeker.mv ? "walk" : "idle");
       rig.tick(L.time, dt);
       if (!rig._painted) {
@@ -848,6 +1054,43 @@ window.GAME = (function () {
     if (!S) return;
     const role = myRole();
     const meP = me();
+
+    // ghost mischief: caught players may nudge ONE mannequin per round
+    if (S.phase === "hunt" && role === "spectator" && S.caught[L.meId] && !(S.nudges || {})[L.meId]) {
+      const meshes = [];
+      for (const d of S.decoys) {
+        if (S.cleared[d.id]) continue;
+        const rig = L.rigs[d.id];
+        if (rig) meshes.push(rig.hitMesh);
+      }
+      const id = RENDER3D.pickFigure(sx, sy, meshes);
+      if (id) {
+        if (isHost()) hostResolveNudge(L.meId, id);
+        else NET.send("nudge", { id });
+        showMsg("👻 Nudged! Let the seeker wonder…", 2);
+        return;
+      }
+    }
+
+    // seeker aiming a ball throw: tap = target on the ground
+    if (S.phase === "hunt" && role === "seeker" && L.aiming && meP) {
+      const pt = RENDER3D.pickGround(sx, sy);
+      L.aiming = false;
+      ui.ballBtn.classList.remove("aiming");
+      if (pt) {
+        const d = Math.hypot(pt.x - meP.x, pt.z - meP.z);
+        if (d > BALL_RANGE) {
+          const k = BALL_RANGE / d;
+          pt.x = meP.x + (pt.x - meP.x) * k;
+          pt.z = meP.z + (pt.z - meP.z) * k;
+        }
+        const payload = { x0: meP.x, z0: meP.z, x1: Math.round(pt.x * 10) / 10, z1: Math.round(pt.z * 10) / 10 };
+        if (isHost()) hostResolveBall(L.meId, payload.x0, payload.z0, payload.x1, payload.z1);
+        else NET.send("ball", payload);
+      }
+      syncHud();
+      return;
+    }
 
     if (S.phase === "setup" && role === "hider" && meP) {
       const meshes = [];
@@ -954,11 +1197,18 @@ window.GAME = (function () {
       !(role === "seeker" && S.phase === "setup") && !panelOpen;
     ui.jumpBtn.classList.toggle("hidden", !canJump);
     ui.emoteCol.classList.toggle("hidden", !canJump);
+    const showBall = role === "seeker" && S.phase === "hunt";
+    ui.ballBtn.classList.toggle("hidden", !showBall);
+    if (showBall) ui.ballBtn.textContent = "🎾 " + (S.balls != null ? S.balls : 0);
+    if (S.balls === 0) ui.ballBtn.classList.remove("aiming");
+    ui.blend.classList.toggle("hidden", !(role === "hider" && S.phase === "setup"));
 
     let hint = "";
     if (setupHider) hint = "Move 🕹 · drag to look · tap mannequins to repaint";
-    else if (S.phase === "hunt" && role === "seeker") hint = "Tap a statue to accuse it";
+    else if (S.phase === "hunt" && role === "seeker") hint = "Tap a statue to accuse · 🎾 throws make real players flinch";
     else if (S.phase === "hunt" && role === "hider") hint = "Sneak when the light is off you. Grab ✨ orbs!";
+    else if (role === "spectator" && S.phase === "hunt" && S.caught && S.caught[L.meId] && !(S.nudges || {})[L.meId])
+      hint = "👻 Tap a mannequin to nudge it (once!) and mess with the seeker";
     else if (role === "spectator") hint = "🕹 to fly around · drag to orbit";
     ui.hint.textContent = hint;
   }
@@ -986,9 +1236,127 @@ window.GAME = (function () {
     });
     ui.resultsNext.textContent = final ? "" : "Next round starting soon…";
     ui.resultsFinalBtns.classList.toggle("hidden", !final);
+    ui.shareBtn.classList.toggle("hidden", !final);
     ui.btnAgain.classList.toggle("hidden", final && L.mode !== "solo" && !isHost());
     ui.btnAgain.textContent = L.mode === "solo" ? "↻ Play Again" : "↻ Back to Lobby";
     ui.results.classList.remove("hidden");
+  }
+
+  // ---- local progression: XP, level, stats (no account needed) ----
+  function loadStats() {
+    try { return JSON.parse(localStorage.getItem("mimic-stats")) || { xp: 0, games: 0, wins: 0 }; }
+    catch (e) { return { xp: 0, games: 0, wins: 0 }; }
+  }
+  function saveStats(st) {
+    try { localStorage.setItem("mimic-stats", JSON.stringify(st)); } catch (e) {}
+  }
+  function levelFor(xp) { return Math.floor(Math.sqrt(xp / 60)) + 1; }
+
+  function awardXp() {
+    if (L.xpAwarded) return;
+    L.xpAwarded = true;
+    const st = loadStats();
+    const myScore = Math.max(0, S.scores[L.meId] || 0);
+    const sorted = S.roster.slice().sort((a, b) => (S.scores[b.id] || 0) - (S.scores[a.id] || 0));
+    const won = sorted[0] && sorted[0].id === L.meId;
+    const before = levelFor(st.xp);
+    st.xp += myScore + (won ? 30 : 10);
+    st.games++;
+    if (won) st.wins++;
+    saveStats(st);
+    const after = levelFor(st.xp);
+    if (after > before) setTimeout(() => showMsg("🎉 LEVEL UP! You're now level " + after, 4), 1500);
+    if (window.MIMIC_ON_STATS) window.MIMIC_ON_STATS(st);
+  }
+
+  // ---- shareable result card (canvas image -> share sheet / download) ----
+  function buildShareCard() {
+    const c = document.createElement("canvas");
+    c.width = 1080; c.height = 1080;
+    const x = c.getContext("2d");
+    const bg = x.createLinearGradient(0, 0, 0, 1080);
+    bg.addColorStop(0, "#2c2542");
+    bg.addColorStop(1, "#16131f");
+    x.fillStyle = bg;
+    x.fillRect(0, 0, 1080, 1080);
+    x.textAlign = "center";
+    x.fillStyle = "#ffb43a";
+    x.font = "900 130px 'Trebuchet MS', sans-serif";
+    x.fillText("MIMIC!", 540, 170);
+    x.fillStyle = "#9d93b8";
+    x.font = "700 40px 'Trebuchet MS', sans-serif";
+    x.fillText("pose · paint · freeze · survive", 540, 235);
+    const sorted = S.roster
+      .map((p) => ({ ...p, pts: S.scores[p.id] || 0 }))
+      .sort((a, b) => b.pts - a.pts)
+      .slice(0, 6);
+    x.font = "900 56px 'Trebuchet MS', sans-serif";
+    sorted.forEach((p, i) => {
+      const y = 360 + i * 100;
+      x.fillStyle = i === 0 ? "rgba(255,180,58,.16)" : "rgba(255,255,255,.05)";
+      x.beginPath();
+      x.roundRect(90, y - 62, 900, 86, 20);
+      x.fill();
+      x.fillStyle = p.color || "#fff";
+      x.beginPath();
+      x.arc(150, y - 20, 22, 0, Math.PI * 2);
+      x.fill();
+      x.fillStyle = "#f2eefc";
+      x.textAlign = "left";
+      const medal = ["🥇", "🥈", "🥉"][i] || "  ";
+      x.fillText(medal + " " + p.name.slice(0, 14), 200, y);
+      x.textAlign = "right";
+      x.fillStyle = "#ffb43a";
+      x.fillText(String(p.pts), 980, y);
+      x.textAlign = "center";
+    });
+    x.fillStyle = "#7c5cff";
+    x.font = "700 42px 'Trebuchet MS', sans-serif";
+    x.fillText("Can you spot the fake statue?", 540, 1000);
+    return c;
+  }
+
+  async function shareResult() {
+    const c = buildShareCard();
+    const blob = await new Promise((res) => c.toBlob(res, "image/png"));
+    const file = new File([blob], "mimic-result.png", { type: "image/png" });
+    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: "MIMIC!", text: "Can you spot the fake statue? 🗿" }); return; }
+      catch (e) { /* user cancelled -> fall through to download */ }
+    }
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "mimic-result.png";
+    a.click();
+  }
+
+  // ---- first-run tutorial (solo): step-by-step toasts ----
+  function startTutorial() {
+    if (localStorage.getItem("mimic-tut")) return;
+    L.tut = { step: 0, t: 0 };
+  }
+  function tickTutorial() {
+    if (!L.tut || !S) return;
+    const meP = me();
+    const t = L.tut;
+    const steps = [
+      { msg: "👋 Welcome! Drag the joystick (or WASD) to walk around", done: () => meP && meP.mv },
+      { msg: "Nice! Now tap 🖐 Pose and strike a statue pose", done: () => POSE_EDITOR.isOpen() },
+      { msg: "Tap 🎨 Paint to colour yourself like the mannequins", done: () => PAINT.isOpen() },
+      { msg: "When dusk falls: FREEZE. Move only when the light is away. Good luck! 🤫", done: () => S.phase === "hunt" },
+    ];
+    if (t.step >= steps.length) {
+      try { localStorage.setItem("mimic-tut", "1"); } catch (e) {}
+      L.tut = null;
+      return;
+    }
+    L.tutMsgAcc = (L.tutMsgAcc || 0) + 1;
+    if (L.tutMsgAcc > 200 || t.shownStep !== t.step) {
+      L.tutMsgAcc = 0;
+      t.shownStep = t.step;
+      if (!L.msgT) showMsg(steps[t.step].msg, 4);
+    }
+    if (steps[t.step].done()) t.step++;
   }
 
   function escapeHtml(s) {
@@ -1055,6 +1423,9 @@ window.GAME = (function () {
       jumpBtn: document.getElementById("btn-jump"),
       danger: document.getElementById("danger"),
       emoteCol: document.getElementById("emote-col"),
+      ballBtn: document.getElementById("btn-ball"),
+      blend: document.getElementById("blend-chip"),
+      shareBtn: document.getElementById("btn-share"),
       cover: document.getElementById("cover"),
       coverTimer: document.getElementById("cover-timer"),
       coverTip: document.getElementById("cover-tip"),
@@ -1072,6 +1443,13 @@ window.GAME = (function () {
       syncHud();
     });
     ui.paintBtn.addEventListener("click", () => { openPaintSelf(); syncHud(); });
+    ui.ballBtn.addEventListener("click", () => {
+      if (!S || S.phase !== "hunt" || myRole() !== "seeker" || S.balls <= 0) return;
+      L.aiming = !L.aiming;
+      ui.ballBtn.classList.toggle("aiming", L.aiming);
+      showMsg(L.aiming ? "🎾 Tap the ground to throw! (real players flinch)" : "Throw cancelled", 2);
+    });
+    ui.shareBtn.addEventListener("click", () => { shareResult(); });
     ui.emoteCol.querySelectorAll(".emote-btn").forEach((b) => {
       b.addEventListener("click", () => {
         const t = performance.now();
@@ -1102,6 +1480,7 @@ window.GAME = (function () {
 
   function startSolo(profile) {
     L = freshLocal("solo", profile);
+    startTutorial();
     L.players["me"] = {
       x: 0, z: -8, yaw: 0, pose: FIG.defaultPose(),
       paint: FIG3D.defaultPaint(profile.color), mv: 0, lastMoveAt: 0,

@@ -11,7 +11,39 @@
     game: $("screen-game"),
   };
   let myColor = COLORS[Math.floor(Math.random() * COLORS.length)];
+  let myHat = localStorage.getItem("mimic-hat") || "none";
   let inLobby = false;
+
+  const HAT_ICONS = { none: "🚫", cap: "🧢", party: "🥳", tophat: "🎩", crown: "👑", halo: "😇" };
+  const HAT_LEVEL = { none: 1, cap: 1, party: 2, tophat: 3, crown: 4, halo: 5 };
+
+  function stats() {
+    try { return JSON.parse(localStorage.getItem("mimic-stats")) || { xp: 0, games: 0, wins: 0 }; }
+    catch (e) { return { xp: 0, games: 0, wins: 0 }; }
+  }
+  function myLevel() { return Math.floor(Math.sqrt(stats().xp / 60)) + 1; }
+
+  function renderHats() {
+    const row = $("hat-row");
+    row.innerHTML = "";
+    const lvl = myLevel();
+    $("level-tag").textContent = "· Level " + lvl + " (" + stats().xp + " xp)";
+    for (const h of FIG3D.HATS) {
+      const d = document.createElement("div");
+      const locked = lvl < HAT_LEVEL[h];
+      d.className = "hat-dot" + (h === myHat ? " sel" : "") + (locked ? " locked" : "");
+      d.textContent = HAT_ICONS[h] || "🎩";
+      d.title = locked ? "Unlocks at level " + HAT_LEVEL[h] : h;
+      d.addEventListener("click", () => {
+        if (locked) return;
+        myHat = h;
+        localStorage.setItem("mimic-hat", h);
+        renderHats();
+      });
+      row.appendChild(d);
+    }
+  }
+  window.MIMIC_ON_STATS = () => renderHats(); // refresh after each match
 
   function show(name) {
     for (const k in screens) screens[k].classList.toggle("hidden", k !== name);
@@ -44,8 +76,9 @@
     let name = nameInput.value.trim().slice(0, 12);
     if (!name) name = "Statue" + Math.floor(Math.random() * 900 + 100);
     localStorage.setItem("mimic-name", name);
-    return { name, color: myColor };
+    return { name, color: myColor, hat: myHat };
   }
+  renderHats();
 
   // ---------- online status ----------
   const netStatus = $("net-status");
@@ -89,6 +122,7 @@
     try {
       await NET.join(code, profile());
       GAME.startNetSession(profile());
+      try { localStorage.setItem("mimic-last", JSON.stringify({ code, t: Date.now() })); } catch (err) {}
       $("lobby-code").textContent = code;
       show("lobby");
       renderLobby();
@@ -108,10 +142,36 @@
     SND.unlock();
     enterRoom(NET.makeCode(), false);
   });
-  $("btn-quick").addEventListener("click", () => {
+  $("btn-quick").addEventListener("click", async () => {
     SND.unlock();
-    enterRoom(MIMIC_CONFIG.QUICK_MATCH_CODE, true);
+    // shard the public plaza: try rooms until one has space
+    const base = MIMIC_CONFIG.QUICK_MATCH_CODE.slice(0, 3);
+    for (let i = 1; i <= 4; i++) {
+      await enterRoom(base + i, true);
+      if (NET.state.code) {
+        if (NET.players().length <= 8) return; // found a seat
+        NET.leave();
+        GAME.stop();
+        show("menu");
+      } else return; // join failed entirely (offline etc.)
+    }
   });
+
+  // rejoin the last room after a disconnect / reload
+  (function () {
+    try {
+      const last = JSON.parse(localStorage.getItem("mimic-last"));
+      if (last && Date.now() - last.t < 10 * 60 * 1000) {
+        const b = $("btn-rejoin");
+        b.textContent = "↩ Rejoin room " + last.code;
+        b.classList.remove("hidden");
+        b.addEventListener("click", () => {
+          SND.unlock();
+          enterRoom(last.code, true);
+        });
+      }
+    } catch (e) {}
+  })();
   $("btn-join").addEventListener("click", () => {
     SND.unlock();
     const code = $("inp-code").value.trim().toUpperCase();

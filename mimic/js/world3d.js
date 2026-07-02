@@ -7,9 +7,35 @@ window.WORLD3D = (function () {
   const colliders = []; // {x,z,r} circles players can't walk through
   const decoySpots = []; // {x,z,yaw} where mannequins may stand
   const animated = []; // {fn(time, dt)} living details
+  const occluders = []; // big solids the camera shouldn't clip through
+
+  // colour palettes per map theme
+  const THEMES = {
+    park: {
+      ground: ["#679a53", "#7fb267", "#527d41"],
+      sand: ["#b9a583", "#cbb896", "#a08b6a"],
+      pineA: 0x2e6b3e, pineB: 0x38804a,
+      oak: 0x4a8a4a, oakLight: 0x5c9c5c,
+      autumn: 0xc27b3a, autumnLight: 0xd6924e,
+      hedge: 0x3c7a44, tuftH: 0.29, tuftS: 0.42, tuftL: 0.32,
+      stem: 0x3f7a3a, water: 0x3f9fc0,
+    },
+    snow: {
+      ground: ["#e8eef4", "#ffffff", "#c9d6e2"],
+      sand: ["#c3cdd8", "#d8e0ea", "#aab6c4"],
+      pineA: 0x3d6b52, pineB: 0xdfe9f0, // frosted
+      oak: 0x8fa8a0, oakLight: 0xdfe9f0,
+      autumn: 0xb08a62, autumnLight: 0xdfe9f0,
+      hedge: 0x51806a, tuftH: 0.55, tuftS: 0.12, tuftL: 0.75,
+      stem: 0x51806a, water: 0x9fd4e8,
+    },
+  };
+  let T = THEMES.park;
+  let themeName = "park";
 
   function col(x, z, r) { colliders.push({ x, z, r }); }
   function spot(x, z, yaw) { decoySpots.push({ x, z, yaw: yaw || 0 }); }
+  function occ(mesh) { occluders.push(mesh); return mesh; }
 
   const M = (c, extra) => new THREE.MeshStandardMaterial(
     Object.assign({ color: c, roughness: 0.85, metalness: 0.02 }, extra)
@@ -74,8 +100,8 @@ window.WORLD3D = (function () {
     if (kind === "pine") {
       const t = cyl(scene, 0.13 * s, 0.2 * s, 1.5 * s, x, 0.75 * s, z, trunk, 12);
       t.rotation.z = lean;
-      const g = M(0x2e6b3e);
-      const g2 = M(0x38804a);
+      const g = M(T.pineA);
+      const g2 = M(T.pineB);
       const canopy = [];
       for (let i = 0; i < 3; i++) {
         const r = (1.5 - i * 0.38) * s, y = (1.7 + i * 1.0) * s;
@@ -91,9 +117,8 @@ window.WORLD3D = (function () {
     } else {
       const t = cyl(scene, 0.15 * s, 0.24 * s, 1.9 * s, x, 0.95 * s, z, trunk, 12);
       t.rotation.z = lean;
-      const leaf = kind === "autumn" ? 0xc27b3a : 0x4a8a4a;
-      const g = M(leaf);
-      const gLight = M(kind === "autumn" ? 0xd6924e : 0x5c9c5c);
+      const g = M(kind === "autumn" ? T.autumn : T.oak);
+      const gLight = M(kind === "autumn" ? T.autumnLight : T.oakLight);
       const blobs = [[0, 2.7, 0, 1.35], [0.85, 2.3, 0.3, 0.95], [-0.75, 2.4, -0.4, 1.0],
                      [0.1, 3.35, 0.5, 0.85], [-0.3, 3.1, -0.6, 0.7]];
       const canopy = [];
@@ -115,7 +140,7 @@ window.WORLD3D = (function () {
     const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), M(bodyC));
     body.position.y = h / 2;
     body.castShadow = true; body.receiveShadow = true;
-    g.add(body);
+    g.add(occ(body));
     // eave slab + pyramid roof
     const eave = new THREE.Mesh(new THREE.BoxGeometry(w + 0.7, 0.22, d + 0.7), M(roofC, { roughness: 0.7 }));
     eave.position.y = h + 0.11;
@@ -240,7 +265,7 @@ window.WORLD3D = (function () {
     }
     // roof: trim + slab (emissive so the underside isn't black)
     box(scene, 19.6, 0.25, 13.6, cx, 4.72, cz, M(0xd8d0c2, { emissive: 0x5a5348 }), 0, true);
-    box(scene, 19, 0.45, 13, cx, 5.05, cz, M(0xbfb7a8, { emissive: 0x4a453c }), 0, true);
+    occ(box(scene, 19, 0.45, 13, cx, 5.05, cz, M(0xbfb7a8, { emissive: 0x4a453c }), 0, true));
     for (const px of [-6.4, -3.2, 0, 3.2, 6.4]) {
       spot(cx + px, cz - 2.6, 0);
       spot(cx + px, cz + 2.6, Math.PI);
@@ -251,14 +276,14 @@ window.WORLD3D = (function () {
   function hedge(scene, x, z, len, ry) {
     const m = new THREE.Mesh(
       new THREE.CapsuleGeometry(0.75, Math.max(0.5, len - 1.5), 6, 14),
-      M(0x3c7a44, { roughness: 0.95 })
+      M(T.hedge, { roughness: 0.95 })
     );
     m.rotation.z = Math.PI / 2;
     m.rotation.y = ry || 0;
     m.position.set(x, 0.72, z);
     m.castShadow = true;
     m.receiveShadow = true;
-    scene.add(m);
+    scene.add(occ(m));
     const c = Math.cos(ry || 0), s = Math.sin(ry || 0);
     const n = Math.max(1, Math.round(len / 2));
     for (let i = 0; i < n; i++) {
@@ -332,7 +357,7 @@ window.WORLD3D = (function () {
     scene.add(rimStones);
     const petal = M(c1, { emissive: 0x1c0f18, roughness: 0.6 });
     const petal2 = M(0xffffff, { roughness: 0.6 });
-    const stemM = M(0x3f7a3a);
+    const stemM = M(T.stem);
     for (let i = 0; i < 12; i++) {
       const a = Math.random() * Math.PI * 2, rr = Math.random() * (r - 0.35);
       const fx = x + Math.cos(a) * rr, fz = z + Math.sin(a) * rr;
@@ -412,7 +437,7 @@ window.WORLD3D = (function () {
 
   function grassTufts(scene) {
     const geo = new THREE.ConeGeometry(0.05, 0.28, 5);
-    const mat = M(0x5d9448, { roughness: 1 });
+    const mat = M(0xffffff, { roughness: 1 });
     const inst = new THREE.InstancedMesh(geo, mat, 420);
     const m4 = new THREE.Matrix4();
     const col3 = new THREE.Color();
@@ -423,7 +448,7 @@ window.WORLD3D = (function () {
       m4.makeRotationY(Math.random() * 3);
       m4.setPosition(x, 0.13, z);
       inst.setMatrixAt(placed, m4);
-      col3.setHSL(0.29 + Math.random() * 0.05, 0.42, 0.32 + Math.random() * 0.14);
+      col3.setHSL(T.tuftH + Math.random() * 0.05, T.tuftS, T.tuftL + Math.random() * 0.1);
       inst.setColorAt(placed, col3);
       placed++;
     }
@@ -519,7 +544,7 @@ window.WORLD3D = (function () {
   function pond(scene, x, z, r) {
     const water = new THREE.Mesh(
       new THREE.CylinderGeometry(r, r, 0.1, 36),
-      M(0x3f9fc0, { roughness: 0.12, transparent: true, opacity: 0.92, emissive: 0x0a2e3a })
+      M(T.water, { roughness: 0.12, transparent: true, opacity: 0.92, emissive: 0x0a2e3a })
     );
     water.position.set(x, 0.06, z);
     scene.add(water);
@@ -529,7 +554,7 @@ window.WORLD3D = (function () {
     scene.add(rim);
     animated.push((t) => { water.rotation.y = t * 0.12; });
     // reeds
-    const reedM = M(0x3f7a3a);
+    const reedM = M(T.stem);
     for (let i = 0; i < 10; i++) {
       const a = Math.random() * Math.PI * 2;
       const rr = r + 0.35 + Math.random() * 0.4;
@@ -583,7 +608,7 @@ window.WORLD3D = (function () {
     tower.position.set(x, 2.75, z);
     tower.castShadow = true;
     tower.receiveShadow = true;
-    scene.add(tower);
+    scene.add(occ(tower));
     const cap = new THREE.Mesh(new THREE.ConeGeometry(1.25, 1.3, 14), M(0xa8503e, { roughness: 0.7 }));
     cap.position.set(x, 6.1, z);
     cap.castShadow = true;
@@ -725,8 +750,14 @@ window.WORLD3D = (function () {
   }
 
   // ---------- build ----------
-  function build(scene) {
-    const grassTex = speckleTexture("#679a53", "#7fb267", "#527d41", 1400);
+  function build(scene, theme) {
+    themeName = THEMES[theme] ? theme : "park";
+    T = THEMES[themeName];
+    colliders.length = 0;
+    decoySpots.length = 0;
+    animated.length = 0;
+    occluders.length = 0;
+    const grassTex = speckleTexture(T.ground[0], T.ground[1], T.ground[2], 1400);
     grassTex.repeat.set(26, 18);
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(SIZE.x + 30, SIZE.z + 30, 1, 1),
@@ -736,7 +767,7 @@ window.WORLD3D = (function () {
     ground.receiveShadow = true;
     scene.add(ground);
 
-    const sandTex = speckleTexture("#b9a583", "#cbb896", "#a08b6a", 800);
+    const sandTex = speckleTexture(T.sand[0], T.sand[1], T.sand[2], 800);
     path(scene, -30, -12, 0, 0, 3, sandTex);
     path(scene, 0, 0, 18, -20, 3, sandTex);
     path(scene, 0, 0, 34, -8, 2.5, sandTex);
@@ -844,5 +875,6 @@ window.WORLD3D = (function () {
     return { x: 0, z: -8 };
   }
 
-  return { SIZE, build, tick, clampPos, randomOpenSpot, decoySpots, colliders };
+  return { SIZE, build, tick, clampPos, randomOpenSpot, decoySpots, colliders, occluders,
+           THEME_NAMES: Object.keys(THEMES), theme: () => themeName };
 })();

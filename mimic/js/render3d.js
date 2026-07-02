@@ -9,6 +9,7 @@ window.RENDER3D = (function () {
   let camPos = new THREE.Vector3(0, 8, 14);
   let time = 0;
   let shakeAmt = 0;
+  let worldGroup = null;
 
   // ---- particle pool (sprites with velocity + gravity) ----
   const POOL = 140;
@@ -82,10 +83,17 @@ window.RENDER3D = (function () {
     }
   }
 
-  const MOODS = {
-    day:  { sky: 0x9fd4e8, fog: 0xaed6e6, sun: 1.25, hemi: 0.85, sunC: 0xfff2d8 },
-    dusk: { sky: 0x1e2340, fog: 0x1e2340, sun: 0.28, hemi: 0.32, sunC: 0x9bb0ff },
+  const MOODS_BY_THEME = {
+    park: {
+      day:  { sky: 0x9fd4e8, fog: 0xaed6e6, sun: 1.25, hemi: 0.85, sunC: 0xfff2d8 },
+      dusk: { sky: 0x1e2340, fog: 0x1e2340, sun: 0.28, hemi: 0.32, sunC: 0x9bb0ff },
+    },
+    snow: {
+      day:  { sky: 0xd4e6f2, fog: 0xdce8f0, sun: 1.1, hemi: 0.95, sunC: 0xf2f6ff },
+      dusk: { sky: 0x232a45, fog: 0x232a45, sun: 0.3, hemi: 0.38, sunC: 0xaabfff },
+    },
   };
+  let MOODS = MOODS_BY_THEME.park;
   let mood = "day", moodT = 1;
 
   function init(c) {
@@ -133,9 +141,66 @@ window.RENDER3D = (function () {
     coneMesh.visible = false;
     scene.add(coneMesh);
 
-    WORLD3D.build(scene);
+    worldGroup = new THREE.Group();
+    WORLD3D.build(worldGroup, "park");
+    scene.add(worldGroup);
     initParticles();
     return { scene, camera };
+  }
+
+  // rebuild the world for a different map theme
+  function setTheme(name) {
+    if (name === WORLD3D.theme() && worldGroup) return;
+    if (worldGroup) {
+      scene.remove(worldGroup);
+      worldGroup.traverse((o) => {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) {
+          (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => {
+            if (m.map) m.map.dispose();
+            m.dispose();
+          });
+        }
+      });
+    }
+    MOODS = MOODS_BY_THEME[name] || MOODS_BY_THEME.park;
+    worldGroup = new THREE.Group();
+    WORLD3D.build(worldGroup, name);
+    scene.add(worldGroup);
+    setSnow(name === "snow");
+    moodT = 0; // re-lerp lighting to the themed mood
+  }
+
+  // gentle snowfall for the snow theme
+  let snowSprites = null, snowOn = false;
+  function setSnow(on) {
+    snowOn = on;
+    if (on && !snowSprites) {
+      snowSprites = [];
+      const mat = new THREE.SpriteMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthWrite: false });
+      for (let i = 0; i < 110; i++) {
+        const sp = new THREE.Sprite(mat);
+        sp.scale.set(0.07, 0.07, 1);
+        sp.position.set(MU.rand(-46, 46), MU.rand(0.5, 16), MU.rand(-31, 31));
+        sp.userData.v = MU.rand(0.7, 1.6);
+        sp.userData.ph = Math.random() * 9;
+        scene.add(sp);
+        snowSprites.push(sp);
+      }
+    }
+    if (snowSprites) for (const sp of snowSprites) sp.visible = on;
+  }
+  function tickSnow(dt) {
+    if (!snowOn || !snowSprites) return;
+    for (const sp of snowSprites) {
+      sp.position.y -= sp.userData.v * dt;
+      sp.position.x += Math.sin(time * 1.3 + sp.userData.ph) * dt * 0.4;
+      if (sp.position.y < 0.1) {
+        sp.position.y = MU.rand(12, 16);
+        sp.position.x = camPos.x + MU.rand(-22, 22);
+        sp.position.z = camPos.z + MU.rand(-22, 22);
+      }
+    }
   }
 
   function setMood(name) { mood = name; moodT = 0; }
@@ -220,6 +285,17 @@ window.RENDER3D = (function () {
       height,
       target.z - Math.cos(camYaw) * dist
     );
+    // pull the camera in when a wall/hedge/tree trunk blocks the view
+    const lookFrom = new THREE.Vector3(target.x, 1.3, target.z);
+    const toCam = want.clone().sub(lookFrom);
+    const wantDist = toCam.length();
+    raycaster.set(lookFrom, toCam.normalize());
+    raycaster.far = wantDist;
+    const hits = raycaster.intersectObjects(WORLD3D.occluders, false);
+    if (hits.length && hits[0].distance < wantDist) {
+      want.copy(lookFrom).addScaledVector(toCam, Math.max(1.6, hits[0].distance * 0.9));
+    }
+    raycaster.far = Infinity;
     const k = Math.min(1, dt * 6);
     camPos.lerp(want, k);
     camera.position.copy(camPos);
@@ -246,6 +322,7 @@ window.RENDER3D = (function () {
     lerpMood(dt);
     WORLD3D.tick(time, dt);
     tickParticles(dt);
+    tickSnow(dt);
     tickFov(dt);
     shakeAmt = Math.max(0, shakeAmt - dt * 2.2);
     for (const id in orbMeshes) {
@@ -253,6 +330,18 @@ window.RENDER3D = (function () {
       orbMeshes[id].rotation.y += dt * 2;
     }
     renderer.render(scene, camera);
+  }
+
+  // project a screen tap onto the ground plane (y = 0)
+  const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  function pickGround(sx, sy) {
+    const r = canvas.getBoundingClientRect();
+    raycaster.setFromCamera(
+      { x: (sx / r.width) * 2 - 1, y: -(sy / r.height) * 2 + 1 },
+      camera
+    );
+    const pt = new THREE.Vector3();
+    return raycaster.ray.intersectPlane(groundPlane, pt) ? { x: pt.x, z: pt.z } : null;
   }
 
   // returns userData.figId of the closest figure hit under screen point
@@ -268,7 +357,7 @@ window.RENDER3D = (function () {
 
   return {
     init, setMood, setFlashlight, syncOrbs, clearOrbs,
-    updateCamera, render, pickFigure, burst, shake, setMoving,
+    updateCamera, render, pickFigure, pickGround, burst, shake, setMoving, setTheme,
     scene: () => scene,
     camera: () => camera,
   };

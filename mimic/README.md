@@ -16,8 +16,19 @@ Concept #1 from [`GAME_CONCEPTS.md`](../GAME_CONCEPTS.md), evolved.
 
 The seeker role rotates each round; most points after all rounds wins.
 
-- **Desktop:** WASD/arrows to move, Q/E or mouse-drag to orbit the camera, click to accuse/paint.
-- **Mobile:** virtual joystick, drag to look around, tap to accuse/paint.
+- **Desktop:** WASD/arrows to move, Space to jump, Q/E or mouse-drag to orbit, click to accuse/paint/throw.
+- **Mobile:** virtual joystick, jump button, drag to look around, tap to accuse/paint/throw, emote buttons.
+
+## Depth systems
+
+- **🎾 Seeker throws** — 3 balls per round; real players caught in the blast flinch, mannequins don't. Spend them wisely.
+- **😎 Close calls** — survive 1s+ inside the flashlight beam without being accused: +5.
+- **👻 Ghost mischief** — caught players may nudge ONE mannequin per round, making it flinch like a real player. Chaos ensues.
+- **🦎 Blend meter** — live camouflage feedback during setup comparing your paint to nearby mannequins.
+- **🎩 Hats & levels** — XP from every match (stored locally) unlocks cosmetic hats; mannequins wear random hats too, so a hat is never a tell.
+- **❄️ Map themes** — each match randomly picks Park or Snow (with falling snow); same layout, different camouflage climate.
+- **📸 Share card** — final standings render to a shareable image (Web Share API / download).
+- **↩ Reconnect** — per-tab identity survives a reload; a "Rejoin last room" button appears for 10 minutes.
 
 ## Game modes
 
@@ -80,6 +91,13 @@ tables, rows or auth are used, so the publishable key in `config.js` is safe to 
 `js/game.js`: `SETUP_MS`, `HUNT_MS`, `CONE_RANGE`, `ACCUSE_RANGE`, `PAINT_RANGE`,
 speeds in `SPEED`, points in `PTS`. Poses: `js/figure.js` (`PRESETS`). Map layout &
 mannequin spots: `js/world3d.js`. Paint palette: `js/figure3d.js` (`PALETTE`).
+
+## Production notes
+
+The netcode is host-authoritative but trust-based (fine for rooms of friends).
+Before a large public launch, move accusation/score resolution into a server
+(e.g. Supabase Edge Functions or a small authoritative relay) and validate
+movement speed server-side.
 
 ## Roadmap to a paid release
 

@@ -9,10 +9,20 @@ window.NET = (function () {
   let roster = [];
   const evCbs = [], playersCbs = [];
 
+  // stable id across page reloads (per tab!) so a dropped player can rejoin
+  // as themselves; sessionStorage keeps two tabs from colliding as one player
+  function persistentId() {
+    try {
+      let id = sessionStorage.getItem("mimic-id");
+      if (!id) { id = MU.uid(); sessionStorage.setItem("mimic-id", id); }
+      return id;
+    } catch (e) { return MU.uid(); }
+  }
+
   const self = {
     online: false,
     code: null,
-    myId: MU.uid(),
+    myId: persistentId(),
     profile: null,
   };
 
@@ -44,7 +54,7 @@ window.NET = (function () {
     const list = [];
     for (const key in state) {
       const meta = state[key][0];
-      if (meta) list.push({ id: key, name: meta.name, color: meta.color, joined: meta.joined });
+      if (meta) list.push({ id: key, name: meta.name, color: meta.color, hat: meta.hat, joined: meta.joined });
     }
     list.sort((a, b) => (a.joined - b.joined) || (a.id < b.id ? -1 : 1));
     roster = list;
@@ -70,6 +80,7 @@ window.NET = (function () {
           await channel.track({
             name: profile.name,
             color: profile.color,
+            hat: profile.hat || "none",
             joined: Date.now(),
           });
           if (!settled) { settled = true; resolve(self.code); }

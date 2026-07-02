@@ -21,6 +21,9 @@
     <label class="field-label">Your color</label>
     <div id="color-row" class="color-row"></div>
 
+    <label class="field-label">Your hat <span id="level-tag" class="level-tag"></span></label>
+    <div id="hat-row" class="color-row"></div>
+
     <div class="menu-buttons">
       <button id="btn-solo" class="btn btn-big btn-solo">🎯 Practice Solo</button>
       <button id="btn-create" class="btn btn-big btn-primary">🏠 Create Room</button>
@@ -29,6 +32,7 @@
         <input id="inp-code" maxlength="4" placeholder="CODE" autocomplete="off">
         <button id="btn-join" class="btn btn-join">Join</button>
       </div>
+      <button id="btn-rejoin" class="btn hidden">↩ Rejoin last room</button>
     </div>
 
     <p id="net-status" class="net-status">connecting…</p>
@@ -70,6 +74,7 @@
     <span id="hud-timer" class="hud-chip hud-timer">0:40</span>
     <span id="hud-score" class="hud-chip">⭐ 0</span>
   </div>
+  <div id="blend-chip" class="hud-chip hidden">🦎</div>
 
   <!-- center message -->
   <div id="hud-msg" class="hidden"></div>
@@ -84,6 +89,7 @@
     </div>
   </div>
   <button id="btn-jump" class="hidden">⤒</button>
+  <button id="btn-ball" class="hidden">🎾 3</button>
 
   <!-- danger vignette: pulses red when the flashlight is on you -->
   <div id="danger"></div>
@@ -150,6 +156,7 @@
       <div id="results-table"></div>
       <p id="results-next" class="results-next"></p>
       <div id="results-final-btns" class="hidden">
+        <button id="btn-share" class="btn btn-big btn-share hidden">📸 Share result</button>
         <button id="btn-again" class="btn btn-big btn-primary">↻ Back to Lobby</button>
         <button id="btn-exit" class="btn btn-ghost">Exit to menu</button>
       </div>
