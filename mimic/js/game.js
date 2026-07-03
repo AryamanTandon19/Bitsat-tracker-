@@ -10,6 +10,9 @@ window.GAME = (function () {
   const SPEED = { setup: 4.8, hunt: 1.55, seeker: 3.4, spec: 11 };
   const PTS = { orb: 10, survive: 25, catch: 30, wrong: -10, sweep: 20, dare: 5 };
   const BALLS_PER_ROUND = 3, BALL_RADIUS = 2.4, BALL_RANGE = 15;
+  const TAG_SETUP_MS = 6000, TAG_HUNT_MS = 110000, TAG_RADIUS = 1.35, TAG_GRACE_MS = 2500;
+  const TAG_PTS = { freeze: 15, rescue: 10 };
+  const TAG_SPEED = { it: 4.35, runner: 3.8 };
   const TIPS = [
     "Watch for statues that twitch when your light passes…",
     "Wrong accusations cost 10 points. Stare first, tap second.",
@@ -50,7 +53,8 @@ window.GAME = (function () {
     if (!S || !L) return "spectator";
     if (S.seekerId === L.meId) return "seeker";
     const inRoster = S.roster.some((p) => p.id === L.meId);
-    if (!inRoster || S.caught[L.meId]) return "spectator";
+    if (!inRoster) return "spectator";
+    if (S.caught[L.meId] && !isTag()) return "spectator"; // frozen runners stay in play
     return "hider";
   }
   function seekerPos() {
@@ -61,6 +65,7 @@ window.GAME = (function () {
     return S.roster.filter((p) => p.id !== S.seekerId).map((p) => p.id);
   }
   function dist2(a, b) { return Math.hypot(a.x - b.x, a.z - b.z); }
+  function isTag() { return !!(S && S.gameMode === "tag"); }
   function showMsg(text, ms) {
     ui.msg.textContent = text;
     ui.msg.classList.remove("hidden");
@@ -103,6 +108,7 @@ window.GAME = (function () {
     const roster = buildRoster();
     S = {
       phase: "setup", endsAt: 0,
+      gameMode: L.desiredMode || "mimic",
       theme: MU.choice(WORLD3D.THEME_NAMES),
       round: 0,
       totalRounds: L.mode === "solo" ? 3 : Math.min(6, Math.max(2, humans(roster).length)),
@@ -117,7 +123,7 @@ window.GAME = (function () {
   function hostBeginSetup() {
     S.round++;
     S.phase = "setup";
-    S.endsAt = now() + SETUP_MS;
+    S.endsAt = now() + (S.gameMode === "tag" ? TAG_SETUP_MS : SETUP_MS);
     S.seed = (Math.random() * 1e9) | 0;
     S.cleared = {}; S.caught = {}; S.orbs = []; S.deltas = {};
     S.balls = BALLS_PER_ROUND; S.nudges = {}; S.dareCd = {};
@@ -131,8 +137,12 @@ window.GAME = (function () {
       S.seekerId = "ai";
     }
 
-    // scatter mannequins across the whole park's decoy spots
+    S.grace = {};
+    // scatter mannequins across the whole park's decoy spots (Mimic only)
     const rng = MU.seeded(S.seed);
+    if (S.gameMode === "tag") {
+      S.decoys = [];
+    } else {
     const spots = WORLD3D.decoySpots.slice();
     for (let i = spots.length - 1; i > 0; i--) {
       const j = (rng() * (i + 1)) | 0;
@@ -147,6 +157,7 @@ window.GAME = (function () {
       paint: FIG3D.randomPaint(rng),
       hat: rng() < 0.3 ? FIG3D.HATS[1 + ((rng() * (FIG3D.HATS.length - 1)) | 0)] : "none",
     }));
+    }
 
     // spawn bot hiders
     L.bots = {};
@@ -163,6 +174,7 @@ window.GAME = (function () {
     if (S.seekerId === "ai") {
       L.aiSeeker = AI.createSeeker();
       L.aiSeeker.range = CONE_RANGE;
+      if (S.gameMode === "tag") L.aiSeeker.pause = TAG_SETUP_MS / 1000; // waits for GO
     }
     hostBroadcast();
     applyPhaseLocally("setup");
@@ -170,7 +182,7 @@ window.GAME = (function () {
 
   function hostBeginHunt() {
     S.phase = "hunt";
-    S.endsAt = now() + HUNT_MS;
+    S.endsAt = now() + (S.gameMode === "tag" ? TAG_HUNT_MS : HUNT_MS);
     hostBroadcast();
     applyPhaseLocally("hunt");
   }
@@ -243,6 +255,56 @@ window.GAME = (function () {
     hostBroadcast();
   }
 
+  function hostResolveTagFreeze(id) {
+    if (!isTag() || S.phase !== "hunt" || S.caught[id]) return;
+    if (S.grace[id] && now() < S.grace[id]) return;
+    S.caught[id] = true;
+    if (S.seekerId !== "ai") {
+      S.scores[S.seekerId] += TAG_PTS.freeze;
+      S.deltas[S.seekerId] = (S.deltas[S.seekerId] || 0) + TAG_PTS.freeze;
+    }
+    const payload = { id };
+    if (L.mode !== "solo") NET.send("frozen", payload);
+    onFrozen(payload);
+    if (hiderIds().every((h) => S.caught[h])) hostEndHunt(true);
+    else hostBroadcast();
+  }
+
+  function hostResolveThaw(id, by) {
+    if (!isTag() || S.phase !== "hunt" || !S.caught[id]) return;
+    S.caught[id] = false;
+    S.grace[id] = now() + TAG_GRACE_MS;
+    if (!String(by).startsWith("ai")) {
+      S.scores[by] = (S.scores[by] || 0) + TAG_PTS.rescue;
+      S.deltas[by] = (S.deltas[by] || 0) + TAG_PTS.rescue;
+    }
+    const payload = { id, by };
+    if (L.mode !== "solo") NET.send("thaw", payload);
+    onThaw(payload);
+    hostBroadcast();
+  }
+
+  // contact checks: IT freezes runners, runners thaw frozen teammates
+  function hostTagContacts() {
+    const it = seekerPos();
+    if (!it) return;
+    const ids = hiderIds();
+    for (const id of ids) {
+      const pl = L.players[id];
+      if (!pl || S.caught[id]) continue;
+      if (dist2(pl, it) < TAG_RADIUS) { hostResolveTagFreeze(id); continue; }
+    }
+    for (const id of ids) {
+      const pl = L.players[id];
+      if (!pl || S.caught[id]) continue;
+      for (const fid of ids) {
+        if (fid === id || !S.caught[fid]) continue;
+        const fpl = L.players[fid];
+        if (fpl && dist2(pl, fpl) < TAG_RADIUS) hostResolveThaw(fid, id);
+      }
+    }
+  }
+
   function hostResolveBall(throwerId, x0, z0, x1, z1) {
     if (S.phase !== "hunt" || throwerId !== S.seekerId || S.balls <= 0) return;
     S.balls--;
@@ -305,6 +367,7 @@ window.GAME = (function () {
     const t = now();
     if (S.phase === "setup" && t >= S.endsAt) hostBeginHunt();
     else if (S.phase === "hunt") {
+      if (isTag()) hostTagContacts();
       if (t >= S.endsAt) hostEndHunt(false);
       else {
         const alive = S.orbs.filter((o) => !o.taken).length;
@@ -388,6 +451,10 @@ window.GAME = (function () {
       if (isHost()) hostResolveNudge(p.from, p.id);
     } else if (t === "nudge2") {
       onNudge(p);
+    } else if (t === "frozen") {
+      onFrozen(p);
+    } else if (t === "thaw") {
+      onThaw(p);
     } else if (t === "emote") {
       const rig = L.rigs[p.from];
       if (rig) rig.showEmote(p.e);
@@ -475,6 +542,41 @@ window.GAME = (function () {
     SND.pop();
   }
 
+  function onFrozen(p) {
+    if (!S) return;
+    S.caught[p.id] = true;
+    SND.catch_();
+    const pl = L.players[p.id];
+    if (pl) {
+      const px = pl.sx != null ? pl.sx : pl.x, pz = pl.sz != null ? pl.sz : pl.z;
+      RENDER3D.burst(px, 1.2, pz, 0x9fe4ff, 20, { spread: 2.2, up: 2.2, size: 0.13, grav: 3 });
+    }
+    const who = S.roster.find((r) => r.id === p.id);
+    if (p.id === L.meId) {
+      RENDER3D.shake(0.5);
+      if (navigator.vibrate) navigator.vibrate([80, 60, 80]);
+      showMsg("❄️ FROZEN! A teammate can thaw you out…", 3);
+    } else if (S.seekerId === L.meId) {
+      RENDER3D.shake(0.3);
+      showMsg("❄️ Froze " + (who ? who.name : "a runner") + "! +" + TAG_PTS.freeze, 2);
+    } else showMsg("❄️ " + (who ? who.name : "A runner") + " got frozen!", 1.6);
+  }
+
+  function onThaw(p) {
+    if (!S) return;
+    S.caught[p.id] = false;
+    SND.orb();
+    const pl = L.players[p.id];
+    if (pl) {
+      const px = pl.sx != null ? pl.sx : pl.x, pz = pl.sz != null ? pl.sz : pl.z;
+      RENDER3D.burst(px, 1.2, pz, 0x8de04e, 16, { spread: 2, up: 2.2, size: 0.12, grav: 3 });
+    }
+    const who = S.roster.find((r) => r.id === p.id);
+    const rescuer = S.roster.find((r) => r.id === p.by);
+    if (p.id === L.meId) showMsg("🔥 Thawed by " + (rescuer ? rescuer.name : "a friend") + " — RUN!", 2.4);
+    else if (p.by === L.meId) showMsg("🦸 You freed " + (who ? who.name : "a friend") + "! +" + TAG_PTS.rescue, 2);
+  }
+
   function onOrbTaken(p) {
     if (!S) return;
     const o = S.orbs.find((o) => o.id === p.id);
@@ -521,7 +623,11 @@ window.GAME = (function () {
         };
         L.posDirty = L.paintDirty = true;
       }
-      if (myRole() === "seeker") {
+      if (isTag()) {
+        showMsg(myRole() === "seeker"
+          ? "🏃 You're IT! Freeze everyone by touching them!"
+          : "🏃 RUN! Get tagged and you freeze — friends can thaw you", 4.5);
+      } else if (myRole() === "seeker") {
         ui.cover.classList.remove("hidden");
         ui.coverTip.textContent = MU.choice(TIPS);
       } else if (myRole() === "hider") {
@@ -532,13 +638,18 @@ window.GAME = (function () {
       cb.showGame();
     } else if (phase === "hunt") {
       SND.phase();
-      SND.click(); // flashlight snaps on
-      SND.setAmbient("dusk");
       SND.setMusic("hunt");
-      RENDER3D.setMood("dusk");
+      if (isTag()) {
+        RENDER3D.setMood("day"); // bright daylight chase
+        showMsg(myRole() === "seeker" ? "GO GO GO! 🏃💨" : "RUN!! The IT is loose 😱", 2.5);
+      } else {
+        SND.click(); // flashlight snaps on
+        SND.setAmbient("dusk");
+        RENDER3D.setMood("dusk");
+        if (myRole() === "seeker") showMsg("🔦 Find the fakes! Tap a statue to accuse", 3);
+        else if (myRole() === "hider") showMsg("FREEZE! Don't get caught 🤫", 3);
+      }
       ui.cover.classList.add("hidden");
-      if (myRole() === "seeker") showMsg("🔦 Find the fakes! Tap a statue to accuse", 3);
-      else if (myRole() === "hider") showMsg("FREEZE! Don't get caught 🤫", 3);
     } else if (phase === "results") {
       SND.setMusic(null);
       showResults(false);
@@ -624,9 +735,15 @@ window.GAME = (function () {
       }
     } else if (meP && S.phase !== "final") {
       let speed = 0;
-      if (S.phase === "setup" && role === "hider") speed = SPEED.setup;
-      else if (S.phase === "hunt" && role === "hider") speed = SPEED.hunt;
-      else if (S.phase === "hunt" && role === "seeker") speed = SPEED.seeker;
+      if (isTag()) {
+        const frozenMe = !!S.caught[L.meId];
+        if (S.phase === "setup") speed = role === "seeker" ? 0 : SPEED.setup; // IT waits for GO
+        else if (S.phase === "hunt") speed = frozenMe ? 0 : role === "seeker" ? TAG_SPEED.it : TAG_SPEED.runner;
+      } else {
+        if (S.phase === "setup" && role === "hider") speed = SPEED.setup;
+        else if (S.phase === "hunt" && role === "hider") speed = SPEED.hunt;
+        else if (S.phase === "hunt" && role === "seeker") speed = SPEED.seeker;
+      }
       if (moving && speed > 0) {
         const wx = v.x * Math.cos(L.camYaw) + v.y * Math.sin(L.camYaw);
         const wz = -v.x * Math.sin(L.camYaw) + v.y * Math.cos(L.camYaw);
@@ -670,18 +787,19 @@ window.GAME = (function () {
         }
       }
 
-      // danger vignette + heartbeat while the flashlight is on you
+      // danger vignette + heartbeat: flashlight cone (Mimic) / IT closing in (Tag)
       if (role === "hider" && S.phase === "hunt") {
         const sp2 = seekerPos();
-        const inDanger = sp2 && sp2 !== meP &&
-          AI.inCone(meP, { x: sp2.x, z: sp2.z, yaw: sp2.yaw || 0, range: CONE_RANGE });
+        const inDanger = sp2 && sp2 !== meP && (isTag()
+          ? !S.caught[L.meId] && dist2(meP, sp2) < 7
+          : AI.inCone(meP, { x: sp2.x, z: sp2.z, yaw: sp2.yaw || 0, range: CONE_RANGE }));
         if (inDanger !== L.inDanger) {
           L.inDanger = inDanger;
           ui.danger.classList.toggle("on", !!inDanger);
           if (inDanger) {
             L.dangerSince = L.time;
             if (navigator.vibrate) navigator.vibrate(80);
-          } else if (L.time - L.dangerSince > 1.1 && !S.caught[L.meId]) {
+          } else if (!isTag() && L.time - L.dangerSince > 1.1 && !S.caught[L.meId]) {
             // survived the light: claim the close-call bonus
             if (isHost()) hostResolveDare(L.meId);
             else NET.send("dare", {});
@@ -697,7 +815,7 @@ window.GAME = (function () {
       }
 
       // camouflage hint during setup: how much do you stand out here?
-      if (role === "hider" && S.phase === "setup") {
+      if (!isTag() && role === "hider" && S.phase === "setup") {
         L.blendAcc = (L.blendAcc || 0) + dt;
         if (L.blendAcc > 0.8) {
           L.blendAcc = 0;
@@ -723,7 +841,15 @@ window.GAME = (function () {
       for (const id in L.bots) {
         if (S.caught[id]) continue;
         const b = L.bots[id];
-        AI.updateBot(b, dt, S.phase, seekerInfo, S.orbs);
+        if (isTag()) {
+          if (S.phase === "hunt") {
+            const runners = hiderIds().map((hid) => {
+              const q = L.players[hid];
+              return q ? { id: hid, x: q.x, z: q.z, frozen: !!S.caught[hid] } : null;
+            }).filter(Boolean);
+            AI.updateRunnerBot(b, dt, seekerInfo, runners, S.orbs);
+          }
+        } else AI.updateBot(b, dt, S.phase, seekerInfo, S.orbs);
         const pl = L.players[id];
         pl.x = b.x; pl.z = b.z; pl.yaw = b.yaw; pl.pose = b.pose; pl.paint = b.paint;
         if (b.moved) {
@@ -745,7 +871,7 @@ window.GAME = (function () {
     }
 
     // ---- seeker hears the twitch blip ----
-    if (role === "seeker" && S.phase === "hunt") {
+    if (!isTag() && role === "seeker" && S.phase === "hunt") {
       const t = performance.now();
       for (const id of hiderIds()) {
         const pl = L.players[id];
@@ -959,7 +1085,8 @@ window.GAME = (function () {
       pl.syaw += dy * k;
 
       rig.setPos(pl.sx, pl.sz, pl.syaw, pl.jy || 0);
-      rig.setFallen(caught);
+      rig.setFallen(caught && !isTag()); // frozen runners stand, iced over
+      rig.setIce(caught && isTag());
       const moving = pl.mv && (isMe || tNow - pl.lastMoveAt < 300);
       if (moving && !caught) {
         rig.setPose(walkCycle(pl.pose, tNow), true); // snap: per-frame anim
@@ -979,12 +1106,15 @@ window.GAME = (function () {
       }
       pl._prevJy = pl.jy || 0;
       // statues hold perfectly still during the hunt; otherwise breathe
-      rig.setMode(caught ? "frozen" : moving ? "walk" : hunt && !isSeekerFig ? "frozen" : "idle");
+      rig.setMode(caught ? "frozen" : moving ? "walk" : (hunt && !isSeekerFig && !isTag()) ? "frozen" : "idle");
       rig.tick(L.time, dt);
 
-      // labels: setup + reveal show names; seeker always labelled during hunt
-      const wantLabel = (!hunt && !caught) || isSeekerFig;
-      const labelText = wantLabel ? (isSeekerFig ? "🔦 " + p.name : p.name) : null;
+      // labels: tag shows everyone always; Mimic hides names during the hunt
+      const wantLabel = isTag() ? true : (!hunt && !caught) || isSeekerFig;
+      const itIcon = isTag() ? "🏃 " : "🔦 ";
+      const labelText = wantLabel
+        ? (isSeekerFig ? itIcon + p.name + (isTag() ? " (IT)" : "") : p.name)
+        : null;
       if (rig._label !== labelText) {
         rig.setLabel(labelText, isSeekerFig ? "#ffdd88" : p.color);
         rig._label = labelText;
@@ -995,10 +1125,10 @@ window.GAME = (function () {
 
       // twitch flash ring for seeker & spectators
       let flashOn = false;
-      if (hunt && !caught && !isSeekerFig && (role === "seeker" || role === "spectator") && seekerInfo) {
+      if (!isTag() && hunt && !caught && !isSeekerFig && (role === "seeker" || role === "spectator") && seekerInfo) {
         flashOn = AI.inCone(pl, seekerInfo) && pl.lastMoveAt && tNow - pl.lastMoveAt < 450;
       }
-      rig.setFlash(flashOn);
+      if (!(caught && isTag())) rig.setFlash(flashOn);
     }
 
     // AI seeker rig (solo)
@@ -1034,7 +1164,7 @@ window.GAME = (function () {
     // orbs + flashlight
     RENDER3D.syncOrbs(hunt ? S.orbs : []);
     RENDER3D.setFlashlight(
-      hunt && seekerInfo, seekerInfo,
+      hunt && seekerInfo && !isTag(), seekerInfo,
       seekerInfo ? seekerInfo.yaw : 0
     );
   }
@@ -1051,7 +1181,7 @@ window.GAME = (function () {
 
   // =============== taps: paint (setup) / accuse (hunt) ===============
   function onTap(sx, sy) {
-    if (!S) return;
+    if (!S || isTag()) return; // tag is pure contact — no tap actions
     const role = myRole();
     const meP = me();
 
@@ -1173,8 +1303,15 @@ window.GAME = (function () {
   function syncHud() {
     if (!S) return;
     const role = myRole();
-    ui.role.textContent = role === "seeker" ? "🔦 SEEKER" : role === "hider" ? "🗿 HIDER" : "👀 SPECTATOR";
-    const phaseNames = { setup: "HIDE & PAINT", hunt: "SEEK!", results: "RESULTS", final: "FINAL", lobby: "LOBBY" };
+    if (isTag()) {
+      ui.role.textContent = role === "seeker" ? "🏃 IT"
+        : role === "hider" ? (S.caught[L.meId] ? "❄️ FROZEN" : "🏃 RUNNER") : "👀 SPECTATOR";
+    } else {
+      ui.role.textContent = role === "seeker" ? "🔦 SEEKER" : role === "hider" ? "🗿 HIDER" : "👀 SPECTATOR";
+    }
+    const phaseNames = isTag()
+      ? { setup: "GET READY", hunt: "RUN!", results: "RESULTS", final: "FINAL", lobby: "LOBBY" }
+      : { setup: "HIDE & PAINT", hunt: "SEEK!", results: "RESULTS", final: "FINAL", lobby: "LOBBY" };
     ui.phase.textContent = phaseNames[S.phase] || S.phase;
     const remain = S.endsAt ? S.endsAt - now() : 0;
     ui.timer.textContent = MU.fmtTime(remain);
@@ -1189,22 +1326,26 @@ window.GAME = (function () {
     ui.score.textContent = "⭐ " + myScore;
     ui.coverTimer.textContent = Math.max(0, Math.ceil(remain / 1000));
 
-    const setupHider = S.phase === "setup" && role === "hider";
+    const setupHider = S.phase === "setup" && role === "hider" && !isTag();
     const panelOpen = POSE_EDITOR.isOpen() || PAINT.isOpen();
     ui.poseBtn.classList.toggle("hidden", !setupHider || panelOpen);
     ui.paintBtn.classList.toggle("hidden", !setupHider || panelOpen);
     const canJump = role !== "spectator" && (S.phase === "setup" || S.phase === "hunt") &&
-      !(role === "seeker" && S.phase === "setup") && !panelOpen;
+      !(role === "seeker" && S.phase === "setup" && !isTag()) &&
+      !(isTag() && S.caught[L.meId]) && !panelOpen;
     ui.jumpBtn.classList.toggle("hidden", !canJump);
     ui.emoteCol.classList.toggle("hidden", !canJump);
-    const showBall = role === "seeker" && S.phase === "hunt";
+    const showBall = role === "seeker" && S.phase === "hunt" && !isTag();
     ui.ballBtn.classList.toggle("hidden", !showBall);
     if (showBall) ui.ballBtn.textContent = "🎾 " + (S.balls != null ? S.balls : 0);
     if (S.balls === 0) ui.ballBtn.classList.remove("aiming");
-    ui.blend.classList.toggle("hidden", !(role === "hider" && S.phase === "setup"));
+    ui.blend.classList.toggle("hidden", !(role === "hider" && S.phase === "setup" && !isTag()));
 
     let hint = "";
-    if (setupHider) hint = "Move 🕹 · drag to look · tap mannequins to repaint";
+    if (isTag() && S.phase === "hunt") {
+      if (S.caught[L.meId]) hint = "❄️ Frozen! Wait for a teammate to touch you";
+      else hint = role === "seeker" ? "Touch runners to freeze them!" : "Flee the IT · thaw frozen friends by touch";
+    } else if (setupHider) hint = "Move 🕹 · drag to look · tap mannequins to repaint";
     else if (S.phase === "hunt" && role === "seeker") hint = "Tap a statue to accuse · 🎾 throws make real players flinch";
     else if (S.phase === "hunt" && role === "hider") hint = "Sneak when the light is off you. Grab ✨ orbs!";
     else if (role === "spectator" && S.phase === "hunt" && S.caught && S.caught[L.meId] && !(S.nudges || {})[L.meId])
@@ -1478,9 +1619,10 @@ window.GAME = (function () {
     requestAnimationFrame(loop);
   }
 
-  function startSolo(profile) {
+  function startSolo(profile, mode) {
     L = freshLocal("solo", profile);
-    startTutorial();
+    L.desiredMode = mode || "mimic";
+    if (L.desiredMode === "mimic") startTutorial();
     L.players["me"] = {
       x: 0, z: -8, yaw: 0, pose: FIG.defaultPose(),
       paint: FIG3D.defaultPaint(profile.color), mv: 0, lastMoveAt: 0,
@@ -1495,8 +1637,9 @@ window.GAME = (function () {
     NET.onPlayers(onPlayersChanged);
   }
 
-  function netHostStart() {
+  function netHostStart(mode) {
     if (!L) return;
+    L.desiredMode = mode || "mimic";
     hostStartMatch();
   }
 

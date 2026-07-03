@@ -424,3 +424,19 @@ input:focus { border-color: var(--accent2); }
 .hat-dot.sel { border-color: #fff; }
 .hat-dot.locked { opacity: .35; }
 .level-tag { color: var(--accent); text-transform: none; letter-spacing: 0; }
+
+.mode-row { display: flex; gap: 8px; }
+.mode-chip {
+  flex: 1;
+  border: 2px solid var(--card2);
+  border-radius: 14px;
+  background: var(--bg);
+  color: var(--ink);
+  font-weight: 800;
+  font-size: 15px;
+  padding: 10px 6px;
+  cursor: pointer;
+  display: flex; flex-direction: column; gap: 2px; align-items: center;
+}
+.mode-chip span { font-size: 11px; color: var(--muted); font-weight: 600; }
+.mode-chip.sel { border-color: var(--accent); background: var(--card2); }

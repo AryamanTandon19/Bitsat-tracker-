@@ -12,6 +12,7 @@
   };
   let myColor = COLORS[Math.floor(Math.random() * COLORS.length)];
   let myHat = localStorage.getItem("mimic-hat") || "none";
+  let myMode = localStorage.getItem("mimic-mode") || "mimic";
   let inLobby = false;
 
   const HAT_ICONS = { none: "🚫", cap: "🧢", party: "🥳", tophat: "🎩", crown: "👑", halo: "😇" };
@@ -44,6 +45,18 @@
     }
   }
   window.MIMIC_ON_STATS = () => renderHats(); // refresh after each match
+
+  function renderModes() {
+    document.querySelectorAll(".mode-chip").forEach((b) => {
+      b.classList.toggle("sel", b.dataset.mode === myMode);
+      b.onclick = () => {
+        myMode = b.dataset.mode;
+        localStorage.setItem("mimic-mode", myMode);
+        renderModes();
+      };
+    });
+  }
+  renderModes();
 
   function show(name) {
     for (const k in screens) screens[k].classList.toggle("hidden", k !== name);
@@ -136,7 +149,7 @@
   $("btn-solo").addEventListener("click", () => {
     SND.unlock();
     show("game");
-    GAME.startSolo(profile());
+    GAME.startSolo(profile(), myMode);
   });
   $("btn-create").addEventListener("click", () => {
     SND.unlock();
@@ -187,7 +200,7 @@
 
   // ---------- lobby buttons ----------
   $("btn-start").addEventListener("click", () => {
-    if (NET.isHost() && NET.players().length >= 2) GAME.netHostStart();
+    if (NET.isHost() && NET.players().length >= 2) GAME.netHostStart(myMode);
   });
   $("btn-leave").addEventListener("click", () => {
     GAME.stop();

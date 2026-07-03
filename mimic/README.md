@@ -1,9 +1,14 @@
-# MIMIC! 🗿 — pose · paint · freeze · survive
+# MIMIC! 🗿🏃 — two party games in one park
 
-A cross-platform (mobile + desktop) **3D** multiplayer hide-and-seek party game,
-playable right in the browser. Hiders pose as mannequins scattered around a park —
-museum pavilion, houses, gardens, fountain plaza — and **paint themselves to blend
-in**. At dusk the Seeker hunts them with a flashlight.
+A cross-platform (mobile + desktop) **3D** multiplayer party game, playable right
+in the browser. Pick your mode on the menu:
+
+- **🗿 Mimic (hide & seek):** pose as a mannequin, paint yourself to blend in,
+  survive the flashlight at dusk.
+- **🏃 Freeze Tag (chase & thaw):** the IT sprints after runners in bright
+  daylight — one touch freezes you solid in ice; teammates thaw you by touch.
+  Pure contact, zero learning curve.
+
 Concept #1 from [`GAME_CONCEPTS.md`](../GAME_CONCEPTS.md), evolved.
 
 ## How to play
@@ -29,6 +34,17 @@ The seeker role rotates each round; most points after all rounds wins.
 - **❄️ Map themes** — each match randomly picks Park or Snow (with falling snow); same layout, different camouflage climate.
 - **📸 Share card** — final standings render to a shareable image (Web Share API / download).
 - **↩ Reconnect** — per-tab identity survives a reload; a "Rejoin last room" button appears for 10 minutes.
+
+## Freeze Tag rules
+
+| | |
+|---|---|
+| **IT** | Runs faster than everyone. Touch a runner: they freeze (+15). Freeze all runners before the timer: sweep bonus. |
+| **Runners** | Flee! Touch a frozen teammate to thaw them (+10). Survive unfrozen: +25. Orbs still spawn (+10). |
+| **Grace** | Just-thawed runners are untaggable for 2.5s. IT rotates each round. |
+
+Solo Freeze Tag pits you against a sprinting AI chaser with AI teammates who
+flee, rescue and grab orbs.
 
 ## Game modes
 

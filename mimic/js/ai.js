@@ -145,5 +145,55 @@ window.AI = (function () {
     }
   }
 
-  return { createSeeker, updateSeeker, createBot, updateBot, inCone, BOT_NAMES };
+  // ---------------- Freeze Tag brains ----------------
+  // The IT chases the nearest unfrozen runner at full sprint.
+  function updateChaser(ai, dt, runners, cb) {
+    ai.mv = 0;
+    const live = runners.filter((r) => !r.frozen);
+    if (!live.length) return;
+    const target = live.sort((a, b) => dist(a, ai) - dist(b, ai))[0];
+    if (ai.pause > 0) { ai.pause -= dt; return; }
+    const arrived = stepToward(ai, target.x, target.z, 4.1, dt);
+    ai.mv = arrived ? 0 : 1;
+    if (dist(target, ai) < 1.25) {
+      cb.tag(target.id);
+      ai.pause = 1.2; // celebrate, then move on — no camping the frozen victim
+    }
+    // brief stumble sometimes so humans can juke it
+    if (Math.random() < 0.002) ai.pause = 0.5;
+  }
+
+  // Runner bots flee the IT, rescue frozen friends, and snack on orbs.
+  function updateRunnerBot(b, dt, it, runners, orbs) {
+    b.moved = false;
+    if (b.frozenSelf) return;
+    const itDist = it ? dist(b, it) : 99;
+    let tx = null, tz = null, speed = 3.4;
+    if (it && itDist < 8) {
+      // flee directly away, with a little jitter
+      const away = Math.atan2(b.x - it.x, b.z - it.z) + (Math.random() - 0.5) * 0.5;
+      tx = b.x + Math.sin(away) * 6;
+      tz = b.z + Math.cos(away) * 6;
+      speed = 3.7;
+    } else {
+      const frozenMate = runners
+        .filter((r) => r.frozen && r.id !== b.id)
+        .sort((a, c) => dist(a, b) - dist(c, b))[0];
+      const orb = orbs.filter((o) => !o.taken).sort((a, c) => dist(a, b) - dist(c, b))[0];
+      if (frozenMate && dist(frozenMate, b) < 22 && (!it || dist(frozenMate, it) > 9)) {
+        tx = frozenMate.x; tz = frozenMate.z;
+      } else if (orb && dist(orb, b) < 18) {
+        tx = orb.x; tz = orb.z;
+      } else {
+        if (!b.target || dist(b.target, b) < 1) b.target = WORLD3D.randomOpenSpot();
+        tx = b.target.x; tz = b.target.z;
+        speed = 2.6;
+      }
+    }
+    const arrived = stepToward(b, tx, tz, speed, dt);
+    b.moved = !arrived;
+  }
+
+  return { createSeeker, updateSeeker, createBot, updateBot, inCone,
+           updateChaser, updateRunnerBot, BOT_NAMES };
 })();

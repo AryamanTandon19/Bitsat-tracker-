@@ -4,7 +4,7 @@
 // paintable material and the torso carries a canvas texture for doodles.
 window.FIG3D = (function () {
   const S = 0.0135; // px -> meters (figure ≈ 1.7m tall)
-  const RAD = { torso: 0.145, limb: 0.058, head: 0.165 };
+  const RAD = { torso: 0.16, limb: 0.068, head: 0.215 };
   const ARM_X = 0.26, LEG_X = 0.145;
   const UP = new THREE.Vector3(0, 1, 0);
 
@@ -100,13 +100,27 @@ window.FIG3D = (function () {
     };
     for (const k in parts) group.add(parts[k]);
 
-    // a gentle mannequin face (everyone gets the same one — no tells)
-    const eyeMat = std({ color: "#26222e", roughness: 0.35 });
-    const eyeL = ball(eyeMat, 0.021, 8, 6), eyeR = ball(eyeMat, 0.021, 8, 6);
-    eyeL.castShadow = eyeR.castShadow = false;
-    parts.head.add(eyeL); parts.head.add(eyeR);
-    eyeL.position.set(-0.055, 0.025, RAD.head - 0.02);
-    eyeR.position.set(0.055, 0.025, RAD.head - 0.02);
+    // a friendly face (everyone gets the same one — no tells)
+    const eyeMat = std({ color: "#26222e", roughness: 0.3 });
+    const shineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    for (const ex of [-0.075, 0.075]) {
+      const eye = ball(eyeMat, 0.032, 10, 8);
+      eye.castShadow = false;
+      eye.position.set(ex, 0.03, RAD.head - 0.024);
+      parts.head.add(eye);
+      const shine = ball(shineMat, 0.011, 6, 5);
+      shine.castShadow = false;
+      shine.position.set(ex + 0.012, 0.042, RAD.head - 0.002);
+      parts.head.add(shine);
+    }
+    const smile = new THREE.Mesh(
+      new THREE.TorusGeometry(0.062, 0.014, 6, 12, Math.PI * 0.75),
+      eyeMat
+    );
+    smile.castShadow = false;
+    smile.position.set(0, -0.05, RAD.head - 0.03);
+    smile.rotation.z = Math.PI + Math.PI * 0.125;
+    parts.head.add(smile);
 
     // invisible hit capsule for tap raycasting
     const hit = new THREE.Mesh(
@@ -376,7 +390,16 @@ window.FIG3D = (function () {
         marker.visible = !!on;
         if (color) marker.material.color.set(color);
       },
-      setFlash(on) { ring.visible = !!on; },
+      setFlash(on, color) {
+        ring.visible = !!on;
+        if (on) ring.material.color.set(color || 0xff4455);
+      },
+      // frosted-over look for Freeze Tag
+      setIce(on) {
+        for (const k in mats) mats[k].emissive.set(on ? 0x2a6a8e : 0x000000);
+        if (on) { ring.visible = true; ring.material.color.set(0x9fe4ff); }
+        else if (ring.material.color.getHex() === 0x9fe4ff) ring.visible = false;
+      },
       setCleared(on) {
         clearedSp.visible = !!on;
         for (const k in mats) {
