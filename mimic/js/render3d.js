@@ -10,6 +10,77 @@ window.RENDER3D = (function () {
   let time = 0;
   let shakeAmt = 0;
   let worldGroup = null;
+  let skyDome = null, skyCtx = null, skyTex = null, sunSprite = null, stars = null;
+
+  // painted gradient sky: golden day, sunset-band dusk
+  const SKY_STOPS = {
+    park: {
+      day:  [["0", "#3fa9dd"], ["0.55", "#8fd6f0"], ["0.78", "#ffe6b0"], ["1", "#ffd28a"]],
+      dusk: [["0", "#0d1030"], ["0.5", "#33265e"], ["0.78", "#b34a6e"], ["1", "#ff8a5c"]],
+    },
+    snow: {
+      day:  [["0", "#7fb8e0"], ["0.55", "#c8e4f2"], ["0.8", "#ffeed6"], ["1", "#ffdcae"]],
+      dusk: [["0", "#0e1434"], ["0.5", "#2c3163"], ["0.78", "#7e5d9e"], ["1", "#e8907c"]],
+    },
+  };
+  let skyTheme = "park";
+
+  function paintSky(moodName) {
+    const stops = (SKY_STOPS[skyTheme] || SKY_STOPS.park)[moodName] || SKY_STOPS.park.day;
+    const g = skyCtx.createLinearGradient(0, 0, 0, 256);
+    for (const [p, c] of stops) g.addColorStop(parseFloat(p), c);
+    skyCtx.fillStyle = g;
+    skyCtx.fillRect(0, 0, 16, 256);
+    skyTex.needsUpdate = true;
+  }
+
+  function initSky() {
+    const c = document.createElement("canvas");
+    c.width = 16; c.height = 256;
+    skyCtx = c.getContext("2d");
+    skyTex = new THREE.CanvasTexture(c);
+    if (THREE.SRGBColorSpace) skyTex.colorSpace = THREE.SRGBColorSpace;
+    skyDome = new THREE.Mesh(
+      new THREE.SphereGeometry(165, 24, 16),
+      new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false, depthWrite: false })
+    );
+    skyDome.renderOrder = -10;
+    scene.add(skyDome);
+    paintSky("day");
+
+    // soft sun / moon glow
+    const sc = document.createElement("canvas");
+    sc.width = sc.height = 128;
+    const sx = sc.getContext("2d");
+    const sg = sx.createRadialGradient(64, 64, 4, 64, 64, 62);
+    sg.addColorStop(0, "rgba(255,250,230,1)");
+    sg.addColorStop(0.25, "rgba(255,236,170,.9)");
+    sg.addColorStop(1, "rgba(255,220,140,0)");
+    sx.fillStyle = sg;
+    sx.fillRect(0, 0, 128, 128);
+    sunSprite = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: new THREE.CanvasTexture(sc), transparent: true,
+      blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
+    }));
+    sunSprite.scale.set(34, 34, 1);
+    sunSprite.position.set(85, 55, 30);
+    scene.add(sunSprite);
+
+    // stars for dusk
+    const starGeo = new THREE.BufferGeometry();
+    const pos = [];
+    for (let i = 0; i < 260; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const el = Math.random() * Math.PI * 0.42 + 0.12;
+      const r = 150;
+      pos.push(Math.cos(a) * Math.cos(el) * r, Math.sin(el) * r, Math.sin(a) * Math.cos(el) * r);
+    }
+    starGeo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    stars = new THREE.Points(starGeo, new THREE.PointsMaterial({
+      color: 0xdfe8ff, size: 1.6, sizeAttenuation: false, transparent: true, opacity: 0, fog: false,
+    }));
+    scene.add(stars);
+  }
 
   // ---- particle pool (sprites with velocity + gravity) ----
   const POOL = 140;
@@ -85,12 +156,12 @@ window.RENDER3D = (function () {
 
   const MOODS_BY_THEME = {
     park: {
-      day:  { sky: 0x9fd4e8, fog: 0xaed6e6, sun: 1.25, hemi: 0.85, sunC: 0xfff2d8 },
-      dusk: { sky: 0x1e2340, fog: 0x1e2340, sun: 0.28, hemi: 0.32, sunC: 0x9bb0ff },
+      day:  { sky: 0x9fd4e8, fog: 0xffd9a3, sun: 1.45, hemi: 0.9, sunC: 0xffe3b0 },
+      dusk: { sky: 0x1e2340, fog: 0x5c3a5e, sun: 0.3, hemi: 0.34, sunC: 0x9bb0ff },
     },
     snow: {
-      day:  { sky: 0xd4e6f2, fog: 0xdce8f0, sun: 1.1, hemi: 0.95, sunC: 0xf2f6ff },
-      dusk: { sky: 0x232a45, fog: 0x232a45, sun: 0.3, hemi: 0.38, sunC: 0xaabfff },
+      day:  { sky: 0xd4e6f2, fog: 0xffe9cd, sun: 1.25, hemi: 1.0, sunC: 0xfff0d8 },
+      dusk: { sky: 0x232a45, fog: 0x6b4a72, sun: 0.32, hemi: 0.4, sunC: 0xaabfff },
     },
   };
   let MOODS = MOODS_BY_THEME.park;
@@ -103,7 +174,7 @@ window.RENDER3D = (function () {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.12;
+    renderer.toneMappingExposure = 1.22;
     if (THREE.SRGBColorSpace) renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     scene = new THREE.Scene();
@@ -116,7 +187,7 @@ window.RENDER3D = (function () {
     hemi = new THREE.HemisphereLight(0xdfeeff, 0x6a7a5a, MOODS.day.hemi);
     scene.add(hemi);
     sun = new THREE.DirectionalLight(0xfff2d8, MOODS.day.sun);
-    sun.position.set(28, 40, 18);
+    sun.position.set(45, 26, 20); // low sun = long dramatic shadows
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
     const sc = sun.shadow.camera;
@@ -145,6 +216,7 @@ window.RENDER3D = (function () {
     WORLD3D.build(worldGroup, "park");
     scene.add(worldGroup);
     initParticles();
+    initSky();
     return { scene, camera };
   }
 
@@ -164,6 +236,8 @@ window.RENDER3D = (function () {
       });
     }
     MOODS = MOODS_BY_THEME[name] || MOODS_BY_THEME.park;
+    skyTheme = name;
+    if (skyCtx) paintSky(mood);
     worldGroup = new THREE.Group();
     WORLD3D.build(worldGroup, name);
     scene.add(worldGroup);
@@ -203,9 +277,23 @@ window.RENDER3D = (function () {
     }
   }
 
-  function setMood(name) { mood = name; moodT = 0; }
+  function setMood(name) {
+    mood = name;
+    moodT = 0;
+    if (skyCtx) paintSky(name);
+    if (sunSprite) {
+      const dusk = name === "dusk";
+      sunSprite.position.set(dusk ? -70 : 85, dusk ? 40 : 55, dusk ? -40 : 30);
+      sunSprite.scale.setScalar(dusk ? 18 : 34);
+      sunSprite.material.color.set(dusk ? 0xcfd8ff : 0xffffff);
+    }
+  }
 
   function lerpMood(dt) {
+    if (stars) {
+      const want = mood === "dusk" ? 0.9 : 0;
+      stars.material.opacity += (want - stars.material.opacity) * Math.min(1, dt * 2);
+    }
     if (moodT >= 1) return;
     moodT = Math.min(1, moodT + dt * 1.2);
     const m = MOODS[mood];
@@ -328,6 +416,10 @@ window.RENDER3D = (function () {
     for (const id in orbMeshes) {
       orbMeshes[id].position.y = 0.9 + Math.sin(time * 3 + orbMeshes[id].position.x) * 0.15;
       orbMeshes[id].rotation.y += dt * 2;
+    }
+    if (skyDome) {
+      skyDome.position.copy(camera.position);
+      if (stars) stars.position.set(camera.position.x, 0, camera.position.z);
     }
     renderer.render(scene, camera);
   }

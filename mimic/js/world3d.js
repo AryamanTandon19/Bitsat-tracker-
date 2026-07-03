@@ -12,13 +12,13 @@ window.WORLD3D = (function () {
   // colour palettes per map theme
   const THEMES = {
     park: {
-      ground: ["#679a53", "#7fb267", "#527d41"],
-      sand: ["#b9a583", "#cbb896", "#a08b6a"],
-      pineA: 0x2e6b3e, pineB: 0x38804a,
-      oak: 0x4a8a4a, oakLight: 0x5c9c5c,
-      autumn: 0xc27b3a, autumnLight: 0xd6924e,
-      hedge: 0x3c7a44, tuftH: 0.29, tuftS: 0.42, tuftL: 0.32,
-      stem: 0x3f7a3a, water: 0x3f9fc0,
+      ground: ["#5fae4e", "#7fd465", "#47953c"],
+      sand: ["#e8c98a", "#f5dca6", "#d0ae6e"],
+      pineA: 0x1e8a52, pineB: 0x36b46e,
+      oak: 0x3fae4f, oakLight: 0x65d072,
+      autumn: 0xe8853a, autumnLight: 0xffab52,
+      hedge: 0x2f9e4e, tuftH: 0.3, tuftS: 0.6, tuftL: 0.38,
+      stem: 0x2f9e44, water: 0x2fc4e0,
     },
     snow: {
       ground: ["#e8eef4", "#ffffff", "#c9d6e2"],
@@ -186,6 +186,25 @@ window.WORLD3D = (function () {
       M(0xbfe3ef, { emissive: 0x3a5866, roughness: 0.2 }));
     sw.position.set(w / 2 + 0.04, 1.7, -0.6);
     g.add(sw);
+    // striped awning over the door + window flower boxes
+    const awn = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.9, 1.6, 10, 1, false, 0, Math.PI), M(roofC, { roughness: 0.5 }));
+    awn.rotation.z = Math.PI / 2;
+    awn.rotation.y = Math.PI / 2;
+    awn.scale.y = 0.45;
+    awn.position.set(0.8, 2.2, d / 2 + 0.35);
+    awn.castShadow = true;
+    g.add(awn);
+    for (const wx of [-1.7, -0.4]) {
+      const fb = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.18, 0.22), M(0x6b4226));
+      fb.position.set(wx, 1.12, d / 2 + 0.14);
+      g.add(fb);
+      for (let fi = 0; fi < 3; fi++) {
+        const fl = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 6),
+          M([0xff6b9d, 0xffe066, 0xff8b4a][fi], { emissive: 0x241018 }));
+        fl.position.set(wx - 0.3 + fi * 0.3, 1.26, d / 2 + 0.16);
+        g.add(fl);
+      }
+    }
     const chim = new THREE.Mesh(new THREE.BoxGeometry(0.6, 1.7, 0.6), M(0x8d7364));
     chim.position.set(-w / 2 + 0.9, h + 1.3, -0.8);
     chim.castShadow = true;
@@ -204,7 +223,22 @@ window.WORLD3D = (function () {
   }
 
   function fountain(scene, x, z) {
-    const stone = M(0x9aa0b4, { roughness: 0.6 });
+    const stone = M(0xb9c0d4, { roughness: 0.55 });
+    // checker-tiled plaza apron
+    const tile = document.createElement("canvas");
+    tile.width = tile.height = 64;
+    const tx = tile.getContext("2d");
+    tx.fillStyle = "#e8ddc8"; tx.fillRect(0, 0, 64, 64);
+    tx.fillStyle = "#cfc0a4"; tx.fillRect(0, 0, 32, 32); tx.fillRect(32, 32, 32, 32);
+    const tileTex = new THREE.CanvasTexture(tile);
+    tileTex.wrapS = tileTex.wrapT = THREE.RepeatWrapping;
+    tileTex.repeat.set(9, 9);
+    if (THREE.SRGBColorSpace) tileTex.colorSpace = THREE.SRGBColorSpace;
+    const apron = new THREE.Mesh(new THREE.CircleGeometry(8.5, 36), M(0xffffff, { map: tileTex, roughness: 0.9 }));
+    apron.rotation.x = -Math.PI / 2;
+    apron.position.set(x, 0.02, z);
+    apron.receiveShadow = true;
+    scene.add(apron);
     cyl(scene, 3.2, 3.5, 0.7, x, 0.35, z, stone, 32);
     // carved rim
     const rim = new THREE.Mesh(new THREE.TorusGeometry(3.2, 0.14, 10, 40), M(0xb0b6c8, { roughness: 0.5 }));
@@ -235,11 +269,24 @@ window.WORLD3D = (function () {
     );
     jet.position.set(x, 3.0, z);
     scene.add(jet);
+    // four arcing side jets
+    const arcMat = M(0xbdeff8, { emissive: 0x3d7482, transparent: true, opacity: 0.7 });
+    const arcs = [];
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+      const arc = new THREE.Mesh(new THREE.TorusGeometry(1.15, 0.07, 6, 12, Math.PI * 0.55), arcMat);
+      arc.position.set(x + Math.cos(a) * 1.15, 2.25, z + Math.sin(a) * 1.15);
+      arc.rotation.y = -a + Math.PI / 2;
+      arc.rotation.z = Math.PI * 0.22;
+      scene.add(arc);
+      arcs.push(arc);
+    }
     animated.push((t) => {
       water.rotation.y = t * 0.25;
       bowlWater.rotation.y = -t * 0.4;
       jet.scale.y = 1 + Math.sin(t * 5) * 0.1;
       jet.position.y = 3.0 + Math.sin(t * 5) * 0.04;
+      arcs.forEach((a2, i) => { a2.material.opacity = 0.55 + Math.sin(t * 6 + i) * 0.18; });
     });
     col(x, z, 3.7);
     for (let i = 0; i < 6; i++) {
@@ -733,6 +780,144 @@ window.WORLD3D = (function () {
     scene.add(stem);
   }
 
+  // ---------- Ferris wheel: THE landmark ----------
+  function ferrisWheel(scene, x, z) {
+    const R = 5.2, hubY = R + 1.6;
+    const frame = M(0xe4526b, { metalness: 0.3, roughness: 0.4 });
+    const gondCols = [0xffcf3f, 0x39c6e8, 0x8de04e, 0xff8b4a, 0xc77dff, 0xff6b9d, 0x4ee0c3, 0xffe98a];
+    // A-frame legs
+    for (const side of [-0.55, 0.55]) {
+      for (const lean of [-0.42, 0.42]) {
+        const leg = cyl(scene, 0.09, 0.13, hubY + 1.2, x + lean * 2.6, hubY / 2, z + side, frame, 10);
+        leg.rotation.z = lean;
+      }
+    }
+    const axle = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 1.7, 10), frame);
+    axle.rotation.x = Math.PI / 2;
+    axle.position.set(x, hubY, z);
+    scene.add(axle);
+
+    const wheel = new THREE.Group();
+    for (const side of [-0.5, 0.5]) {
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(R, 0.08, 8, 40), frame);
+      ring.position.z = side;
+      wheel.add(ring);
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        const spoke = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, R, 6), frame);
+        spoke.position.set(Math.cos(a) * R / 2, Math.sin(a) * R / 2, side);
+        spoke.rotation.z = a + Math.PI / 2;
+        wheel.add(spoke);
+      }
+    }
+    const hub = new THREE.Mesh(new THREE.SphereGeometry(0.3, 12, 10), M(0xffcf3f, { metalness: 0.5, roughness: 0.3 }));
+    wheel.add(hub);
+    // gondolas hang from the rim and stay upright
+    const gondolas = [];
+    for (let i = 0; i < 8; i++) {
+      const g = new THREE.Group();
+      const cab = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.7, 0.9),
+        M(gondCols[i], { roughness: 0.35, emissive: 0x1a1424 }));
+      cab.position.y = -0.55;
+      cab.castShadow = true;
+      g.add(cab);
+      const roof = new THREE.Mesh(new THREE.ConeGeometry(0.62, 0.34, 4), M(0xffffff, { roughness: 0.5 }));
+      roof.rotation.y = Math.PI / 4;
+      roof.position.y = -0.05;
+      g.add(roof);
+      wheel.add(g);
+      gondolas.push(g);
+    }
+    wheel.position.set(x, hubY, z);
+    scene.add(wheel);
+    animated.push((t) => {
+      const a0 = t * 0.22;
+      wheel.rotation.z = a0;
+      gondolas.forEach((g, i) => {
+        const a = (i / 8) * Math.PI * 2 + a0;
+        // position in wheel-local coords, counter-rotated so cabins hang level
+        g.position.set(Math.cos((i / 8) * Math.PI * 2) * R, Math.sin((i / 8) * Math.PI * 2) * R, 0);
+        g.rotation.z = -a0;
+      });
+    });
+    // ticket booth
+    box(scene, 1.3, 1.6, 1.1, x + 4, 0.8, z + 2.5, M(0xffcf3f), 0.3, true);
+    const boothRoof = new THREE.Mesh(new THREE.ConeGeometry(1.15, 0.7, 4), M(0xe4526b));
+    boothRoof.rotation.y = Math.PI / 4 + 0.3;
+    boothRoof.position.set(x + 4, 1.95, z + 2.5);
+    scene.add(boothRoof);
+    col(x - 1.5, z, 1.1); col(x + 1.5, z, 1.1); col(x + 4, z + 2.5, 0.9);
+    spot(x - 3.4, z + 1.8, 1.1); spot(x + 2.8, z - 2.2, -2.0);
+  }
+
+  // ---------- hot-air balloon drifting overhead ----------
+  function hotAirBalloon(scene, x, z) {
+    const g = new THREE.Group();
+    const stripes = [0xff6b9d, 0xffe98a, 0x39c6e8, 0xff8b4a];
+    for (let i = 0; i < 4; i++) {
+      const seg = new THREE.Mesh(
+        new THREE.SphereGeometry(2.2, 20, 12, (i * Math.PI) / 2, Math.PI / 2),
+        M(stripes[i], { roughness: 0.5 })
+      );
+      g.add(seg);
+    }
+    const skirt = new THREE.Mesh(new THREE.ConeGeometry(1.1, 1.4, 12), M(0x8a5a3c));
+    skirt.rotation.x = Math.PI;
+    skirt.position.y = -2.4;
+    g.add(skirt);
+    const basket = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.75, 1.0), M(0xb08048, { roughness: 0.9 }));
+    basket.position.y = -3.5;
+    basket.castShadow = true;
+    g.add(basket);
+    for (const [rx, rz] of [[-0.45, -0.45], [0.45, -0.45], [-0.45, 0.45], [0.45, 0.45]]) {
+      const rope = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 1.3, 4), M(0xdccbaa));
+      rope.position.set(rx, -2.75, rz);
+      g.add(rope);
+    }
+    scene.add(g);
+    const ph = Math.random() * 9;
+    animated.push((t) => {
+      g.position.set(
+        x + Math.sin(t * 0.08 + ph) * 9,
+        13.5 + Math.sin(t * 0.5 + ph) * 0.7,
+        z + Math.cos(t * 0.06 + ph) * 7
+      );
+      g.rotation.y = t * 0.05;
+    });
+  }
+
+  // ---------- festive string lights around the plaza ----------
+  function stringLights(scene, cx, cz, radius, poles) {
+    const poleM = M(0x6b4226, { roughness: 0.9 });
+    const bulbCols = [0xffd98a, 0xff9d9d, 0x9dffb0, 0x9dd8ff, 0xffc4f0];
+    const tops = [];
+    for (let i = 0; i < poles; i++) {
+      const a = (i / poles) * Math.PI * 2;
+      const px = cx + Math.cos(a) * radius, pz = cz + Math.sin(a) * radius;
+      cyl(scene, 0.06, 0.09, 3.0, px, 1.5, pz, poleM, 8);
+      const flag = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.4, 4), M(bulbCols[i % bulbCols.length]));
+      flag.position.set(px, 3.2, pz);
+      scene.add(flag);
+      tops.push({ x: px, y: 3.0, z: pz });
+      col(px, pz, 0.25);
+    }
+    // catenary bulb strands between neighbouring poles
+    for (let i = 0; i < poles; i++) {
+      const a = tops[i], b = tops[(i + 1) % poles];
+      const N = 7;
+      for (let k = 1; k < N; k++) {
+        const t = k / N;
+        const sag = Math.sin(t * Math.PI) * 0.55;
+        const bulb = new THREE.Mesh(
+          new THREE.SphereGeometry(0.075, 8, 6),
+          M(bulbCols[(i + k) % bulbCols.length], { emissive: bulbCols[(i + k) % bulbCols.length], emissiveIntensity: 0.55 })
+        );
+        bulb.position.set(MU.lerp(a.x, b.x, t), 3.0 - sag, MU.lerp(a.z, b.z, t));
+        scene.add(bulb);
+      }
+    }
+  }
+
   function rocks(scene) {
     const mat = M(0x8d93a3, { roughness: 0.9 });
     const mat2 = M(0x767c8c, { roughness: 0.9 });
@@ -776,9 +961,9 @@ window.WORLD3D = (function () {
 
     colonnade(scene, -30, -12);
     fountain(scene, 0, 0);
-    house(scene, 18, -21, 0.35, 0xd8b46a, 0xa8503e);
-    house(scene, 35, -8, -0.9, 0xc7d3e0, 0x50657f);
-    house(scene, -14, 21, 2.7, 0xd9a4a4, 0x7c4646);
+    house(scene, 18, -21, 0.35, 0xffd166, 0xe4526b);
+    house(scene, 35, -8, -0.9, 0x9adcf0, 0x3a6ea5);
+    house(scene, -14, 21, 2.7, 0xffb3c6, 0xc2185b);
 
     hedge(scene, 18, 12, 8, 0);
     hedge(scene, 26, 16, 8, Math.PI / 2);
@@ -829,6 +1014,9 @@ window.WORLD3D = (function () {
     box(scene, 0.1, 0.14, 62.4, 46, 0.55, 0, fenceMat);
 
     // new attractions
+    ferrisWheel(scene, -2, -25);
+    hotAirBalloon(scene, 22, 10);
+    stringLights(scene, 0, 0, 10.5, 6);
     playground(scene, -33, 22);
     pond(scene, -27, -23, 4.5);
     windmill(scene, 42, 26);
