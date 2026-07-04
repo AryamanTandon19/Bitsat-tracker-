@@ -5,12 +5,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+import tempfile
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Form, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi import (Depends, FastAPI, File, Form, HTTPException, Request,
+                     UploadFile)
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
+from . import assistant as assistant_mod
 from . import clips as clips_mod
 from .plates import normalize_plate
 
@@ -123,6 +126,88 @@ def create_app(ctx) -> FastAPI:
             raise HTTPException(404, "clip not found or already deleted")
         return {"ok": True}
 
+    # --------------------------------------------- upload & analyze video
+    @app.post("/api/analyze")
+    async def analyze_upload(file: UploadFile = File(...),
+                             zones_from: str = Form("")):
+        analyzer = getattr(ctx, "analyzer", None)
+        if analyzer is None:
+            raise HTTPException(503, "video analysis is disabled")
+        max_mb = int((ctx.config.get("analyze") or {}).get("max_upload_mb", 300))
+        suffix = Path(file.filename or "upload.mp4").suffix or ".mp4"
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        size = 0
+        try:
+            while chunk := await file.read(1 << 20):
+                size += len(chunk)
+                if size > max_mb * 1024 * 1024:
+                    tmp.close()
+                    Path(tmp.name).unlink(missing_ok=True)
+                    raise HTTPException(413, f"file exceeds {max_mb} MB")
+                tmp.write(chunk)
+        finally:
+            tmp.close()
+        # zones: reuse a configured camera's zones, if requested
+        zones = {}
+        for cam in ctx.config.get("cameras", []):
+            if cam.get("name") == zones_from:
+                zones = cam.get("zones", {})
+                break
+        registry = ctx.db.registry_plates()
+        job = analyzer.submit(tmp.name, file.filename or "upload.mp4",
+                              zones=zones, registry=registry)
+        return {"job_id": job.id}
+
+    @app.get("/api/analyze/{job_id}")
+    def analyze_status(job_id: str):
+        analyzer = getattr(ctx, "analyzer", None)
+        job = analyzer.get(job_id) if analyzer else None
+        if job is None:
+            raise HTTPException(404, "job not found")
+        return job.public()
+
+    @app.get("/api/analyze/{job_id}/clip/{index}")
+    def analyze_clip(job_id: str, index: int):
+        analyzer = getattr(ctx, "analyzer", None)
+        job = analyzer.get(job_id) if analyzer else None
+        if job is None or index not in job.clips:
+            raise HTTPException(404, "clip not available")
+        return FileResponse(job.clips[index], media_type="video/mp4")
+
+    @app.get("/api/cameras")
+    def cameras():
+        return [c.get("name") for c in ctx.config.get("cameras", [])]
+
+    # ------------------------------------------------ Claude tuning chatbot
+    @app.post("/api/assistant")
+    async def assistant_chat(request: Request):
+        asst = getattr(ctx, "assistant", None)
+        body = await request.json()
+        message = (body.get("message") or "").strip()
+        history = body.get("history") or []
+        if asst is None or not asst.available:
+            return JSONResponse({
+                "reply": "Assistant is not configured. Set assistant.enabled: "
+                         "true in config.yaml and export ANTHROPIC_API_KEY.",
+                "patch": {}, "explanation": ""})
+        if not message:
+            raise HTTPException(400, "empty message")
+        result = asst.chat(message, ctx.config, ctx.db.recent_events(30), history)
+        # validate the proposed patch so the UI only offers safe changes
+        clean, rejected = assistant_mod.validate_patch(ctx.config, result.get("patch"))
+        result["patch"] = clean
+        result["rejected"] = rejected
+        return result
+
+    @app.post("/api/assistant/apply")
+    async def assistant_apply(request: Request):
+        asst = getattr(ctx, "assistant", None)
+        body = await request.json()
+        patch = body.get("patch") or {}
+        result = assistant_mod.apply_patch(
+            ctx.config_path, ctx.config, patch, db=ctx.db, actor="dashboard")
+        return result
+
     # ------------------------------------------------------------ audit
     @app.get("/api/audit")
     def audit(limit: int = 200):
@@ -150,6 +235,30 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 </style></head><body>
 <h1>&#128680; Society AI Watchdog</h1>
 <div class="cams" id="cams"></div>
+
+<h2>&#128228; Test with a video (upload &rarr; AI detects anomalies)</h2>
+<div class="row">
+ <input type="file" id="up_file" accept="video/*">
+ <label>zones from camera:
+  <select id="up_zones"><option value="">(none — only tamper/contact)</option></select>
+ </label>
+ <button onclick="analyze()">Analyze</button>
+ <span id="up_status"></span>
+</div>
+<table id="up_results"><thead><tr><th>Severity</th><th>Video time</th>
+<th>Type</th><th>Plate</th><th>Description</th><th>Clip</th></tr></thead>
+<tbody></tbody></table>
+
+<h2>&#129302; Tuning assistant (Claude) — correct the system in plain English</h2>
+<div id="chat" style="border:1px solid #333;border-radius:6px;padding:8px;
+ max-height:260px;overflow:auto;background:#181818;font-size:13px"></div>
+<div class="row">
+ <input id="chat_in" style="flex:1;min-width:300px"
+  placeholder="e.g. the loitering alert fired too early — make it less sensitive"
+  onkeydown="if(event.key==='Enter')sendChat()">
+ <button onclick="sendChat()">Send</button>
+</div>
+
 <h2>Recent events</h2>
 <table id="events"><thead><tr><th>Severity</th><th>Time</th><th>Camera</th>
 <th>Type</th><th>Plate</th><th>Description</th><th>Clip</th></tr></thead>
@@ -208,5 +317,77 @@ async function delClip(id){
  const r=await fetch('/api/clips/'+id+'/delete',{method:'POST',body:f});
  if(!r.ok)alert('delete failed'); refresh();
 }
+
+// ---- upload & analyze -------------------------------------------------
+async function loadCams(){
+ try{const cams=await (await fetch('/api/cameras')).json();
+  document.getElementById('up_zones').innerHTML=
+   '<option value="">(none — only tamper/contact)</option>'+
+   cams.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+ }catch(e){}
+}
+async function analyze(){
+ const fi=document.getElementById('up_file');
+ if(!fi.files.length){alert('choose a video first');return;}
+ const st=document.getElementById('up_status'); st.textContent='uploading…';
+ const f=new FormData(); f.append('file',fi.files[0]);
+ f.append('zones_from',document.getElementById('up_zones').value);
+ let r=await fetch('/api/analyze',{method:'POST',body:f});
+ if(!r.ok){st.textContent='error: '+(await r.text());return;}
+ const {job_id}=await r.json();
+ const poll=setInterval(async()=>{
+  const j=await (await fetch('/api/analyze/'+job_id)).json();
+  st.textContent=`${j.status} — ${Math.round(j.progress*100)}% (${j.events.length} found)`;
+  document.querySelector('#up_results tbody').innerHTML=j.events.map(e=>
+   `<tr class="${e.severity}"><td>${e.severity}</td><td>${e.video_time_s}s</td>
+   <td>${esc(e.event_type)}</td><td>${esc(e.plate)||'—'}</td>
+   <td>${esc(e.description)}</td><td>${e.clip?
+    `<a href="/api/analyze/${job_id}/clip/${e.index}" target="_blank">view</a>`:'—'}</td></tr>`
+  ).join('');
+  if(j.status==='done'||j.status==='error'){clearInterval(poll);
+   if(j.status==='error')st.textContent='error: '+j.error;}
+ },1200);
+}
+
+// ---- Claude tuning chatbot -------------------------------------------
+let chatHistory=[];
+function addMsg(role,text){
+ const d=document.getElementById('chat');
+ const who=role==='user'?'You':'Assistant';
+ d.innerHTML+=`<div style="margin:4px 0"><b style="color:${role==='user'?'#8cf':'#9d9'}">
+  ${who}:</b> ${esc(text)}</div>`;
+ d.scrollTop=d.scrollHeight;
+}
+async function sendChat(){
+ const inp=document.getElementById('chat_in'); const msg=inp.value.trim();
+ if(!msg)return; inp.value=''; addMsg('user',msg);
+ chatHistory.push({role:'user',content:msg});
+ const r=await fetch('/api/assistant',{method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({message:msg,history:chatHistory})});
+ const res=await r.json();
+ addMsg('assistant',res.reply);
+ chatHistory.push({role:'assistant',content:res.reply});
+ if(res.patch&&Object.keys(res.patch).length){
+  const summary=Object.entries(res.patch).map(([k,v])=>`${k} → ${v}`).join(', ');
+  const d=document.getElementById('chat');
+  d.innerHTML+=`<div style="margin:6px 0;padding:6px;background:#223;border-radius:4px">
+   Proposed change: <code>${esc(summary)}</code><br>
+   <small>${esc(res.explanation||'')}</small><br>
+   <button onclick='applyPatch(${JSON.stringify(res.patch)})'>Apply</button></div>`;
+  d.scrollTop=d.scrollHeight;
+ }
+}
+async function applyPatch(patch){
+ const r=await fetch('/api/assistant/apply',{method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({patch})});
+ const res=await r.json();
+ const n=Object.keys(res.applied||{}).length;
+ addMsg('assistant',n?`Applied ${n} change(s). New thresholds are live.`:
+  'Nothing applied'+(res.rejected&&res.rejected.length?
+   ' (rejected: '+res.rejected.join(', ')+')':'')+'.');
+}
+loadCams();
 refresh(); setInterval(refresh,5000);
 </script></body></html>"""

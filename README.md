@@ -184,6 +184,45 @@ just not sent).
 - Normalized to Indian format (`WB02AB1234`), common OCR confusions repaired
   (O↔0, B↔8, …), registry match tolerates Levenshtein distance ≤ 1.
 
+## Test with a video (no cameras needed)
+
+The dashboard has an **upload box**: pick any video file, optionally choose a
+camera whose zones to reuse, click **Analyze**. The same detector + rules run
+over the file in "video time" and the anomalies (with playable clips) appear
+in a table. Tamper (A5) and vehicle-contact (A3) work with no zones; the
+zone-based rules (A1/A2/A4) need zones, so either analyze against an existing
+camera's zones or draw them first with `zones.py`.
+
+This is the quickest way to try the system before any camera is wired up.
+
+## Tuning assistant (Claude chatbot)
+
+When an alert is wrong — too sensitive, too slow, missing — you don't edit
+YAML by hand. The dashboard has a **chat box powered by Claude**: type in plain
+English ("the loitering alert fired too early, make it less sensitive") and the
+assistant proposes a specific threshold change, shows you exactly what it will
+change and why, and applies it on **Apply** — live, no restart for rule
+thresholds. Every applied change is written to `config.yaml` and recorded in
+the audit log.
+
+Safety: the assistant can **only** touch tuning knobs (`rules`, `detection`,
+`plates`, `clips`). It is structurally prevented — at both the suggestion and
+the apply step — from editing your Telegram token, camera URLs, passwords or
+any other secret.
+
+Enable it in `config.yaml`:
+
+```yaml
+assistant:
+  enabled: true
+  model: "claude-opus-4-8"      # any Claude model id
+  api_key_env: "ANTHROPIC_API_KEY"
+```
+
+and `export ANTHROPIC_API_KEY=sk-ant-...` before starting. Disabled by default
+(so the prototype runs with zero cloud dependency); when off, the chat box
+politely says it's not configured.
+
 ## Optional: AI incident descriptions (VLM)
 
 Set `vlm.enabled: true` and export `ANTHROPIC_API_KEY` (also
@@ -209,8 +248,11 @@ app/
   clips.py           pre/post-event clip extraction + sidecar JSON
   notify.py          Telegram alerts + clip upload + rate cap
   vlm.py             optional Claude keyframe description
+  analyze.py         upload-a-video offline analysis (same detector + rules)
+  assistant.py       Claude tuning chatbot (safe config-patch apply)
   db.py              SQLite + hash-chained audit log
-  dashboard.py       FastAPI: MJPEG live view, events, registry, clip delete
+  dashboard.py       FastAPI: MJPEG live view, events, registry, clip delete,
+                     video upload/analyze, Claude tuning chat
 clips/               anomaly clips only (created at runtime)
 tests/               unit + integration tests, sample video generator
 ```

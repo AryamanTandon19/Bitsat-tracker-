@@ -12,6 +12,8 @@ import time
 import cv2
 import yaml
 
+from .analyze import VideoAnalyzer
+from .assistant import TuningAssistant
 from .camera import CameraWorker, frame_stats
 from .clips import ClipSaver
 from .db import Database
@@ -116,8 +118,9 @@ class CameraPipeline(threading.Thread):
 
 
 class AppContext:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, config_path: str = "config.yaml"):
         self.config = config
+        self.config_path = config_path
         self.db = Database(config["storage"]["db_path"])
         seeded = self.db.seed_registry_from_csv(config["storage"]["registry_csv"])
         if seeded:
@@ -129,6 +132,10 @@ class AppContext:
         self.vlm = VLMDescriber(config.get("vlm", {}))
         self.clip_saver = ClipSaver(config.get("clips", {}), self.db,
                                     on_clip_ready=self._on_clip_ready)
+        acfg = config.get("analyze", {})
+        self.analyzer = VideoAnalyzer(config, acfg.get("out_dir", "clips/uploads")) \
+            if acfg.get("enabled", True) else None
+        self.assistant = TuningAssistant(config.get("assistant", {}))
         self.workers: dict[str, CameraWorker] = {}
         self.pipelines: dict[str, CameraPipeline] = {}
 
@@ -176,7 +183,7 @@ def main():
         format="%(asctime)s %(levelname)s [%(threadName)s] %(message)s")
 
     config = load_config(args.config)
-    ctx = AppContext(config)
+    ctx = AppContext(config, config_path=args.config)
     ctx.start_cameras()
 
     try:

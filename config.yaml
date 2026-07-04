@@ -91,6 +91,16 @@ vlm:
   api_key_env: "ANTHROPIC_API_KEY"
   max_keyframes: 6
 
+analyze:                       # "upload a video and detect anomalies" feature
+  enabled: true
+  out_dir: "clips/uploads"
+  max_upload_mb: 300
+
+assistant:                     # Claude tuning chatbot in the dashboard
+  enabled: false               # set true + ANTHROPIC_API_KEY to enable
+  model: "claude-opus-4-8"
+  api_key_env: "ANTHROPIC_API_KEY"
+
 dashboard:
   host: "0.0.0.0"      # 0.0.0.0 = reachable on the LAN; 127.0.0.1 = this PC only
   port: 8000
