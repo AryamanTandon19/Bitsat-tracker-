@@ -1,53 +1,104 @@
 """Offline analysis of an uploaded video file.
 
-Runs the same detector + rules used on live cameras, but over a video file in
-"video time" (the clock is derived from frame index / fps, so a 45s loitering
-threshold means 45s of footage, not wall-clock). Produces the same Event
-objects and, optionally, clips extracted straight from the uploaded file.
+Runs the same detector + rules used on live cameras over a video file in "video
+time" (the clock is derived from frame index / fps, so a 45s loitering
+threshold means 45s of footage). Produces:
 
-Zone-based rules (A1 unauthorized, A2 loitering, A4 restricted) only fire when
-zones are supplied — pass zones from an existing camera, or draw them. A3
-(vehicle contact) and A5 (tamper) work with no zones.
+  * a list of anomaly Events, and
+  * a single ANNOTATED playback video (the whole clip with every detection
+    boxed, culprits in green with a "CULPRIT" tag, and a red anomaly banner
+    while an event is active) — encoded as browser-playable H.264 so it can be
+    embedded and scrubbed directly in the dashboard.
 
-YOLO (ultralytics) is required for detection; import is lazy so the module and
-its non-detection helpers load without it.
+Zone-based rules (unauthorized A1, restricted A4) need zones. Loitering (A2)
+works even with no zones — it falls back to "lingering near any vehicle", so a
+theft-style clip flags the person. Vehicle contact (A3) and tamper (A5) are
+zone-free.
+
+YOLO (ultralytics) is required for detection; import is lazy.
 """
 from __future__ import annotations
 
 import json
 import logging
+import subprocess
 import threading
-import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 
 import cv2
 
 from .camera import frame_stats
-from .detector import annotate
 from .plates import fuzzy_match
-from .rules import RulesEngine
+from .rules import CAMERA_OFFLINE, CAMERA_TAMPER, SEVERITY, RulesEngine
 
 log = logging.getLogger(__name__)
+
+CULPRIT_GREEN = (0, 255, 0)
+BANNER_HOLD_S = 3.0            # keep the red anomaly banner up this long
+SEVERITY_COLOR = {"HIGH": (0, 0, 255), "MEDIUM": (0, 165, 255), "LOW": (0, 200, 255)}
 
 
 @dataclass
 class AnalyzeJob:
     id: str
     filename: str
-    status: str = "queued"        # queued | running | done | error
+    status: str = "queued"        # queued | running | encoding | done | error
     progress: float = 0.0         # 0..1
     message: str = ""
     events: list = field(default_factory=list)   # serialized event dicts
-    clips: dict = field(default_factory=dict)    # event_index -> clip path
+    annotated_path: str | None = None            # playback video path
     error: str | None = None
 
     def public(self) -> dict:
         return {"id": self.id, "filename": self.filename, "status": self.status,
                 "progress": round(self.progress, 3), "message": self.message,
-                "events": self.events, "error": self.error}
+                "events": self.events, "error": self.error,
+                "video_ready": bool(self.annotated_path)}
+
+
+def _open_writer(path: str, w: int, h: int, fps: float):
+    """Return (kind, handle). Prefer browser-playable H.264 via the ffmpeg
+    binary bundled with imageio-ffmpeg; fall back to OpenCV mp4v (which most
+    browsers can't play inline, but at least produces a downloadable file)."""
+    fps = max(1.0, min(fps, 30.0))
+    try:
+        import imageio_ffmpeg
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        proc = subprocess.Popen(
+            [exe, "-y", "-loglevel", "error",
+             "-f", "rawvideo", "-pix_fmt", "bgr24",
+             "-s", f"{w}x{h}", "-r", f"{fps:.3f}", "-i", "-",
+             "-an", "-c:v", "libx264", "-preset", "veryfast",
+             "-pix_fmt", "yuv420p", "-movflags", "+faststart", path],
+            stdin=subprocess.PIPE)
+        return ("ffmpeg", proc)
+    except Exception as e:
+        log.warning("imageio-ffmpeg unavailable (%s) — falling back to mp4v; "
+                    "browser inline playback may not work. "
+                    "Run: pip install imageio-ffmpeg", e)
+        vw = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+        return ("cv2", vw)
+
+
+def _write(writer, frame):
+    kind, handle = writer
+    if kind == "ffmpeg":
+        handle.stdin.write(frame.tobytes())
+    else:
+        handle.write(frame)
+
+
+def _close(writer):
+    kind, handle = writer
+    if kind == "ffmpeg":
+        try:
+            handle.stdin.close()
+        finally:
+            handle.wait()
+    else:
+        handle.release()
 
 
 class VideoAnalyzer:
@@ -74,27 +125,25 @@ class VideoAnalyzer:
         return self.jobs.get(job_id)
 
     # ------------------------------------------------------------------
-    def _run(self, job: AnalyzeJob, path: str, zones: dict, registry: list[str],
-             delete_source: bool = False):
+    def _run(self, job, path, zones, registry, delete_source=False):
         try:
             job.status = "running"
             self._analyze(job, path, zones, registry)
             job.status = "done"
-            job.message = f"{len(job.events)} anomalies found"
+            job.message = (f"{len(job.events)} anomalies found"
+                           if job.events else "no anomalies detected")
         except Exception as e:
             log.exception("analysis failed")
             job.status = "error"
             job.error = str(e)
         finally:
-            # privacy / data-minimization: never keep the raw uploaded footage
-            if delete_source:
+            if delete_source:  # privacy: never keep the raw uploaded footage
                 try:
                     Path(path).unlink(missing_ok=True)
                 except OSError:
                     pass
 
-    def _analyze(self, job: AnalyzeJob, path: str, zones: dict,
-                 registry: list[str]):
+    def _analyze(self, job, path, zones, registry):
         if self._detector is None:
             from .detector import Detector
             self._detector = Detector(self.config["detection"])
@@ -107,76 +156,78 @@ class VideoAnalyzer:
         if not (1 <= fps <= 120):
             fps = 25.0
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        proc_fps = float(self.config["detection"].get("process_fps", 6))
+        step = max(1, int(round(fps / proc_fps)))
 
         clock = [0.0]
         rules = RulesEngine("upload", zones, self.config["rules"],
                             now_fn=lambda: clock[0])
-        # timeline of detected boxes per processed timestamp, so extracted
-        # clips can redraw them (green for flagged culprits)
-        box_timeline: list[tuple[float, list]] = []
         pcfg = self.config.get("plates", {})
-        fuzzy_d = int(pcfg.get("fuzzy_max_distance", 1))
-        # process at the configured inference fps
-        proc_fps = float(self.config["detection"].get("process_fps", 6))
-        step = max(1, int(round(fps / proc_fps)))
-
         from .plates import PlateReader
         plate_reader = PlateReader(pcfg)
+        fuzzy_d = int(pcfg.get("fuzzy_max_distance", 1))
 
+        out_dir = self.out_dir / job.id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        annotated = out_dir / "annotated.mp4"
+
+        writer = None
+        out_w = out_h = None
+        last_boxes = []      # [(tid, cls, xyxy)]
+        last_flagged = set()
+        event_marks = []     # [(ts, type, severity)]
         idx = 0
+
         while True:
             ok, frame = cap.read()
             if not ok:
                 break
-            if idx % step != 0:
-                idx += 1
-                continue
             ts = idx / fps
             clock[0] = ts
-            detections = det.track(frame)
 
-            plate_info = {}
-            for d in detections:
-                if not d.is_vehicle:
-                    continue
-                plate = plate_reader.read(frame, d.xyxy, d.track_id)
-                if plate:
-                    match = fuzzy_match(plate, registry, fuzzy_d)
-                    plate_info[d.track_id] = {"plate": match or plate,
-                                              "registered": match is not None}
+            if idx % step == 0:
+                detections = det.track(frame)
+                plate_info = {}
+                for d in detections:
+                    if not d.is_vehicle:
+                        continue
+                    plate = plate_reader.read(frame, d.xyxy, d.track_id)
+                    if plate:
+                        match = fuzzy_match(plate, registry, fuzzy_d)
+                        plate_info[d.track_id] = {"plate": match or plate,
+                                                  "registered": match is not None}
+                events = rules.update(detections, ts, plate_info)
+                mean, lap = frame_stats(frame)
+                events += rules.update_frame_stats(mean, lap, ts)
+                last_boxes = [(d.track_id, d.cls_name, d.xyxy) for d in detections]
+                last_flagged = rules.active_flags(ts)
+                for ev in events:
+                    self._append_event(job, ev)
+                    event_marks.append((ev.ts, ev.event_type, ev.severity))
+                if total:
+                    job.progress = min(0.98, idx / total)
 
-            box_timeline.append(
-                (ts, [(d.track_id, d.cls_name, d.xyxy) for d in detections]))
-
-            events = rules.update(detections, ts, plate_info)
-            mean, lap = frame_stats(frame)
-            events += rules.update_frame_stats(mean, lap, ts)
-
-            for ev in events:
-                self._record(job, path, ev, fps, rules, box_timeline)
-
-            if total:
-                job.progress = min(1.0, idx / total)
+            if writer is None:
+                h, w = frame.shape[:2]
+                out_w, out_h = w - (w % 2), h - (h % 2)  # even dims for H.264
+                writer = _open_writer(str(annotated), out_w, out_h, fps)
+            vis = frame[:out_h, :out_w].copy()
+            self._draw(vis, last_boxes, last_flagged)
+            self._draw_banner(vis, ts, event_marks)
+            _write(writer, vis)
             idx += 1
+
         cap.release()
+        if writer is not None:
+            job.status = "encoding"
+            _close(writer)
+            job.annotated_path = str(annotated)
         job.progress = 1.0
 
-    def _record(self, job: AnalyzeJob, src_path: str, ev, fps: float,
-                rules, box_timeline):
-        event_index = len(job.events)
-        # culprits = tracks flagged at event time (this event's subjects, plus
-        # anyone still flagged from a recent prior anomaly)
-        flagged = set(ev.track_ids) | rules.active_flags(ev.ts)
-        clip_path = None
-        try:
-            clip_path = self._extract_clip(src_path, ev, fps, event_index,
-                                           job.id, flagged, box_timeline)
-        except Exception:
-            log.exception("clip extraction failed")
-        if clip_path:
-            job.clips[event_index] = clip_path
+    # ------------------------------------------------------------------
+    def _append_event(self, job, ev):
         job.events.append({
-            "index": event_index,
+            "index": len(job.events),
             "event_type": ev.event_type,
             "severity": ev.severity,
             "video_time_s": round(ev.ts, 1),
@@ -184,76 +235,35 @@ class VideoAnalyzer:
             "track_ids": ev.track_ids,
             "confidence": ev.confidence,
             "description": ev.description,
-            "clip": clip_path,
         })
 
-    def _extract_clip(self, src_path: str, ev, fps: float, event_index: int,
-                      job_id: str, flagged: set, box_timeline) -> str | None:
-        clips_cfg = self.config.get("clips", {})
-        pre = float(clips_cfg.get("pre_event_s", 10))
-        post = float(clips_cfg.get("post_event_s", 20))
-        out_fps = int(clips_cfg.get("fps", 10))
-        start = max(0.0, ev.ts - pre)
-        end = ev.ts + post
-
-        cap = cv2.VideoCapture(src_path)
-        cap.set(cv2.CAP_PROP_POS_MSEC, start * 1000.0)
-        ok, frame = cap.read()
-        if not ok:
-            cap.release()
-            return None
-        h, w = frame.shape[:2]
-        out_dir = self.out_dir / job_id
-        out_dir.mkdir(parents=True, exist_ok=True)
-        stem = f"{event_index:02d}_{ev.event_type}"
-        path = out_dir / f"{stem}.mp4"
-        vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"),
-                             out_fps, (w, h))
-        step_ms = 1000.0 / out_fps
-        t = start
-        try:
-            while t <= end:
-                cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
-                ok, fr = cap.read()
-                if not ok:
-                    break
-                if fr.shape[:2] != (h, w):
-                    fr = cv2.resize(fr, (w, h))
-                self._draw_flagged(fr, t, flagged, box_timeline)
-                vw.write(fr)
-                t += step_ms / 1000.0
-        finally:
-            vw.release()
-            cap.release()
-
-        (out_dir / f"{stem}.json").write_text(json.dumps({
-            "event_type": ev.event_type, "severity": ev.severity,
-            "video_time_s": ev.ts, "plate": ev.plate,
-            "track_ids": ev.track_ids, "confidence": ev.confidence,
-            "culprit_track_ids": sorted(flagged),
-            "description": ev.description,
-        }, indent=2))
-        return str(path)
-
     @staticmethod
-    def _draw_flagged(frame, t: float, flagged: set, box_timeline):
-        """Redraw the boxes captured nearest time `t`; culprits in green."""
-        if not box_timeline:
-            return
-        # nearest recorded timestamp to this clip frame
-        best = min(box_timeline, key=lambda e: abs(e[0] - t))
-        if abs(best[0] - t) > 1.0:
-            return
-        for tid, cls_name, xyxy in best[1]:
+    def _draw(frame, boxes, flagged):
+        for tid, cls, xyxy in boxes:
             x1, y1, x2, y2 = [int(v) for v in xyxy]
             if tid in flagged:
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
-                label = f"CULPRIT {cls_name}#{tid}"
-                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX,
-                                              0.55, 2)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), CULPRIT_GREEN, 3)
+                label = f"CULPRIT {cls}#{tid}"
+                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
                 cv2.rectangle(frame, (x1, max(0, y1 - th - 8)),
-                              (x1 + tw + 4, y1), (0, 255, 0), -1)
+                              (x1 + tw + 4, y1), CULPRIT_GREEN, -1)
                 cv2.putText(frame, label, (x1 + 2, max(12, y1 - 6)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2)
             else:
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (60, 220, 60), 1)
+                color = (0, 200, 255) if cls == "person" else (60, 220, 60)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(frame, f"{cls}#{tid}", (x1, max(15, y1 - 6)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+    @staticmethod
+    def _draw_banner(frame, ts, event_marks):
+        active = [(t, et, sev) for (t, et, sev) in event_marks
+                  if t <= ts <= t + BANNER_HOLD_S]
+        if not active:
+            return
+        t, et, sev = max(active, key=lambda m: m[0])
+        w = frame.shape[1]
+        color = SEVERITY_COLOR.get(sev, (0, 0, 255))
+        cv2.rectangle(frame, (0, 0), (w, 34), color, -1)
+        cv2.putText(frame, f"ANOMALY: {et.replace('_', ' ').upper()} [{sev}]",
+                    (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)

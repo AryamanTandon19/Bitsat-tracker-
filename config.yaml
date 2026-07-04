@@ -53,6 +53,7 @@ rules:
     dwell_s: 45
     night_dwell_s: 20
     max_displacement_px: 120   # total movement below this = loitering
+    near_vehicle_px: 150       # zone-free fallback: "near a vehicle" radius
 
   vehicle_contact:             # A3 (best-effort heuristic)
     enabled: true

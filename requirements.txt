@@ -8,6 +8,7 @@ tzdata==2024.2                 # timezone database (required on Windows)
 fastapi==0.115.6
 uvicorn==0.34.0
 python-multipart==0.0.20
+imageio-ffmpeg==0.5.1          # bundles ffmpeg; H.264 clips play in-browser
 
 # Plate OCR — install ONE of these (fast-plate-ocr preferred, much lighter)
 fast-plate-ocr==0.3.0

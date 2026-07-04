@@ -29,7 +29,7 @@ CFG = {
     "flag_seconds": 60,
     "unauthorized_vehicle": {"enabled": True, "plate_read_timeout_s": 5},
     "loitering": {"enabled": True, "dwell_s": 45, "night_dwell_s": 20,
-                  "max_displacement_px": 120},
+                  "max_displacement_px": 120, "near_vehicle_px": 150},
     "vehicle_contact": {"enabled": True, "iou_threshold": 0.02,
                         "depart_window_s": 15, "depart_speed_px_s": 60},
     "restricted_zone": {"enabled": True},
@@ -133,6 +133,28 @@ def test_a2_night_threshold_is_shorter():
     e = engine(zones={"parking": SQUARE}, localtime=NIGHT)
     evs = loiter_run(e, 20)
     assert [ev.event_type for ev in evs] == [LOITERING]
+
+
+def test_a2_zone_free_loiter_near_vehicle():
+    # No parking zone drawn: a person lingering next to a car must still flag.
+    e = engine(zones={})
+    car = Det(1, "car", (100, 100, 200, 160))
+    evs = []
+    for t in range(46):
+        person = Det(7, "person", (205, 120, 225, 180))  # right beside the car
+        evs += e.update([car, person], ts=2000.0 + t)
+    assert [ev.event_type for ev in evs] == [LOITERING]
+    assert 7 in e.active_flags(2000.0 + 45)             # person flagged green
+
+
+def test_a2_zone_free_person_far_from_vehicle_is_silent():
+    e = engine(zones={})
+    car = Det(1, "car", (100, 100, 200, 160))
+    evs = []
+    for t in range(46):
+        person = Det(7, "person", (600, 300, 620, 360))  # far from the car
+        evs += e.update([car, person], ts=2000.0 + t)
+    assert evs == []
 
 
 def test_a2_walking_through_is_not_loitering():

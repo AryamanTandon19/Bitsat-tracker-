@@ -172,13 +172,14 @@ def create_app(ctx) -> FastAPI:
             raise HTTPException(404, "job not found")
         return job.public()
 
-    @app.get("/api/analyze/{job_id}/clip/{index}")
-    def analyze_clip(job_id: str, index: int):
+    @app.get("/api/analyze/{job_id}/video")
+    def analyze_video_file(job_id: str):
         analyzer = getattr(ctx, "analyzer", None)
         job = analyzer.get(job_id) if analyzer else None
-        if job is None or index not in job.clips:
-            raise HTTPException(404, "clip not available")
-        return FileResponse(job.clips[index], media_type="video/mp4")
+        if job is None or not job.annotated_path or \
+                not Path(job.annotated_path).exists():
+            raise HTTPException(404, "annotated video not available")
+        return FileResponse(job.annotated_path, media_type="video/mp4")
 
     @app.get("/api/cameras")
     def cameras():
@@ -251,8 +252,10 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  <button onclick="analyze()">Analyze</button>
  <span id="up_status"></span>
 </div>
+<video id="up_player" controls style="max-width:640px;width:100%;display:none;
+ border:1px solid #333;border-radius:6px;margin:6px 0"></video>
 <table id="up_results"><thead><tr><th>Severity</th><th>Video time</th>
-<th>Type</th><th>Plate</th><th>Description</th><th>Clip</th></tr></thead>
+<th>Type</th><th>Plate</th><th>Description</th><th>Jump</th></tr></thead>
 <tbody></tbody></table>
 
 <h2>&#129302; Tuning assistant (Claude) — correct the system in plain English</h2>
@@ -341,18 +344,33 @@ async function analyze(){
  let r=await fetch('/api/analyze',{method:'POST',body:f});
  if(!r.ok){st.textContent='error: '+(await r.text());return;}
  const {job_id}=await r.json();
+ const player=document.getElementById('up_player');
+ player.style.display='none';
  const poll=setInterval(async()=>{
   const j=await (await fetch('/api/analyze/'+job_id)).json();
   st.textContent=`${j.status} — ${Math.round(j.progress*100)}% (${j.events.length} found)`;
   document.querySelector('#up_results tbody').innerHTML=j.events.map(e=>
-   `<tr class="${e.severity}"><td>${e.severity}</td><td>${e.video_time_s}s</td>
+   `<tr class="${e.severity}"><td>${e.severity}</td>
+   <td><a href="#" onclick="seekTo(${e.video_time_s});return false">${e.video_time_s}s</a></td>
    <td>${esc(e.event_type)}</td><td>${esc(e.plate)||'—'}</td>
-   <td>${esc(e.description)}</td><td>${e.clip?
-    `<a href="/api/analyze/${job_id}/clip/${e.index}" target="_blank">view</a>`:'—'}</td></tr>`
+   <td>${esc(e.description)}</td>
+   <td><a href="#" onclick="seekTo(${e.video_time_s});return false">▶ jump</a></td></tr>`
   ).join('');
   if(j.status==='done'||j.status==='error'){clearInterval(poll);
-   if(j.status==='error')st.textContent='error: '+j.error;}
+   if(j.status==='error'){st.textContent='error: '+j.error;return;}
+   if(j.video_ready){
+    player.src='/api/analyze/'+job_id+'/video';
+    player.style.display='block';
+    st.textContent=`done — ${j.events.length} anomalies. Video below has green `
+     +`CULPRIT boxes; click a row's time to jump to that moment.`;
+   }
+  }
  },1200);
+}
+function seekTo(t){
+ const p=document.getElementById('up_player');
+ if(p.src){p.currentTime=Math.max(0,t-2);p.play();
+  p.scrollIntoView({behavior:'smooth',block:'center'});}
 }
 
 // ---- Claude tuning chatbot -------------------------------------------

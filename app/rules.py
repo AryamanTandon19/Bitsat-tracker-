@@ -211,6 +211,9 @@ class RulesEngine:
         ts = ts if ts is not None else self.now_fn()
         plate_info = plate_info or {}
         events: list[Event] = []
+        # vehicle boxes this frame — used by the zone-free loitering fallback
+        self._frame_vehicles = [d.xyxy for d in detections
+                                if d.cls_name != "person"]
 
         for d in detections:
             st = self.tracks.get(d.track_id)
@@ -274,7 +277,13 @@ class RulesEngine:
             return
         zone = self.zones.get("parking")
         cfg = self.cfg.get("loitering", {})
-        if not point_in_polygon(d.foot_point, zone):
+        # If a parking zone is drawn, use it. Otherwise fall back to "lingering
+        # near any vehicle" so uploaded clips flag the person with no zone setup.
+        if zone and len(zone) >= 3:
+            in_region = point_in_polygon(d.foot_point, zone)
+        else:
+            in_region = self._near_any_vehicle(d.xyxy, cfg)
+        if not in_region:
             st.parking_zone_since = None
             st.parking_entry_pos = None
             st.max_parking_displacement = 0.0
@@ -295,6 +304,16 @@ class RulesEngine:
                        f"{dwell:.0f}s (moved {st.max_parking_displacement:.0f}px)",
                        [d.track_id], confidence=0.7,
                        debounce_key=(d.track_id, LOITERING))
+
+    def _near_any_vehicle(self, person_xyxy, cfg) -> bool:
+        """True if the person's box overlaps any vehicle box expanded by
+        `near_vehicle_px` — the zone-free loitering region."""
+        px = float(cfg.get("near_vehicle_px", 150))
+        for v in getattr(self, "_frame_vehicles", []):
+            expanded = (v[0] - px, v[1] - px, v[2] + px, v[3] + px)
+            if iou(person_xyxy, expanded) > 0:
+                return True
+        return False
 
     # ---------------------------------------- A3: possible vehicle contact
     def _rule_a3(self, events, detections, ts: float):
