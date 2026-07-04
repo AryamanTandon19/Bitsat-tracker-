@@ -195,6 +195,16 @@ camera's zones or draw them first with `zones.py`.
 
 This is the quickest way to try the system before any camera is wired up.
 
+## Culprit tracking (green box)
+
+When any anomaly fires, every person/vehicle involved is **flagged as a
+culprit** and drawn with a bright-green box labelled `CULPRIT`, plus a green
+motion trail, so a guard can follow and identify them across the frame. The
+flag persists for `rules.flag_seconds` (default 60s) after the last anomaly,
+then clears automatically. This shows in the live dashboard view **and** is
+burned into the saved evidence clips (both live clips and upload-analysis
+clips). Registered/normal objects keep their ordinary thin boxes.
+
 ## Tuning assistant (Claude chatbot)
 
 When an alert is wrong — too sensitive, too slow, missing — you don't edit

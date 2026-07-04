@@ -101,6 +101,9 @@ class VideoAnalyzer:
         clock = [0.0]
         rules = RulesEngine("upload", zones, self.config["rules"],
                             now_fn=lambda: clock[0])
+        # timeline of detected boxes per processed timestamp, so extracted
+        # clips can redraw them (green for flagged culprits)
+        box_timeline: list[tuple[float, list]] = []
         pcfg = self.config.get("plates", {})
         fuzzy_d = int(pcfg.get("fuzzy_max_distance", 1))
         # process at the configured inference fps
@@ -132,12 +135,15 @@ class VideoAnalyzer:
                     plate_info[d.track_id] = {"plate": match or plate,
                                               "registered": match is not None}
 
+            box_timeline.append(
+                (ts, [(d.track_id, d.cls_name, d.xyxy) for d in detections]))
+
             events = rules.update(detections, ts, plate_info)
             mean, lap = frame_stats(frame)
             events += rules.update_frame_stats(mean, lap, ts)
 
             for ev in events:
-                self._record(job, path, ev, fps)
+                self._record(job, path, ev, fps, rules, box_timeline)
 
             if total:
                 job.progress = min(1.0, idx / total)
@@ -145,11 +151,16 @@ class VideoAnalyzer:
         cap.release()
         job.progress = 1.0
 
-    def _record(self, job: AnalyzeJob, src_path: str, ev, fps: float):
+    def _record(self, job: AnalyzeJob, src_path: str, ev, fps: float,
+                rules, box_timeline):
         event_index = len(job.events)
+        # culprits = tracks flagged at event time (this event's subjects, plus
+        # anyone still flagged from a recent prior anomaly)
+        flagged = set(ev.track_ids) | rules.active_flags(ev.ts)
         clip_path = None
         try:
-            clip_path = self._extract_clip(src_path, ev, fps, event_index, job.id)
+            clip_path = self._extract_clip(src_path, ev, fps, event_index,
+                                           job.id, flagged, box_timeline)
         except Exception:
             log.exception("clip extraction failed")
         if clip_path:
@@ -167,7 +178,7 @@ class VideoAnalyzer:
         })
 
     def _extract_clip(self, src_path: str, ev, fps: float, event_index: int,
-                      job_id: str) -> str | None:
+                      job_id: str, flagged: set, box_timeline) -> str | None:
         clips_cfg = self.config.get("clips", {})
         pre = float(clips_cfg.get("pre_event_s", 10))
         post = float(clips_cfg.get("post_event_s", 20))
@@ -198,6 +209,7 @@ class VideoAnalyzer:
                     break
                 if fr.shape[:2] != (h, w):
                     fr = cv2.resize(fr, (w, h))
+                self._draw_flagged(fr, t, flagged, box_timeline)
                 vw.write(fr)
                 t += step_ms / 1000.0
         finally:
@@ -208,6 +220,30 @@ class VideoAnalyzer:
             "event_type": ev.event_type, "severity": ev.severity,
             "video_time_s": ev.ts, "plate": ev.plate,
             "track_ids": ev.track_ids, "confidence": ev.confidence,
+            "culprit_track_ids": sorted(flagged),
             "description": ev.description,
         }, indent=2))
         return str(path)
+
+    @staticmethod
+    def _draw_flagged(frame, t: float, flagged: set, box_timeline):
+        """Redraw the boxes captured nearest time `t`; culprits in green."""
+        if not box_timeline:
+            return
+        # nearest recorded timestamp to this clip frame
+        best = min(box_timeline, key=lambda e: abs(e[0] - t))
+        if abs(best[0] - t) > 1.0:
+            return
+        for tid, cls_name, xyxy in best[1]:
+            x1, y1, x2, y2 = [int(v) for v in xyxy]
+            if tid in flagged:
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
+                label = f"CULPRIT {cls_name}#{tid}"
+                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX,
+                                              0.55, 2)
+                cv2.rectangle(frame, (x1, max(0, y1 - th - 8)),
+                              (x1 + tw + 4, y1), (0, 255, 0), -1)
+                cv2.putText(frame, label, (x1 + 2, max(12, y1 - 6)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2)
+            else:
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (60, 220, 60), 1)

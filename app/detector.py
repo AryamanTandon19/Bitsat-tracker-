@@ -86,25 +86,55 @@ class Detector:
         return out
 
 
-def annotate(frame, detections: list[Detection], zones: dict | None = None):
-    """Draw boxes/zones on a frame for the dashboard MJPEG view."""
+CULPRIT_GREEN = (0, 255, 0)
+
+
+def annotate(frame, detections: list[Detection], zones: dict | None = None,
+             flagged: set | None = None, trails: dict | None = None):
+    """Draw boxes/zones on a frame for the dashboard MJPEG view.
+
+    `flagged` is a set of track_ids that triggered an anomaly — these are drawn
+    with a bright-green "CULPRIT" box so a guard can follow the person/vehicle
+    across the frame. `trails` maps track_id -> list of (x, y) recent foot
+    points, drawn as a green path behind flagged tracks for easy tracking.
+    """
     import cv2
-    colors = {"person": (0, 200, 255)}
+    flagged = flagged or set()
+    trails = trails or {}
+    default_colors = {"person": (0, 200, 255)}
     if zones:
+        import numpy as np
         zone_colors = {"entry": (255, 160, 0), "parking": (0, 255, 120),
                        "restricted": (0, 0, 255)}
         for zname, poly in zones.items():
             if len(poly or []) >= 3:
-                import numpy as np
                 pts = np.array(poly, np.int32).reshape((-1, 1, 2))
-                cv2.polylines(frame, [pts], True, zone_colors.get(zname, (200, 200, 200)), 2)
+                c = zone_colors.get(zname, (200, 200, 200))
+                cv2.polylines(frame, [pts], True, c, 2)
                 cv2.putText(frame, zname, tuple(poly[0]),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                            zone_colors.get(zname, (200, 200, 200)), 2)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, c, 2)
+
+    # motion trails for flagged tracks (draw first, behind the boxes)
+    for tid, pts in trails.items():
+        if tid in flagged and len(pts) >= 2:
+            for i in range(1, len(pts)):
+                cv2.line(frame, (int(pts[i - 1][0]), int(pts[i - 1][1])),
+                         (int(pts[i][0]), int(pts[i][1])), CULPRIT_GREEN, 2)
+
     for d in detections:
         x1, y1, x2, y2 = [int(v) for v in d.xyxy]
-        color = colors.get(d.cls_name, (60, 220, 60))
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(frame, f"{d.cls_name}#{d.track_id}", (x1, max(15, y1 - 6)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+        if d.track_id in flagged:
+            cv2.rectangle(frame, (x1, y1), (x2, y2), CULPRIT_GREEN, 3)
+            label = f"CULPRIT {d.cls_name}#{d.track_id}"
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+            cv2.rectangle(frame, (x1, max(0, y1 - th - 8)), (x1 + tw + 4, y1),
+                          CULPRIT_GREEN, -1)
+            cv2.putText(frame, label, (x1 + 2, max(12, y1 - 6)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2)
+        else:
+            color = default_colors.get(d.cls_name, (60, 220, 60))
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(frame, f"{d.cls_name}#{d.track_id}",
+                        (x1, max(15, y1 - 6)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
     return frame

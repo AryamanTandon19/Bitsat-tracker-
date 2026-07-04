@@ -99,8 +99,10 @@ class CameraPipeline(threading.Thread):
             for ev in events:
                 self._handle_event(ev)
 
-            # annotated frame for the dashboard
-            vis = annotate(frame.copy(), detections, self.zones)
+            # annotated frame for the dashboard — flagged culprits in green
+            vis = annotate(frame.copy(), detections, self.zones,
+                           flagged=self.rules.active_flags(ts),
+                           trails=self.rules.flag_trails(ts))
             ok, jpg = cv2.imencode(".jpg", vis, [cv2.IMWRITE_JPEG_QUALITY, 75])
             if ok:
                 self.annotated_jpeg = jpg.tobytes()

@@ -26,6 +26,7 @@ SQUARE = [[0, 0], [100, 0], [100, 100], [0, 100]]  # 100x100 zone at origin
 CFG = {
     "night_hours": {"start": "23:00", "end": "05:00"},
     "debounce_s": 120,
+    "flag_seconds": 60,
     "unauthorized_vehicle": {"enabled": True, "plate_read_timeout_s": 5},
     "loitering": {"enabled": True, "dwell_s": 45, "night_dwell_s": 20,
                   "max_displacement_px": 120},
@@ -230,6 +231,36 @@ def test_a5_offline():
     assert [ev.event_type for ev in evs] == [CAMERA_OFFLINE]
     # fires once until it comes back online
     assert e.update_stream_status(False, offline_since=6000.0, ts=6040.0) == []
+
+
+# -------------------------------------------------------- culprit tracking
+def test_culprit_flag_set_on_anomaly_and_expires():
+    e = engine(zones={"entry": SQUARE})
+    car = Det(1, "car", (30, 30, 70, 70))
+    assert e.active_flags(1000.0) == set()
+    e.update([car], ts=1000.0,
+             plate_info={1: {"plate": "MH12CD4567", "registered": False}})
+    # track 1 is now flagged as a culprit
+    assert 1 in e.active_flags(1000.0)
+    assert 1 in e.active_flags(1000.0 + 59)     # within flag_seconds
+    assert 1 not in e.active_flags(1000.0 + 61)  # expired
+
+
+def test_culprit_flag_persons_from_loitering():
+    e = engine(zones={"parking": SQUARE})
+    loiter_run(e, 45)
+    flags = e.active_flags(2000.0 + 45)
+    assert 7 in flags                            # the loitering person
+    trails = e.flag_trails(2000.0 + 45)
+    assert 7 in trails and len(trails[7]) >= 2   # has a path to draw
+
+
+def test_no_flags_without_anomaly():
+    e = engine(zones={"entry": SQUARE})
+    car = Det(1, "car", (30, 30, 70, 70))
+    e.update([car], ts=1000.0,
+             plate_info={1: {"plate": "WB02AB1234", "registered": True}})
+    assert e.active_flags(1000.0) == set()       # registered car = no culprit
 
 
 # ---------------------------------------------------------------- debounce

@@ -143,6 +143,9 @@ class RulesEngine:
         self.localtime_fn = localtime_fn
         self.tracks: dict[int, TrackState] = {}
         self._debounce_until: dict[tuple, float] = {}
+        # culprit tracking: track_id -> flag-expiry ts
+        self.flag_seconds = float(cfg.get("flag_seconds", 60))
+        self._flagged: dict[int, float] = {}
         # A3 contact bookkeeping: pair -> contact ts
         self._contacts: dict[tuple[int, int], float] = {}
         self._contact_fired: set[tuple[int, int]] = set()
@@ -174,10 +177,30 @@ class RulesEngine:
         key = debounce_key or (tuple(sorted(track_ids)) or self.camera, etype)
         if self._debounced(key, ts):
             return
+        # flag every track involved in a fired anomaly as a "culprit" so the
+        # annotator can mark it green and follow it across the frame
+        for tid in track_ids:
+            self._flagged[tid] = ts + self.flag_seconds
         events.append(Event(ts=ts, camera=self.camera, event_type=etype,
                             severity=SEVERITY[etype], description=description,
                             plate=plate, track_ids=track_ids,
                             confidence=confidence))
+
+    # -------------------------------------------------- culprit tracking
+    def active_flags(self, ts: float | None = None) -> set:
+        """track_ids currently flagged as culprits (unexpired)."""
+        ts = ts if ts is not None else self.now_fn()
+        return {tid for tid, exp in self._flagged.items() if exp >= ts}
+
+    def flag_trails(self, ts: float | None = None, window_s: float = 8.0) -> dict:
+        """Recent foot-point path for each active culprit, for a green trail."""
+        ts = ts if ts is not None else self.now_fn()
+        out = {}
+        for tid in self.active_flags(ts):
+            st = self.tracks.get(tid)
+            if st:
+                out[tid] = [p for t, p in st.positions if ts - t <= window_s]
+        return out
 
     # ------------------------------------------------------------- update
     def update(self, detections, ts: float | None = None,
@@ -390,3 +413,7 @@ class RulesEngine:
         for pair, cts in list(self._contacts.items()):
             if ts - cts > window:
                 del self._contacts[pair]
+        # drop expired culprit flags
+        for tid, exp in list(self._flagged.items()):
+            if exp < ts:
+                del self._flagged[tid]

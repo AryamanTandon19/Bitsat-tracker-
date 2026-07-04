@@ -38,6 +38,7 @@ rules:
   night_hours: { start: "23:00", end: "05:00" }
   debounce_s: 120              # one event type per tracked object per N seconds
   max_notifications_per_hour: 10   # per camera; beyond this: log, don't send
+  flag_seconds: 60             # how long a culprit stays green-boxed after an anomaly
 
   unauthorized_vehicle:        # A1
     enabled: true
