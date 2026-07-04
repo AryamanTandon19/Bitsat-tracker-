@@ -7,16 +7,29 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import requests
 
 from .rules import TITLES, UNAUTHORIZED_VEHICLE, VEHICLE_CONTACT
 
 log = logging.getLogger(__name__)
-IST = ZoneInfo("Asia/Kolkata")
+
+
+def _india_tz():
+    """India Standard Time. Prefer the tz database (handles any future rule
+    changes); fall back to a fixed +05:30 offset when the OS ships no tz data
+    (common on Windows without the `tzdata` package), so the app never crashes
+    on import."""
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo("Asia/Kolkata")
+    except Exception:
+        return timezone(timedelta(hours=5, minutes=30), "IST")
+
+
+IST = _india_tz()
 API = "https://api.telegram.org/bot{token}/{method}"
 MAX_CLIP_BYTES = 49 * 1024 * 1024  # Telegram bot API cap is 50MB
 

@@ -4,6 +4,7 @@ opencv-python==4.10.0.84
 numpy==1.26.4
 PyYAML==6.0.2
 requests==2.32.3
+tzdata==2024.2                 # timezone database (required on Windows)
 fastapi==0.115.6
 uvicorn==0.34.0
 python-multipart==0.0.20
