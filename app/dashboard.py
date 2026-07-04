@@ -131,7 +131,8 @@ def create_app(ctx) -> FastAPI:
     # --------------------------------------------- upload & analyze video
     @app.post("/api/analyze")
     async def analyze_upload(file: UploadFile = File(...),
-                             zones_from: str = Form("")):
+                             zones_from: str = Form(""),
+                             ai_review: str = Form("")):
         analyzer = getattr(ctx, "analyzer", None)
         if analyzer is None:
             raise HTTPException(503, "video analysis is disabled")
@@ -161,7 +162,8 @@ def create_app(ctx) -> FastAPI:
         registry = ctx.db.registry_plates()
         job = analyzer.submit(tmp.name, file.filename or "upload.mp4",
                               zones=zones, registry=registry,
-                              delete_source=True)  # don't retain raw footage
+                              delete_source=True,  # don't retain raw footage
+                              ai_review=(ai_review in ("1", "true", "on", "yes")))
         return {"job_id": job.id}
 
     @app.get("/api/analyze/{job_id}")
@@ -252,8 +254,22 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  <button onclick="analyze()">Analyze</button>
  <span id="up_status"></span>
 </div>
+<div class="row">
+ <label title="Claude actually watches the video and reports theft, break-in, vandalism etc. Needs an Anthropic API key.">
+  <input type="checkbox" id="up_ai"> &#129504; Smart AI Review — understand the
+  scene (theft / break-in / vandalism), needs API key
+ </label>
+</div>
 <video id="up_player" controls style="max-width:640px;width:100%;display:none;
  border:1px solid #333;border-radius:6px;margin:6px 0"></video>
+<div id="ai_box" style="display:none;margin:6px 0;padding:8px;border-radius:6px;
+ background:#1a2333;border:1px solid #2a4">
+ <b>&#129504; AI Scene Review (Claude)</b>
+ <div id="ai_note" style="color:#9ab;font-size:12px"></div>
+ <table id="ai_results"><thead><tr><th>Severity</th><th>Time</th>
+  <th>What Claude sees</th><th>Jump</th></tr></thead><tbody></tbody></table>
+</div>
+<b style="font-size:13px;color:#9ab">Rule-based checks (geometry only):</b>
 <table id="up_results"><thead><tr><th>Severity</th><th>Video time</th>
 <th>Type</th><th>Plate</th><th>Description</th><th>Jump</th></tr></thead>
 <tbody></tbody></table>
@@ -341,6 +357,7 @@ async function analyze(){
  const st=document.getElementById('up_status'); st.textContent='uploading…';
  const f=new FormData(); f.append('file',fi.files[0]);
  f.append('zones_from',document.getElementById('up_zones').value);
+ f.append('ai_review',document.getElementById('up_ai').checked?'1':'0');
  let r=await fetch('/api/analyze',{method:'POST',body:f});
  if(!r.ok){st.textContent='error: '+(await r.text());return;}
  const {job_id}=await r.json();
@@ -356,13 +373,25 @@ async function analyze(){
    <td>${esc(e.description)}</td>
    <td><a href="#" onclick="seekTo(${e.video_time_s});return false">▶ jump</a></td></tr>`
   ).join('');
+  // AI scene review findings
+  const aiBox=document.getElementById('ai_box');
+  if((j.ai_findings&&j.ai_findings.length)||j.ai_note){
+   aiBox.style.display='block';
+   document.getElementById('ai_note').textContent=j.ai_note||'';
+   document.querySelector('#ai_results tbody').innerHTML=(j.ai_findings||[]).map(x=>
+    `<tr class="${x.severity}"><td>${x.severity}</td>
+    <td><a href="#" onclick="seekTo(${x.time_s});return false">${x.time_s}s</a></td>
+    <td>${esc(x.activity)}</td>
+    <td><a href="#" onclick="seekTo(${x.time_s});return false">▶ jump</a></td></tr>`
+   ).join('');
+  }
   if(j.status==='done'||j.status==='error'){clearInterval(poll);
    if(j.status==='error'){st.textContent='error: '+j.error;return;}
    if(j.video_ready){
     player.src='/api/analyze/'+job_id+'/video';
     player.style.display='block';
-    st.textContent=`done — ${j.events.length} anomalies. Video below has green `
-     +`CULPRIT boxes; click a row's time to jump to that moment.`;
+    st.textContent='done — video below has green CULPRIT boxes; '
+     +'click a time to jump.';
    }
   }
  },1200);

@@ -47,14 +47,17 @@ class AnalyzeJob:
     status: str = "queued"        # queued | running | encoding | done | error
     progress: float = 0.0         # 0..1
     message: str = ""
-    events: list = field(default_factory=list)   # serialized event dicts
+    events: list = field(default_factory=list)   # serialized rule-based events
+    ai_findings: list = field(default_factory=list)   # Claude scene-review findings
+    ai_note: str = ""                            # message when AI review unavailable
     annotated_path: str | None = None            # playback video path
     error: str | None = None
 
     def public(self) -> dict:
         return {"id": self.id, "filename": self.filename, "status": self.status,
                 "progress": round(self.progress, 3), "message": self.message,
-                "events": self.events, "error": self.error,
+                "events": self.events, "ai_findings": self.ai_findings,
+                "ai_note": self.ai_note, "error": self.error,
                 "video_ready": bool(self.annotated_path)}
 
 
@@ -112,12 +115,12 @@ class VideoAnalyzer:
 
     def submit(self, path: str, filename: str, zones: dict | None = None,
                registry: list[str] | None = None,
-               delete_source: bool = False) -> AnalyzeJob:
+               delete_source: bool = False, ai_review: bool = False) -> AnalyzeJob:
         job = AnalyzeJob(id=uuid.uuid4().hex[:12], filename=filename)
         self.jobs[job.id] = job
         threading.Thread(target=self._run,
                          args=(job, path, zones or {}, registry or [],
-                               delete_source),
+                               delete_source, ai_review),
                          daemon=True, name=f"analyze-{job.id}").start()
         return job
 
@@ -125,13 +128,16 @@ class VideoAnalyzer:
         return self.jobs.get(job_id)
 
     # ------------------------------------------------------------------
-    def _run(self, job, path, zones, registry, delete_source=False):
+    def _run(self, job, path, zones, registry, delete_source=False,
+             ai_review=False):
         try:
             job.status = "running"
             self._analyze(job, path, zones, registry)
+            if ai_review:
+                self._ai_review(job, path)
             job.status = "done"
-            job.message = (f"{len(job.events)} anomalies found"
-                           if job.events else "no anomalies detected")
+            job.message = (f"{len(job.events)} rule alerts, "
+                           f"{len(job.ai_findings)} AI findings")
         except Exception as e:
             log.exception("analysis failed")
             job.status = "error"
@@ -225,6 +231,53 @@ class VideoAnalyzer:
         job.progress = 1.0
 
     # ------------------------------------------------------------------
+    def _ai_review(self, job, path):
+        """Claude watches keyframes across the clip and reports what's actually
+        happening (theft, break-in, vandalism...) — real scene understanding,
+        not geometry rules."""
+        from .vlm import VLMDescriber
+        reviewer = VLMDescriber({**self.config.get("vlm", {}), "enabled": True})
+        if not reviewer.available:
+            job.ai_note = ("Smart AI Review needs an Anthropic API key. Set the "
+                           "ANTHROPIC_API_KEY environment variable and try again.")
+            return
+        frames = self._sample_keyframes(path, reviewer.review_max_frames)
+        if not frames:
+            job.ai_note = "could not read frames for AI review"
+            return
+        job.ai_findings = reviewer.review_video(frames)
+        if not job.ai_findings:
+            job.ai_note = "Claude reviewed the clip and found nothing clearly suspicious."
+
+    @staticmethod
+    def _sample_keyframes(path, max_frames):
+        cap = cv2.VideoCapture(path)
+        try:
+            fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+            if total <= 0:
+                return []
+            duration = total / (fps if fps > 0 else 25.0)
+            n = min(max_frames, max(1, total))
+            out = []
+            for i in range(n):
+                t = duration * i / max(n - 1, 1)
+                cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+                ok, frame = cap.read()
+                if not ok:
+                    continue
+                # downscale to keep the API payload light
+                h, w = frame.shape[:2]
+                if w > 768:
+                    frame = cv2.resize(frame, (768, int(h * 768 / w)))
+                ok2, jpg = cv2.imencode(".jpg", frame,
+                                        [cv2.IMWRITE_JPEG_QUALITY, 80])
+                if ok2:
+                    out.append((round(t, 1), jpg.tobytes()))
+            return out
+        finally:
+            cap.release()
+
     def _append_event(self, job, ev):
         job.events.append({
             "index": len(job.events),

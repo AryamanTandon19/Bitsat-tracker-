@@ -55,9 +55,9 @@ rules:
     max_displacement_px: 120   # total movement below this = loitering
     near_vehicle_px: 150       # zone-free fallback: "near a vehicle" radius
 
-  vehicle_contact:             # A3 (best-effort heuristic)
-    enabled: true
-    iou_threshold: 0.02        # boxes overlapping / near-touching
+  vehicle_contact:             # A3 (best-effort heuristic, noisy — off by default)
+    enabled: false             # geometry-only; use Smart AI Review for real theft
+    iou_threshold: 0.20        # boxes must genuinely overlap (was too low before)
     depart_window_s: 15
     depart_speed_px_s: 60      # leaving "at speed"
 
@@ -92,10 +92,14 @@ telegram:
   send_clips: true
 
 vlm:
-  enabled: false               # optional Claude keyframe description
+  enabled: false               # optional Claude keyframe description on alerts
   model: "claude-sonnet-4-6"
   api_key_env: "ANTHROPIC_API_KEY"
   max_keyframes: 6
+  # "Smart AI Review" of uploaded videos (Claude watches the footage and reports
+  # theft/break-in/vandalism). Needs ANTHROPIC_API_KEY set in the environment.
+  review_model: "claude-opus-4-8"   # strongest vision model for scene understanding
+  review_max_frames: 16             # keyframes sampled across the clip
 
 analyze:                       # "upload a video and detect anomalies" feature
   enabled: true
