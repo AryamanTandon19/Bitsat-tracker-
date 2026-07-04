@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# runtime artefacts — never commit footage or the live DB
+clips/
+watchdog.db
+*.db
+tests/sample_gate.mp4
+*.mp4
+*.avi
+*.dav
+
+# model weights (auto-downloaded / user-provided)
+*.pt
+*.onnx
+models/
+
+.pytest_cache/

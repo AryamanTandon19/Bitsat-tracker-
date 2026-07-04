@@ -1,0 +1,96 @@
+# Society AI Watchdog — configuration
+# All tunables live here. No hardcoded IPs/tokens/thresholds in code.
+
+cameras:
+  # One entry per camera. `url` may be an RTSP URL or a path to a video file
+  # (mp4/avi/dav). Use the SUBSTREAM for RTSP (lighter, enough for detection):
+  #   Hikvision:        rtsp://user:pass@DVR_IP:554/Streaming/Channels/102
+  #   CP Plus / Dahua:  rtsp://user:pass@DVR_IP:554/cam/realmonitor?channel=1&subtype=1
+  - name: gate
+    url: "tests/sample_gate.mp4"      # replace with your RTSP URL
+    loop_file: true                    # loop video files (demo/test mode)
+    zones:
+      # Polygons as [[x, y], ...] in pixels of the source frame.
+      # Draw them with:  python zones.py --camera gate
+      entry: []          # A1: unauthorized vehicle entry
+      parking: []        # A2: loitering near parked cars
+      restricted: []     # A4: restricted-zone entry at odd hours
+
+detection:
+  model: "yolo11n.pt"          # nano model; auto-downloads on first run
+  device: "auto"               # auto | cpu | cuda:0
+  imgsz: 640
+  confidence: 0.35
+  process_fps: 6               # inference rate per camera (frame skipping)
+  classes: [person, car, motorcycle, bus, truck, bicycle]
+
+plates:
+  enabled: true
+  # Optional dedicated licence-plate detector (YOLO weights). If the file is
+  # missing, OCR runs on the lower half of the vehicle crop instead.
+  detector_model: "models/license_plate_yolo.pt"
+  ocr_backend: "auto"          # auto | fast-plate-ocr | easyocr | none
+  ocr_interval_s: 1.0          # OCR at most once per second per tracked vehicle
+  min_confidence: 0.5
+  fuzzy_max_distance: 1        # Levenshtein distance for registry matching
+
+rules:
+  night_hours: { start: "23:00", end: "05:00" }
+  debounce_s: 120              # one event type per tracked object per N seconds
+  max_notifications_per_hour: 10   # per camera; beyond this: log, don't send
+
+  unauthorized_vehicle:        # A1
+    enabled: true
+    plate_read_timeout_s: 5    # after this, alert as "plate unreadable"
+
+  loitering:                   # A2
+    enabled: true
+    dwell_s: 45
+    night_dwell_s: 20
+    max_displacement_px: 120   # total movement below this = loitering
+
+  vehicle_contact:             # A3 (best-effort heuristic)
+    enabled: true
+    iou_threshold: 0.02        # boxes overlapping / near-touching
+    depart_window_s: 15
+    depart_speed_px_s: 60      # leaving "at speed"
+
+  restricted_zone:             # A4
+    enabled: true
+
+  tamper:                      # A5
+    enabled: true
+    dark_threshold: 12         # mean pixel value below = near-black
+    bright_threshold: 243      # mean pixel value above = near-white
+    blur_threshold: 12.0       # Laplacian variance below = extremely blurred
+    condition_hold_s: 5
+    offline_alert_s: 30
+
+clips:
+  dir: "clips"
+  pre_event_s: 10
+  post_event_s: 20
+  buffer_s: 60                 # rolling in-memory buffer per camera
+  fps: 10                      # stored clip framerate
+
+storage:
+  db_path: "watchdog.db"
+  registry_csv: "registry.csv"
+
+telegram:
+  enabled: false               # set true + fill token/chats to go live
+  bot_token: "PUT-YOUR-BOT-TOKEN-HERE"
+  chat_ids:                    # guard group / manager group / individuals
+    guard: ""
+    manager: ""
+  send_clips: true
+
+vlm:
+  enabled: false               # optional Claude keyframe description
+  model: "claude-sonnet-4-6"
+  api_key_env: "ANTHROPIC_API_KEY"
+  max_keyframes: 6
+
+dashboard:
+  host: "0.0.0.0"
+  port: 8000

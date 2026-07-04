@@ -1,0 +1,20 @@
+# Core (pinned) — Python 3.11+, works on Windows and Linux
+ultralytics==8.3.58            # YOLO11/YOLOv8 + ByteTrack (pulls torch)
+opencv-python==4.10.0.84
+numpy==1.26.4
+PyYAML==6.0.2
+requests==2.32.3
+fastapi==0.115.6
+uvicorn==0.34.0
+python-multipart==0.0.20
+
+# Plate OCR — install ONE of these (fast-plate-ocr preferred, much lighter)
+fast-plate-ocr==0.3.0
+# easyocr==1.7.2               # fallback OCR (heavier; uncomment if needed)
+
+# Optional
+# onvif-zeep==0.2.12           # Option C: ONVIF camera discovery
+# anthropic==0.43.0            # optional VLM incident descriptions
+
+# Dev
+pytest==8.3.4
