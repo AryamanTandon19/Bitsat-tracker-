@@ -13,6 +13,9 @@ from app.db import Database
 from app.main import load_config
 
 
+AUTH = ("admin", "testpass")
+
+
 @pytest.fixture
 def client(tmp_path):
     class Ctx:
@@ -20,11 +23,24 @@ def client(tmp_path):
     ctx = Ctx()
     ctx.config = load_config(os.path.join(os.path.dirname(__file__), "..",
                                           "config.yaml"))
+    ctx.config["dashboard"]["auth"] = {"enabled": True, "username": AUTH[0],
+                                       "password": AUTH[1]}
     ctx.db = Database(str(tmp_path / "t.db"))
     ctx.workers = {}
     ctx.pipelines = {}
-    yield TestClient(dashboard.create_app(ctx)), ctx.db, tmp_path
+    c = TestClient(dashboard.create_app(ctx))
+    c.auth = AUTH
+    yield c, ctx.db, tmp_path
     ctx.db.close()
+
+
+def test_auth_required(client):
+    c, _, _ = client
+    c.auth = None
+    assert c.get("/").status_code == 401
+    assert c.get("/api/events").status_code == 401
+    assert c.get("/", auth=("admin", "wrong")).status_code == 401
+    assert c.get("/", auth=AUTH).status_code == 200
 
 
 def test_index_and_registry(client):

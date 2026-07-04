@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from pathlib import Path
 
-from fastapi import FastAPI, Form, HTTPException
+from fastapi import Depends, FastAPI, Form, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from . import clips as clips_mod
 from .plates import normalize_plate
@@ -18,7 +20,28 @@ log = logging.getLogger(__name__)
 def create_app(ctx) -> FastAPI:
     """ctx: object with .db, .config, .workers {name: CameraWorker},
     .pipelines {name: CameraPipeline}."""
-    app = FastAPI(title="Society AI Watchdog")
+    auth_cfg = (ctx.config.get("dashboard") or {}).get("auth") or {}
+    dependencies = []
+    if auth_cfg.get("enabled", True):
+        user = str(auth_cfg.get("username", "admin"))
+        password = str(auth_cfg.get("password", ""))
+        if not password:
+            log.warning("dashboard auth enabled but no password set — "
+                        "using 'changeme'. Set dashboard.auth.password!")
+            password = "changeme"
+        basic = HTTPBasic()
+
+        def check_auth(creds: HTTPBasicCredentials = Depends(basic)):
+            ok = (secrets.compare_digest(creds.username.encode(), user.encode())
+                  and secrets.compare_digest(creds.password.encode(),
+                                             password.encode()))
+            if not ok:
+                raise HTTPException(401, "invalid credentials",
+                                    headers={"WWW-Authenticate": "Basic"})
+
+        dependencies = [Depends(check_auth)]
+
+    app = FastAPI(title="Society AI Watchdog", dependencies=dependencies)
 
     @app.get("/", response_class=HTMLResponse)
     def index():

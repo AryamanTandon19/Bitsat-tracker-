@@ -92,5 +92,9 @@ vlm:
   max_keyframes: 6
 
 dashboard:
-  host: "0.0.0.0"
+  host: "0.0.0.0"      # 0.0.0.0 = reachable on the LAN; 127.0.0.1 = this PC only
   port: 8000
+  auth:                # HTTP Basic login for the dashboard (browser prompts)
+    enabled: true
+    username: "admin"
+    password: ""       # REQUIRED: set a strong password before first run

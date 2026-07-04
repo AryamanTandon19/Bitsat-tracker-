@@ -120,7 +120,34 @@ python tests/make_sample_video.py     # writes tests/sample_gate.mp4
 python -m app.main                    # default config points at it
 ```
 
-## 7. Verify the audit log
+## 7. Deploying on the DVR desktop + accessing it remotely
+
+The best machine to run this on is **the existing desktop the cameras/DVR
+already feed into** — it's on the right network and already runs 24/7.
+
+**Recommended flow with a private GitHub repo:**
+
+1. Keep this code in a **private** GitHub repository (free).
+2. On the DVR desktop: install Python 3.11+ and Git, then
+   `git clone https://github.com/<you>/<repo>.git` and follow section 1.
+3. When you improve the code from anywhere, push to GitHub; on the desktop
+   just run `git pull` to update. GitHub is your **code delivery + backup**
+   channel — the software itself always runs locally on that desktop.
+
+**Accessing the running dashboard from the internet** — do NOT port-forward
+the dashboard on your router (that exposes your camera views to the whole
+internet behind a single password). Two safe options:
+
+- **Telegram only (simplest):** alerts + clips already reach your phone
+  anywhere in the world. For most day-to-day use you never need the
+  dashboard remotely.
+- **Tailscale (recommended for full dashboard access):** install the free
+  Tailscale app on the DVR desktop and on your phone/laptop. It creates a
+  private encrypted network between your own devices — you open
+  `http://<desktop-tailscale-ip>:8000` from anywhere, but nobody else on the
+  internet can even see the port. No router changes, ~5 minutes to set up.
+
+## 8. Verify the audit log
 
 ```bash
 python verify_audit.py --db watchdog.db
@@ -197,6 +224,30 @@ tests/               unit + integration tests, sample video generator
   no unbounded growth over long runs.
 - Every camera reader and pipeline is a supervised thread with exponential
   backoff — one bad camera never takes down the app.
+
+## Security & privacy
+
+- **All video stays on the LAN.** Frames are processed in memory on the local
+  PC; only anomaly clips are written to disk, and only Telegram messages/
+  clips ever leave the machine (that is the alert channel, over HTTPS).
+- **Dashboard login:** HTTP Basic auth is on by default
+  (`dashboard.auth` in `config.yaml`) — set a strong password before first
+  run. Set `host: "127.0.0.1"` if only the DVR desktop itself needs the UI.
+- **Telegram:** bot API calls go over TLS; only people in your guard/manager
+  groups receive alerts. Keep the bot token secret (anyone with it can send
+  as your bot).
+- **Secrets:** the DVR password lives only in your local `config.yaml`, and
+  `watchdog.db`, clips and model files are `.gitignore`d — so even in a
+  private GitHub repo, no credentials or footage are ever committed.
+  If you fork this publicly, strip `config.yaml` first.
+- **Tamper-evident audit:** every clip save, alert, deletion and registry
+  change is hash-chained; `verify_audit.py` proves nobody quietly edited or
+  removed history.
+- **Data minimization:** no continuous recording, no face recognition, a
+  bounded 60s buffer, and clip deletion requires a name + reason that is
+  permanently recorded.
+- **Remote access:** prefer Tailscale/VPN over router port-forwarding (see
+  section 7). Never expose port 8000 or the DVR's port 554 to the internet.
 
 ## Tests
 
