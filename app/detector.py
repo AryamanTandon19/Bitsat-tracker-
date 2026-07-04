@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+# bundled tracker configs shipped with the app
+_TRACKER_DIR = Path(__file__).resolve().parent / "trackers"
 
 VEHICLE_CLASSES = {"car", "motorcycle", "bus", "truck", "bicycle"}
 PERSON_CLASS = "person"
@@ -52,8 +56,20 @@ class Detector:
                      list(VEHICLE_CLASSES | {PERSON_CLASS}))
         self.class_ids = [i for i, n in names.items() if n in wanted]
         self.names = names
-        log.info("detector ready (device=%s, classes=%s)", self.device,
-                 sorted(wanted))
+        self.tracker = self._resolve_tracker(cfg.get("tracker", "bytetrack.yaml"))
+        log.info("detector ready (device=%s, tracker=%s, classes=%s)",
+                 self.device, self.tracker, sorted(wanted))
+
+    @staticmethod
+    def _resolve_tracker(name: str) -> str:
+        """Accept a built-in ultralytics name (bytetrack.yaml / botsort.yaml),
+        one of our bundled configs (e.g. 'botsort_reid'), or an explicit path."""
+        if not name.endswith(".yaml"):
+            name += ".yaml"
+        bundled = _TRACKER_DIR / name
+        if bundled.exists():
+            return str(bundled)
+        return name  # let ultralytics resolve built-ins / user paths
 
     @staticmethod
     def _pick_device(pref: str) -> str:
@@ -69,7 +85,7 @@ class Detector:
 
     def track(self, frame) -> list[Detection]:
         results = self.model.track(
-            frame, persist=True, tracker="bytetrack.yaml",
+            frame, persist=True, tracker=self.tracker,
             imgsz=self.imgsz, conf=self.conf, classes=self.class_ids,
             device=self.device, verbose=False)
         out: list[Detection] = []

@@ -19,6 +19,8 @@ from .plates import normalize_plate
 
 log = logging.getLogger(__name__)
 
+ALLOWED_VIDEO_EXT = {".mp4", ".avi", ".mov", ".mkv", ".dav", ".m4v", ".webm"}
+
 
 def create_app(ctx) -> FastAPI:
     """ctx: object with .db, .config, .workers {name: CameraWorker},
@@ -134,7 +136,10 @@ def create_app(ctx) -> FastAPI:
         if analyzer is None:
             raise HTTPException(503, "video analysis is disabled")
         max_mb = int((ctx.config.get("analyze") or {}).get("max_upload_mb", 300))
-        suffix = Path(file.filename or "upload.mp4").suffix or ".mp4"
+        suffix = Path(file.filename or "upload.mp4").suffix.lower() or ".mp4"
+        if suffix not in ALLOWED_VIDEO_EXT:
+            raise HTTPException(400, f"unsupported file type '{suffix}' — "
+                                     f"allowed: {', '.join(sorted(ALLOWED_VIDEO_EXT))}")
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
         size = 0
         try:
@@ -155,7 +160,8 @@ def create_app(ctx) -> FastAPI:
                 break
         registry = ctx.db.registry_plates()
         job = analyzer.submit(tmp.name, file.filename or "upload.mp4",
-                              zones=zones, registry=registry)
+                              zones=zones, registry=registry,
+                              delete_source=True)  # don't retain raw footage
         return {"job_id": job.id}
 
     @app.get("/api/analyze/{job_id}")

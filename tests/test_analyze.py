@@ -63,6 +63,24 @@ def test_cameras_endpoint(ctx):
     assert client.get("/api/cameras").json() == ["gate"]
 
 
+def test_upload_rejects_non_video_extension(ctx):
+    client = TestClient(dashboard.create_app(ctx))
+    r = client.post("/api/analyze",
+                    files={"file": ("evil.exe", b"MZ...", "application/octet-stream")})
+    assert r.status_code == 400
+    assert "unsupported" in r.text.lower()
+
+
+def test_tracker_config_resolution():
+    from app.detector import Detector, _TRACKER_DIR
+    # our bundled ReID config resolves to a real path
+    assert (_TRACKER_DIR / "botsort_reid.yaml").exists()
+    assert Detector._resolve_tracker("botsort_reid").endswith("botsort_reid.yaml")
+    # built-in names pass through untouched for ultralytics to resolve
+    assert Detector._resolve_tracker("bytetrack.yaml") == "bytetrack.yaml"
+    assert Detector._resolve_tracker("botsort.yaml") == "botsort.yaml"
+
+
 def test_full_analysis_run(ctx, tmp_path):
     """End-to-end analyze — only when ultralytics is installed."""
     pytest.importorskip("ultralytics")

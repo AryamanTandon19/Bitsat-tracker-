@@ -23,6 +23,10 @@ detection:
   confidence: 0.35
   process_fps: 6               # inference rate per camera (frame skipping)
   classes: [person, car, motorcycle, bus, truck, bicycle]
+  # Tracker: "bytetrack.yaml" (fast, motion-only, default) or
+  # "botsort_reid" (appearance ReID — keeps the same culprit ID across
+  # occlusions / re-entry; stronger tracking, ~1.5-2x the tracking cost).
+  tracker: "bytetrack.yaml"
 
 plates:
   enabled: true

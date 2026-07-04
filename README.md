@@ -195,6 +195,32 @@ camera's zones or draw them first with `zones.py`.
 
 This is the quickest way to try the system before any camera is wired up.
 
+## Tracker choice: ByteTrack vs BoT-SORT + ReID
+
+The detector supports two trackers, switchable in `config.yaml`:
+
+```yaml
+detection:
+  tracker: "bytetrack.yaml"   # default — fast, motion-only
+  # tracker: "botsort_reid"   # appearance ReID — stronger culprit tracking
+```
+
+- **`bytetrack.yaml`** (default): fast, motion-only. Good on a CPU; can swap
+  IDs when a person is occluded or leaves and re-enters the frame.
+- **`botsort_reid`** (bundled at `app/trackers/botsort_reid.yaml`): BoT-SORT
+  with **appearance re-identification** — keeps the *same* culprit ID across
+  brief occlusions and re-entry, which is exactly what you want for following
+  a suspect. It reuses the YOLO detector's own features (`model: auto`), so
+  there's **no extra model to download**; it just costs ~1.5–2× the tracking
+  compute. Recommended once you have a GPU, or for 1–2 cameras on a strong CPU.
+
+This is the concrete upgrade distilled from the open-source trackers surveyed
+(Ultralytics BoT-SORT/ByteTrack, AI-Camera's DeepSORT, OpenMMLab MMTracking):
+all of them converge on YOLO-detection + appearance-ReID tracking, and
+Ultralytics ships that natively — so we enable it by config instead of
+vendoring a second, heavier framework. See `docs/tracking-upgrades.md` for the
+full comparison and the phase-2 path.
+
 ## Culprit tracking (green box)
 
 When any anomaly fires, every person/vehicle involved is **flagged as a
@@ -300,6 +326,21 @@ tests/               unit + integration tests, sample video generator
   permanently recorded.
 - **Remote access:** prefer Tailscale/VPN over router port-forwarding (see
   section 7). Never expose port 8000 or the DVR's port 554 to the internet.
+- **Uploaded footage is not retained:** videos submitted to the analyze box are
+  written to a temp file, processed, and **deleted immediately after** — only
+  the anomaly clips are kept. Uploads are also restricted to known video
+  extensions, so arbitrary files can't be pushed through the pipeline.
+- **The tuning assistant is sandboxed:** it may only change tuning thresholds
+  (`rules`/`detection`/`plates`/`clips`) and is rejected — at both the suggest
+  and apply steps — if it tries to touch tokens, camera URLs or auth.
+
+> **A note on "disabling the firewall":** don't. Keeping the OS/router firewall
+> **on** is one of the main things protecting the cameras and this dashboard
+> from the internet — turning it off is the opposite of "prevent a security
+> breach". Nothing in this project requires a firewall to be disabled. If a
+> firewall is blocking a *legitimate* local connection, open only the specific
+> port you need on the LAN (e.g. 8000 for the dashboard, 554 to the DVR) rather
+> than disabling protection wholesale, and use Tailscale for anything remote.
 
 ## Tests
 

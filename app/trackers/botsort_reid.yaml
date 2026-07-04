@@ -1,0 +1,25 @@
+# BoT-SORT with appearance ReID — for persistent "culprit" identity.
+#
+# Unlike ByteTrack (motion-only), this keeps the same track ID for a person or
+# vehicle across brief occlusions and short exits from frame, by matching on
+# appearance features in addition to motion. `model: auto` reuses the YOLO
+# detector's own features, so NO extra model download is needed — it just
+# costs more compute. Enable via config.yaml -> detection.tracker: "botsort_reid".
+#
+# Reference: ultralytics BoT-SORT tracker.
+
+tracker_type: botsort
+track_high_thresh: 0.25
+track_low_thresh: 0.1
+new_track_thresh: 0.25
+track_buffer: 60          # keep lost tracks alive longer (handles occlusion)
+match_thresh: 0.8
+fuse_score: True
+
+gmc_method: sparseOptFlow  # global motion compensation (helps if camera shakes)
+
+# ReID
+proximity_thresh: 0.5
+appearance_thresh: 0.8
+with_reid: True            # <- appearance re-identification ON
+model: auto                # reuse detector features; no extra weights to fetch

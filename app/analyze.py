@@ -60,11 +60,13 @@ class VideoAnalyzer:
         self._detector = None  # lazily built, reused across jobs
 
     def submit(self, path: str, filename: str, zones: dict | None = None,
-               registry: list[str] | None = None) -> AnalyzeJob:
+               registry: list[str] | None = None,
+               delete_source: bool = False) -> AnalyzeJob:
         job = AnalyzeJob(id=uuid.uuid4().hex[:12], filename=filename)
         self.jobs[job.id] = job
-        threading.Thread(target=self._run, args=(job, path, zones or {},
-                                                 registry or []),
+        threading.Thread(target=self._run,
+                         args=(job, path, zones or {}, registry or [],
+                               delete_source),
                          daemon=True, name=f"analyze-{job.id}").start()
         return job
 
@@ -72,7 +74,8 @@ class VideoAnalyzer:
         return self.jobs.get(job_id)
 
     # ------------------------------------------------------------------
-    def _run(self, job: AnalyzeJob, path: str, zones: dict, registry: list[str]):
+    def _run(self, job: AnalyzeJob, path: str, zones: dict, registry: list[str],
+             delete_source: bool = False):
         try:
             job.status = "running"
             self._analyze(job, path, zones, registry)
@@ -82,6 +85,13 @@ class VideoAnalyzer:
             log.exception("analysis failed")
             job.status = "error"
             job.error = str(e)
+        finally:
+            # privacy / data-minimization: never keep the raw uploaded footage
+            if delete_source:
+                try:
+                    Path(path).unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def _analyze(self, job: AnalyzeJob, path: str, zones: dict,
                  registry: list[str]):
