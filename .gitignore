@@ -18,3 +18,7 @@ tests/sample_gate.mp4
 models/
 
 .pytest_cache/
+
+# test-set clips (footage stays local)
+testset/clips/*
+!testset/clips/.gitkeep

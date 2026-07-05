@@ -1,0 +1,3 @@
+filename,type,incident,start_s,end_s,notes
+gate_theft_01.mp4,vehicle_theft,yes,42,68,EXAMPLE ROW - man breaks window and drives off (delete me)
+gate_normal_01.mp4,normal,no,,,EXAMPLE ROW - resident parks and walks in (delete me)

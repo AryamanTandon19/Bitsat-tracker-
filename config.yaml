@@ -64,6 +64,18 @@ rules:
   restricted_zone:             # A4
     enabled: true
 
+  # Candidate trigger — the cheap "worth forwarding to Claude?" gate. Wide net
+  # by design (high recall). Tune these against real footage with
+  #   python validate_triggers.py
+  trigger:
+    on_near_vehicle: true      # person close to a vehicle (main theft signal)
+    on_loiter: true            # person lingering (dwelling) in view
+    on_zone: true              # person inside any drawn zone
+    on_night_person: true      # any person present during night hours
+    near_vehicle_px: 180       # "near a vehicle" radius in pixels
+    dwell_s: 8                 # seconds present before "lingering" fires
+    night_hours: { start: "23:00", end: "05:00" }
+
   tamper:                      # A5
     enabled: true
     dark_threshold: 12         # mean pixel value below = near-black
