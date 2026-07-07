@@ -31,9 +31,22 @@ import cv2
 
 from .camera import frame_stats
 from .plates import fuzzy_match
-from .rules import CAMERA_OFFLINE, CAMERA_TAMPER, SEVERITY, RulesEngine
+from .rules import RulesEngine
+from .trigger import CandidateTrigger
 
 log = logging.getLogger(__name__)
+
+SUSPICIOUS = "suspicious_activity"
+SUSPICIOUS_REFRACTORY_S = 20.0   # min gap between suspicious-activity events
+
+REASON_TEXT = {
+    "person_near_vehicle": "person close to a vehicle",
+    "person_lingering": "person lingering in view",
+    "person_at_night": "person present at night",
+    "person_in_restricted": "person in restricted zone",
+    "person_in_parking": "person in parking zone",
+    "person_in_entry": "person in entry zone",
+}
 
 CULPRIT_GREEN = (0, 255, 0)
 BANNER_HOLD_S = 3.0            # keep the red anomaly banner up this long
@@ -168,6 +181,13 @@ class VideoAnalyzer:
         clock = [0.0]
         rules = RulesEngine("upload", zones, self.config["rules"],
                             now_fn=lambda: clock[0])
+        # the same candidate trigger that validate_triggers.py measures —
+        # surfaces "suspicious activity" even when no strict rule fires
+        trig = CandidateTrigger(zones, self.config["rules"].get("trigger", {}),
+                                localtime_fn=__import__("datetime").datetime.now)
+        last_suspicious_ts = -1e9
+        trig_flags: dict[int, float] = {}   # track_id -> green-box hold expiry
+        TRIG_FLAG_HOLD_S = 10.0
         pcfg = self.config.get("plates", {})
         from .plates import PlateReader
         plate_reader = PlateReader(pcfg)
@@ -205,8 +225,26 @@ class VideoAnalyzer:
                 events = rules.update(detections, ts, plate_info)
                 mean, lap = frame_stats(frame)
                 events += rules.update_frame_stats(mean, lap, ts)
+
+                # candidate trigger: green-box involved people and raise a
+                # "suspicious activity" event (with a refractory gap)
+                fire, reasons = trig.is_candidate(detections, ts)
+                if fire and ts - last_suspicious_ts >= SUSPICIOUS_REFRACTORY_S:
+                    last_suspicious_ts = ts
+                    why = ", ".join(REASON_TEXT.get(r, r) for r in reasons)
+                    from types import SimpleNamespace
+                    events.append(SimpleNamespace(
+                        ts=ts, event_type=SUSPICIOUS, severity="MEDIUM",
+                        description=f"Suspicious activity: {why}",
+                        plate=None, track_ids=sorted(trig.last_involved),
+                        confidence=0.5))
+
+                if fire:
+                    for tid in trig.last_involved:
+                        trig_flags[tid] = ts + TRIG_FLAG_HOLD_S
                 last_boxes = [(d.track_id, d.cls_name, d.xyxy) for d in detections]
-                last_flagged = rules.active_flags(ts)
+                last_flagged = rules.active_flags(ts) | \
+                    {tid for tid, exp in trig_flags.items() if exp >= ts}
                 for ev in events:
                     self._append_event(job, ev)
                     event_marks.append((ev.ts, ev.event_type, ev.severity))

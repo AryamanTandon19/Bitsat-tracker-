@@ -31,6 +31,7 @@ class CandidateTrigger:
         self.localtime_fn = localtime_fn
         self._person_since: dict[int, float] = {}   # track_id -> first-seen ts
         self._last_seen: dict[int, float] = {}
+        self.last_involved: set[int] = set()  # person track_ids behind last fire
 
     def _night(self) -> bool:
         nh = self.cfg.get("night_hours", {"start": "23:00", "end": "05:00"})
@@ -56,25 +57,34 @@ class CandidateTrigger:
         near_r = float(self.cfg.get("near_vehicle_px", 180))
         dwell_s = float(self.cfg.get("dwell_s", 8))
         night = self._night()
+        involved: set[int] = set()
 
         for p in persons:
+            fired_for_p = False
             if self.cfg.get("on_near_vehicle", True):
                 for v in vehicles:
                     expanded = (v.xyxy[0] - near_r, v.xyxy[1] - near_r,
                                 v.xyxy[2] + near_r, v.xyxy[3] + near_r)
                     if iou(p.xyxy, expanded) > 0:
                         reasons.add(NEAR_VEHICLE)
+                        fired_for_p = True
                         break
             if self.cfg.get("on_loiter", True) and \
                     ts - self._person_since[p.track_id] >= dwell_s:
                 reasons.add(LINGERING)
+                fired_for_p = True
             if self.cfg.get("on_zone", True):
                 for zname in ("restricted", "parking", "entry"):
                     if point_in_polygon(p.foot_point, self.zones.get(zname)):
                         reasons.add(f"person_in_{zname}")
+                        fired_for_p = True
             if night and self.cfg.get("on_night_person", True):
                 reasons.add(AT_NIGHT)
+                fired_for_p = True
+            if fired_for_p:
+                involved.add(p.track_id)
 
+        self.last_involved = involved
         return (bool(reasons), sorted(reasons))
 
 

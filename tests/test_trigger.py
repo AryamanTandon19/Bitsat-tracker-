@@ -84,6 +84,16 @@ def test_toggles_disable_signals():
     assert not t.is_candidate([person], ts=20.0)[0]
 
 
+def test_last_involved_tracks_the_right_person():
+    t = trig()
+    car = Det(1, "car", (100, 100, 200, 160))
+    near = Det(7, "person", (205, 120, 225, 180))    # beside the car
+    far = Det(8, "person", (600, 300, 620, 360))     # far away, just arrived
+    fire, _ = t.is_candidate([car, near, far], ts=1.0)
+    assert fire
+    assert t.last_involved == {7}                    # only the person near the car
+
+
 def test_merge_windows():
     assert merge_windows([]) == []
     # points 1,2,3 merge (gap<=3); 20 separate
