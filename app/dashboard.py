@@ -217,6 +217,20 @@ def create_app(ctx) -> FastAPI:
             ctx.config_path, ctx.config, patch, db=ctx.db, actor="dashboard")
         return result
 
+    # -------------------------------------------------------- cost meter
+    @app.get("/api/costs")
+    def costs():
+        usd_to_inr = float((ctx.config.get("ai_review") or {})
+                           .get("usd_to_inr", 90.0))
+        summary = ctx.db.ai_cost_summary()
+        for key in ("last_24h", "last_30d"):
+            summary[key]["cost_inr"] = round(summary[key]["cost_usd"] * usd_to_inr, 2)
+        for row in summary["per_camera_30d"]:
+            row["cost_inr"] = round(row["cost_usd"] * usd_to_inr, 2)
+        summary["ai_review_enabled"] = bool(
+            (ctx.config.get("ai_review") or {}).get("enabled"))
+        return summary
+
     # ------------------------------------------------------------ audit
     @app.get("/api/audit")
     def audit(limit: int = 200):
@@ -284,9 +298,17 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  <button onclick="sendChat()">Send</button>
 </div>
 
+<h2>&#128176; AI spend meter</h2>
+<div id="costs" style="display:flex;gap:18px;flex-wrap:wrap;font-size:13px">
+ <div>Last 24h: <b id="cost24">—</b></div>
+ <div>Last 30 days: <b id="cost30">—</b></div>
+ <div>AI calls (30d): <b id="calls30">—</b></div>
+ <div id="cost_note" style="color:#9ab"></div>
+</div>
+
 <h2>Recent events</h2>
 <table id="events"><thead><tr><th>Severity</th><th>Time</th><th>Camera</th>
-<th>Type</th><th>Plate</th><th>Description</th><th>Clip</th></tr></thead>
+<th>Type</th><th>Plate</th><th>Description</th><th>AI says</th><th>Clip</th></tr></thead>
 <tbody></tbody></table>
 <h2>Vehicle registry</h2>
 <div class="row">
@@ -315,7 +337,15 @@ async function refresh(){
   else if(e.clip_deleted) clip='deleted';
   return `<tr class="${e.severity}"><td>${e.severity}</td><td>${t}</td>
   <td>${esc(e.camera)}</td><td>${esc(e.event_type)}</td><td>${esc(e.plate)||'—'}</td>
-  <td>${esc(e.description)}</td><td>${clip}</td></tr>`;}).join('');
+  <td>${esc(e.description)}</td><td>${esc(e.ai_summary)||'—'}</td><td>${clip}</td></tr>`;}).join('');
+ try{
+  const c=await (await fetch('/api/costs')).json();
+  document.getElementById('cost24').textContent='₹'+c.last_24h.cost_inr.toFixed(2);
+  document.getElementById('cost30').textContent='₹'+c.last_30d.cost_inr.toFixed(2);
+  document.getElementById('calls30').textContent=c.last_30d.calls;
+  document.getElementById('cost_note').textContent=
+   c.ai_review_enabled?'(live two-tier review ON)':'(AI review off — set ai_review.enabled + API key)';
+ }catch(e){}
  const reg=await (await fetch('/api/registry')).json();
  document.querySelector('#registry tbody').innerHTML=reg.map(v=>
   `<tr><td>${esc(v.plate_number)}</td><td>${esc(v.owner_name)}</td>

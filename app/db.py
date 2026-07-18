@@ -70,6 +70,27 @@ CREATE TABLE IF NOT EXISTS audit_log (
     prev_hash TEXT NOT NULL,
     row_hash TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ai_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL REFERENCES events(id),
+    camera TEXT NOT NULL,
+    ts REAL NOT NULL,
+    tier INTEGER NOT NULL,
+    model TEXT NOT NULL,
+    suspicious INTEGER NOT NULL,
+    summary TEXT,
+    findings_json TEXT
+);
+CREATE TABLE IF NOT EXISTS ai_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    camera TEXT NOT NULL,
+    event_id INTEGER,
+    model TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    cost_usd REAL NOT NULL
+);
 """
 
 
@@ -214,7 +235,9 @@ class Database:
     def recent_events(self, limit: int = 100) -> list[dict]:
         with self._lock:
             cur = self._conn.execute(
-                "SELECT e.*, c.id AS clip_id, c.path AS clip_path, c.deleted AS clip_deleted"
+                "SELECT e.*, c.id AS clip_id, c.path AS clip_path, c.deleted AS clip_deleted,"
+                " (SELECT ar.summary FROM ai_reviews ar WHERE ar.event_id = e.id"
+                "  ORDER BY ar.tier DESC, ar.id DESC LIMIT 1) AS ai_summary"
                 " FROM events e LEFT JOIN clips c ON c.event_id = e.id"
                 " ORDER BY e.id DESC LIMIT ?", (limit,))
             return [dict(r) for r in cur.fetchall()]
@@ -256,6 +279,63 @@ class Database:
                           {"notification_id": nid, "event_id": event_id,
                            "chat_id": chat_id, "status": status})
         return nid
+
+    # -- AI reviews & cost tracking ----------------------------------------
+    def insert_ai_review(self, event_id: int, camera: str, tier: int,
+                         model: str, suspicious: bool, summary: str,
+                         findings: list) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO ai_reviews (event_id, camera, ts, tier, model,"
+                " suspicious, summary, findings_json)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (event_id, camera, time.time(), tier, model, int(suspicious),
+                 summary, json.dumps(findings)))
+            self._conn.commit()
+            return cur.lastrowid
+
+    def insert_ai_usage(self, camera: str, event_id: int | None, model: str,
+                        input_tokens: int, output_tokens: int,
+                        cost_usd: float) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO ai_usage (ts, camera, event_id, model,"
+                " input_tokens, output_tokens, cost_usd)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (time.time(), camera, event_id, model, input_tokens,
+                 output_tokens, cost_usd))
+            self._conn.commit()
+            return cur.lastrowid
+
+    def ai_reviews_last_24h(self, camera: str) -> int:
+        cutoff = time.time() - 86400
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM ai_reviews"
+                " WHERE camera = ? AND ts > ? AND tier = 1", (camera, cutoff))
+            return cur.fetchone()["n"]
+
+    def ai_cost_summary(self) -> dict:
+        """Spend + call counts for the dashboard cost meter."""
+        now = time.time()
+        out = {}
+        with self._lock:
+            for label, cutoff in (("last_24h", now - 86400),
+                                  ("last_30d", now - 30 * 86400)):
+                cur = self._conn.execute(
+                    "SELECT COUNT(*) AS calls,"
+                    " COALESCE(SUM(cost_usd), 0) AS cost_usd,"
+                    " COALESCE(SUM(input_tokens), 0) AS input_tokens,"
+                    " COALESCE(SUM(output_tokens), 0) AS output_tokens"
+                    " FROM ai_usage WHERE ts > ?", (cutoff,))
+                out[label] = dict(cur.fetchone())
+            cur = self._conn.execute(
+                "SELECT camera, COUNT(*) AS calls,"
+                " COALESCE(SUM(cost_usd), 0) AS cost_usd"
+                " FROM ai_usage WHERE ts > ? GROUP BY camera"
+                " ORDER BY cost_usd DESC", (now - 30 * 86400,))
+            out["per_camera_30d"] = [dict(r) for r in cur.fetchall()]
+        return out
 
     def notifications_last_hour(self, camera: str) -> int:
         cutoff = time.time() - 3600

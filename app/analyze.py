@@ -31,12 +31,11 @@ import cv2
 
 from .camera import frame_stats
 from .plates import fuzzy_match
+from .rules import SUSPICIOUS_ACTIVITY as SUSPICIOUS
 from .rules import RulesEngine
 from .trigger import CandidateTrigger
 
 log = logging.getLogger(__name__)
-
-SUSPICIOUS = "suspicious_activity"
 SUSPICIOUS_REFRACTORY_S = 20.0   # min gap between suspicious-activity events
 
 REASON_TEXT = {

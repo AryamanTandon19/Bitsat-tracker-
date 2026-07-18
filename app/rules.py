@@ -18,6 +18,7 @@ VEHICLE_CONTACT = "vehicle_contact"              # A3
 RESTRICTED_ZONE = "restricted_zone"              # A4
 CAMERA_TAMPER = "camera_tamper"                  # A5
 CAMERA_OFFLINE = "camera_offline"                # A5
+SUSPICIOUS_ACTIVITY = "suspicious_activity"      # candidate trigger (wide net)
 
 SEVERITY = {
     UNAUTHORIZED_VEHICLE: "HIGH",
@@ -27,6 +28,7 @@ SEVERITY = {
     RESTRICTED_ZONE: "HIGH",
     CAMERA_TAMPER: "HIGH",
     CAMERA_OFFLINE: "HIGH",
+    SUSPICIOUS_ACTIVITY: "MEDIUM",
 }
 
 TITLES = {
@@ -37,6 +39,7 @@ TITLES = {
     RESTRICTED_ZONE: "Person in restricted area",
     CAMERA_TAMPER: "Camera tampered (obscured/blinded)",
     CAMERA_OFFLINE: "Camera offline (stream lost)",
+    SUSPICIOUS_ACTIVITY: "Suspicious activity",
 }
 
 TRACK_EXPIRY_S = 6.0  # forget a track this long after it was last seen

@@ -12,6 +12,7 @@ import time
 import cv2
 import yaml
 
+from .ai_review import TieredReviewer
 from .analyze import VideoAnalyzer
 from .assistant import TuningAssistant
 from .camera import CameraWorker, frame_stats
@@ -20,8 +21,12 @@ from .db import Database
 from .detector import Detector, annotate
 from .notify import TelegramNotifier
 from .plates import PlateReader, fuzzy_match
-from .rules import RulesEngine
+from .rules import SUSPICIOUS_ACTIVITY, Event, RulesEngine
+from .trigger import CandidateTrigger
 from .vlm import VLMDescriber
+
+SUSPICIOUS_REFRACTORY_S = 60.0  # min gap between live suspicious events/camera
+TRIG_FLAG_HOLD_S = 10.0         # keep the green box on trigger subjects
 
 log = logging.getLogger("watchdog")
 
@@ -38,10 +43,14 @@ class CameraPipeline(threading.Thread):
         self.zones = zones or {}
         self.ctx = ctx
         self.rules = RulesEngine(name, self.zones, ctx.config["rules"])
+        self.trigger = CandidateTrigger(self.zones,
+                                        ctx.config["rules"].get("trigger", {}))
         self.detector: Detector | None = None
         self.annotated_jpeg: bytes | None = None
         self._stop = threading.Event()
         self._last_ts = 0.0
+        self._last_suspicious_ts = 0.0
+        self._trig_flags: dict[int, float] = {}
 
     def stop(self):
         self._stop.set()
@@ -96,12 +105,29 @@ class CameraPipeline(threading.Thread):
             events = self.rules.update(detections, ts, plate_info)
             mean, lap = frame_stats(frame)
             events += self.rules.update_frame_stats(mean, lap, ts)
+
+            # candidate trigger: live "suspicious activity" (the AI-review gate)
+            fire, reasons = self.trigger.is_candidate(detections, ts)
+            if fire:
+                for tid in self.trigger.last_involved:
+                    self._trig_flags[tid] = ts + TRIG_FLAG_HOLD_S
+                if ts - self._last_suspicious_ts >= SUSPICIOUS_REFRACTORY_S:
+                    self._last_suspicious_ts = ts
+                    events.append(Event(
+                        ts=ts, camera=self.cam_name,
+                        event_type=SUSPICIOUS_ACTIVITY, severity="MEDIUM",
+                        description="Suspicious activity: " + ", ".join(reasons),
+                        track_ids=sorted(self.trigger.last_involved),
+                        confidence=0.5))
+
             for ev in events:
                 self._handle_event(ev)
 
             # annotated frame for the dashboard — flagged culprits in green
+            flagged = self.rules.active_flags(ts) | \
+                {tid for tid, exp in self._trig_flags.items() if exp >= ts}
             vis = annotate(frame.copy(), detections, self.zones,
-                           flagged=self.rules.active_flags(ts),
+                           flagged=flagged,
                            trails=self.rules.flag_trails(ts))
             ok, jpg = cv2.imencode(".jpg", vis, [cv2.IMWRITE_JPEG_QUALITY, 75])
             if ok:
@@ -132,6 +158,7 @@ class AppContext:
             config.get("telegram", {}), self.db,
             max_per_hour=int(config["rules"].get("max_notifications_per_hour", 10)))
         self.vlm = VLMDescriber(config.get("vlm", {}))
+        self.reviewer = TieredReviewer(config.get("ai_review", {}), self.db)
         self.clip_saver = ClipSaver(config.get("clips", {}), self.db,
                                     on_clip_ready=self._on_clip_ready)
         acfg = config.get("analyze", {})
@@ -143,9 +170,23 @@ class AppContext:
 
     def _on_clip_ready(self, event, event_id: int, clip_path: str):
         desc = None
-        if self.vlm.enabled:
-            desc = self.vlm.describe(self.clip_saver.keyframes(clip_path),
-                                     event.event_type)
+        keyframes = None
+        # full pipeline: two-tier AI review (Haiku screen -> Opus findings)
+        if self.reviewer.enabled:
+            keyframes = self.clip_saver.keyframes(
+                clip_path, n=self.reviewer.max_frames)
+            result = self.reviewer.review_clip(event, event_id,
+                                               event.camera, keyframes)
+            if result:
+                desc = result["alert_text"]
+                log.info("AI review [%s]: %s (₹%.2f)", event.camera,
+                         result["summary"] or "not suspicious",
+                         result["cost_inr"])
+        # fallback: simple one-shot VLM description
+        if desc is None and self.vlm.enabled:
+            if keyframes is None:
+                keyframes = self.clip_saver.keyframes(clip_path)
+            desc = self.vlm.describe(keyframes, event.event_type)
         self.notifier.notify_event(event, event_id, clip_path, desc)
 
     def start_cameras(self):

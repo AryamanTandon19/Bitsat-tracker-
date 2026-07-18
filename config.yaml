@@ -113,6 +113,18 @@ vlm:
   review_model: "claude-opus-4-8"   # strongest vision model for scene understanding
   review_max_frames: 16             # keyframes sampled across the clip
 
+ai_review:                     # LIVE two-tier AI review of triggered events
+  enabled: true                # needs ANTHROPIC_API_KEY in the environment
+  tier1_model: "claude-haiku-4-5"   # cheap screener (~Rs 0.5/review)
+  tier2_model: "claude-opus-4-8"    # strong reviewer, only on escalation
+  escalate: true               # tier1 "suspicious" -> tier2 full findings
+  cameras: []                  # empty = all cameras; else list camera names
+  schedule: "always"           # always | night_only  (cost lever)
+  night_hours: { start: "23:00", end: "05:00" }
+  max_frames: 10               # keyframes per review (cost lever)
+  daily_cap_per_camera: 100    # hard spend brake per camera per 24h
+  usd_to_inr: 90.0             # for the dashboard cost meter
+
 analyze:                       # "upload a video and detect anomalies" feature
   enabled: true
   out_dir: "clips/uploads"
