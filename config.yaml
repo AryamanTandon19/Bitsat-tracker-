@@ -107,6 +107,9 @@ telegram:
     guard: ""
     manager: ""
   send_clips: true
+  language: "en"               # en | hi (Hindi alerts for guards)
+  feedback_buttons: true       # ✅/❌ buttons on alerts; presses are logged
+                               # and used to tune the system
 
 vlm:
   enabled: false               # optional Claude keyframe description on alerts

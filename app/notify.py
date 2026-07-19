@@ -33,6 +33,45 @@ IST = _india_tz()
 API = "https://api.telegram.org/bot{token}/{method}"
 MAX_CLIP_BYTES = 49 * 1024 * 1024  # Telegram bot API cap is 50MB
 
+# Hindi titles/labels for guard-friendly alerts (config: telegram.language: hi)
+TITLES_HI = {
+    "unauthorized_vehicle": "अनधिकृत वाहन प्रवेश",
+    "unidentified_vehicle": "अज्ञात वाहन (नंबर प्लेट नहीं पढ़ी गई)",
+    "loitering": "वाहनों के पास संदिग्ध व्यक्ति",
+    "vehicle_contact": "संभावित वाहन टक्कर",
+    "restricted_zone": "प्रतिबंधित क्षेत्र में व्यक्ति",
+    "camera_tamper": "कैमरे से छेड़छाड़",
+    "camera_offline": "कैमरा ऑफ़लाइन",
+    "suspicious_activity": "संदिग्ध गतिविधि",
+}
+SEVERITY_HI = {"HIGH": "उच्च", "MEDIUM": "मध्यम", "LOW": "निम्न"}
+LABELS = {
+    "en": {"camera": "Camera", "plate": "Plate", "unreadable": "unreadable",
+           "update": "UPDATE — same incident", "correct": "✅ Correct",
+           "false": "❌ False alarm"},
+    "hi": {"camera": "कैमरा", "plate": "नंबर प्लेट",
+           "unreadable": "पढ़ने योग्य नहीं", "update": "अपडेट — वही घटना",
+           "correct": "✅ सही", "false": "❌ गलत अलार्म"},
+}
+
+
+def build_feedback_keyboard(event_id: int, language: str = "en") -> dict:
+    """Inline ✅/❌ buttons — guard feedback that tunes the system over time."""
+    lb = LABELS.get(language, LABELS["en"])
+    return {"inline_keyboard": [[
+        {"text": lb["correct"], "callback_data": f"fb:{event_id}:correct"},
+        {"text": lb["false"], "callback_data": f"fb:{event_id}:false_alarm"},
+    ]]}
+
+
+def parse_feedback_callback(data: str) -> tuple[int, str] | None:
+    """'fb:<event_id>:<verdict>' -> (event_id, verdict) or None."""
+    parts = (data or "").split(":")
+    if len(parts) == 3 and parts[0] == "fb" and parts[1].isdigit() \
+            and parts[2] in ("correct", "false_alarm"):
+        return int(parts[1]), parts[2]
+    return None
+
 
 class TelegramNotifier:
     def __init__(self, cfg: dict, db, max_per_hour: int = 10):
@@ -42,7 +81,10 @@ class TelegramNotifier:
         self.token = cfg.get("bot_token", "")
         self.chat_ids = {k: str(v) for k, v in (cfg.get("chat_ids") or {}).items() if v}
         self.send_clips = bool(cfg.get("send_clips", True))
+        self.language = cfg.get("language", "en")
+        self.feedback_buttons = bool(cfg.get("feedback_buttons", True))
         self.max_per_hour = max_per_hour
+        self._poller_started = False
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -72,10 +114,23 @@ class TelegramNotifier:
                     self.db.insert_notification(event_id, chat, "suppressed-cap")
                 return
 
-        text = self.format_message(event, vlm_description)
+        # incident threading: follow-ups of an already-alerted incident are
+        # marked as updates and skip the (heavy) video re-upload
+        incident_id = None
+        is_update = False
+        row = self.db.get_event(event_id)
+        if row and row.get("incident_id"):
+            incident_id = row["incident_id"]
+            is_update = self.db.notifications_for_incident(incident_id) > 0
+
+        text = self.format_message(event, vlm_description,
+                                   language=self.language,
+                                   incident_id=incident_id, is_update=is_update)
+        keyboard = build_feedback_keyboard(event_id, self.language) \
+            if self.feedback_buttons else None
         for label, chat in chats.items():
-            status = "sent" if self._send_text(chat, text) else "failed"
-            if status == "sent" and clip_path and self.send_clips:
+            status = "sent" if self._send_text(chat, text, keyboard) else "failed"
+            if status == "sent" and clip_path and self.send_clips and not is_update:
                 if not self._send_video(chat, clip_path):
                     status = "sent-no-clip"
             self.db.insert_notification(event_id, chat, status)
@@ -83,22 +138,91 @@ class TelegramNotifier:
 
     # ------------------------------------------------------------------
     @staticmethod
-    def format_message(event, vlm_description: str | None = None) -> str:
+    def format_message(event, vlm_description: str | None = None,
+                       language: str = "en", incident_id: int | None = None,
+                       is_update: bool = False) -> str:
         t = datetime.fromtimestamp(event.ts, IST).strftime("%d %b %Y %H:%M:%S IST")
         desc = vlm_description or event.description
-        return (f"\U0001F6A8 [{event.severity}] {TITLES[event.event_type]}\n"
-                f"\U0001F4CD Camera: {event.camera}  |  \U0001F550 {t}\n"
-                f"\U0001F697 Plate: {event.plate or 'unreadable'}\n"
-                f"\U0001F4C4 {desc}")
+        lb = LABELS.get(language, LABELS["en"])
+        if language == "hi":
+            title = TITLES_HI.get(event.event_type, TITLES[event.event_type])
+            sev = SEVERITY_HI.get(event.severity, event.severity)
+        else:
+            title = TITLES[event.event_type]
+            sev = event.severity
+        head = f"\U0001F6A8 [{sev}] {title}"
+        if incident_id:
+            head += f"  (#गुट {incident_id})" if language == "hi" \
+                else f"  (Incident #{incident_id})"
+        lines = [head]
+        if is_update:
+            lines.append(f"\U0001F501 {lb['update']}")
+        lines.append(f"\U0001F4CD {lb['camera']}: {event.camera}  |  \U0001F550 {t}")
+        lines.append(f"\U0001F697 {lb['plate']}: {event.plate or lb['unreadable']}")
+        lines.append(f"\U0001F4C4 {desc}")
+        return "\n".join(lines)
 
-    def _send_text(self, chat_id: str, text: str) -> bool:
+    def _send_text(self, chat_id: str, text: str, keyboard: dict | None = None) -> bool:
         try:
+            payload = {"chat_id": chat_id, "text": text}
+            if keyboard:
+                import json as _json
+                payload["reply_markup"] = _json.dumps(keyboard)
             r = requests.post(API.format(token=self.token, method="sendMessage"),
-                              data={"chat_id": chat_id, "text": text}, timeout=15)
+                              data=payload, timeout=15)
             return r.ok
         except requests.RequestException as e:
             log.warning("sendMessage failed: %s", e)
             return False
+
+    # ------------------------------------------- guard feedback poller
+    def start_feedback_poller(self):
+        """Long-polls Telegram for ✅/❌ button presses and records them."""
+        if not (self.enabled and self.token and self.feedback_buttons) \
+                or self._poller_started:
+            return
+        self._poller_started = True
+        threading.Thread(target=self._poll_loop, daemon=True,
+                         name="tg-feedback").start()
+
+    def _poll_loop(self):
+        offset = 0
+        while True:
+            try:
+                r = requests.get(
+                    API.format(token=self.token, method="getUpdates"),
+                    params={"timeout": 50, "offset": offset,
+                            "allowed_updates": '["callback_query"]'},
+                    timeout=60)
+                if not r.ok:
+                    continue
+                for upd in r.json().get("result", []):
+                    offset = max(offset, upd["update_id"] + 1)
+                    cq = upd.get("callback_query")
+                    if not cq:
+                        continue
+                    parsed = parse_feedback_callback(cq.get("data", ""))
+                    if parsed:
+                        event_id, verdict = parsed
+                        user = (cq.get("from") or {}).get("first_name", "")
+                        self.db.insert_feedback(event_id, verdict, user)
+                        log.info("feedback: event %s -> %s (%s)",
+                                 event_id, verdict, user)
+                    try:
+                        requests.post(
+                            API.format(token=self.token,
+                                       method="answerCallbackQuery"),
+                            data={"callback_query_id": cq["id"],
+                                  "text": "Recorded ✅"}, timeout=10)
+                    except requests.RequestException:
+                        pass
+            except requests.RequestException:
+                import time as _time
+                _time.sleep(5)
+            except Exception:
+                log.exception("feedback poller error")
+                import time as _time
+                _time.sleep(10)
 
     def _send_video(self, chat_id: str, clip_path: str) -> bool:
         p = Path(clip_path)

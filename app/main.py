@@ -168,6 +168,7 @@ class AppContext:
         self.notifier = TelegramNotifier(
             config.get("telegram", {}), self.db,
             max_per_hour=int(config["rules"].get("max_notifications_per_hour", 10)))
+        self.notifier.start_feedback_poller()
         self.vlm = VLMDescriber(config.get("vlm", {}))
         self.reviewer = TieredReviewer(config.get("ai_review", {}), self.db)
         self.clip_saver = ClipSaver(config.get("clips", {}), self.db,
@@ -182,10 +183,15 @@ class AppContext:
     def _on_clip_ready(self, event, event_id: int, clip_path: str):
         desc = None
         keyframes = None
-        # full pipeline: two-tier AI review (Haiku screen -> Opus findings)
+        # full pipeline: two-tier AI review (Haiku screen -> Opus findings).
+        # Sample densely around the event moment inside the clip.
         if self.reviewer.enabled:
-            keyframes = self.clip_saver.keyframes(
-                clip_path, n=self.reviewer.max_frames)
+            from .clips import smart_sample_times
+            pre_s = float(self.config["clips"].get("pre_event_s", 10))
+            post_s = float(self.config["clips"].get("post_event_s", 20))
+            times = smart_sample_times(pre_s + post_s, [pre_s],
+                                       self.reviewer.max_frames)
+            keyframes = self.clip_saver.keyframes_at(clip_path, times)
             result = self.reviewer.review_clip(event, event_id,
                                                event.camera, keyframes)
             if result:

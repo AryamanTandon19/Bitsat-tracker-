@@ -285,20 +285,57 @@ class VideoAnalyzer:
     def _ai_review(self, job, path):
         """Claude watches keyframes across the clip and reports what's actually
         happening (theft, break-in, vandalism...) — real scene understanding,
-        not geometry rules."""
+        not geometry rules. Frames are sampled DENSELY around the moments the
+        free layer flagged, so the actual smash/entry is likely captured."""
+        from .clips import smart_sample_times
         from .vlm import VLMDescriber
         reviewer = VLMDescriber({**self.config.get("vlm", {}), "enabled": True})
         if not reviewer.available:
             job.ai_note = ("Smart AI Review needs an Anthropic API key. Set the "
                            "ANTHROPIC_API_KEY environment variable and try again.")
             return
-        frames = self._sample_keyframes(path, reviewer.review_max_frames)
+        duration = self._video_duration(path)
+        focus = [e["video_time_s"] for e in job.events]
+        times = smart_sample_times(duration, focus, reviewer.review_max_frames)
+        frames = self._keyframes_at_times(path, times)
         if not frames:
             job.ai_note = "could not read frames for AI review"
             return
         job.ai_findings = reviewer.review_video(frames)
         if not job.ai_findings:
             job.ai_note = "Claude reviewed the clip and found nothing clearly suspicious."
+
+    @staticmethod
+    def _video_duration(path) -> float:
+        cap = cv2.VideoCapture(path)
+        try:
+            fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+            fps = fps if 1 <= fps <= 120 else 25.0
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+            return total / fps if total else 0.0
+        finally:
+            cap.release()
+
+    @staticmethod
+    def _keyframes_at_times(path, times):
+        cap = cv2.VideoCapture(path)
+        out = []
+        try:
+            for t in times:
+                cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, t) * 1000.0)
+                ok, frame = cap.read()
+                if not ok:
+                    continue
+                h, w = frame.shape[:2]
+                if w > 768:
+                    frame = cv2.resize(frame, (768, int(h * 768 / w)))
+                ok2, jpg = cv2.imencode(".jpg", frame,
+                                        [cv2.IMWRITE_JPEG_QUALITY, 80])
+                if ok2:
+                    out.append((round(t, 1), jpg.tobytes()))
+            return out
+        finally:
+            cap.release()
 
     @staticmethod
     def _sample_keyframes(path, max_frames):

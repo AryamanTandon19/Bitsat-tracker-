@@ -101,6 +101,27 @@ class ClipSaver:
         }, indent=2))
         return path, sidecar
 
+    def keyframes_at(self, clip_path: str, times_s: list[float]) -> list[bytes]:
+        """JPEG frames at specific offsets (seconds) inside a clip."""
+        cap = cv2.VideoCapture(clip_path)
+        out = []
+        try:
+            for t in times_s:
+                cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, t) * 1000.0)
+                ok, frame = cap.read()
+                if not ok:
+                    continue
+                h, w = frame.shape[:2]
+                if w > 768:
+                    frame = cv2.resize(frame, (768, int(h * 768 / w)))
+                ok2, jpg = cv2.imencode(".jpg", frame,
+                                        [cv2.IMWRITE_JPEG_QUALITY, 80])
+                if ok2:
+                    out.append(jpg.tobytes())
+        finally:
+            cap.release()
+        return out
+
     def keyframes(self, clip_path: str, n: int = 6) -> list[bytes]:
         """Evenly-spaced JPEG keyframes from a saved clip (for the VLM)."""
         cap = cv2.VideoCapture(clip_path)
@@ -120,6 +141,42 @@ class ClipSaver:
         finally:
             cap.release()
         return out
+
+
+def smart_sample_times(duration_s: float, focus_times: list[float],
+                       max_frames: int, dense_step: float = 0.5,
+                       dense_radius: float = 2.5) -> list[float]:
+    """Pick frame times: DENSE around the flagged moments (so the AI sees the
+    actual smash/entry, not just before and after) + sparse coverage of the
+    rest of the video. Sorted, deduped, capped at max_frames."""
+    times: set[float] = set()
+    for f in focus_times:
+        t = f - dense_radius
+        while t <= f + dense_radius:
+            if 0 <= t <= duration_s:
+                times.add(round(t, 2))
+            t += dense_step
+    # sparse base coverage with whatever budget remains
+    remaining = max(max_frames - len(times), 4)
+    for i in range(remaining):
+        t = duration_s * i / max(remaining - 1, 1)
+        times.add(round(min(t, duration_s), 2))
+    ordered = sorted(times)
+    if len(ordered) <= max_frames:
+        return ordered
+    # keep focus-adjacent frames first, thin the sparse ones
+    focus_list = sorted(t for t in ordered
+                        if any(abs(t - f) <= dense_radius for f in focus_times))
+    sparse = [t for t in ordered if t not in set(focus_list)]
+    if len(focus_list) >= max_frames:
+        # too many focus frames: thin EVENLY so every incident keeps coverage
+        idxs = [round(i * (len(focus_list) - 1) / (max_frames - 1))
+                for i in range(max_frames)]
+        return sorted({focus_list[i] for i in idxs})
+    budget = max_frames - len(focus_list)
+    step = max(1, len(sparse) // budget) if budget else 1
+    kept = sparse[::step][:budget]
+    return sorted(set(focus_list) | set(kept))
 
 
 def delete_clip_file(db, clip_id: int, actor_name: str, reason: str) -> bool:

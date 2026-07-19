@@ -91,7 +91,20 @@ CREATE TABLE IF NOT EXISTS ai_usage (
     output_tokens INTEGER NOT NULL,
     cost_usd REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL REFERENCES events(id),
+    verdict TEXT NOT NULL,
+    user_name TEXT,
+    ts REAL NOT NULL
+);
 """
+
+# columns added after first release — applied with ALTER TABLE on startup so
+# existing databases upgrade in place
+MIGRATIONS = [
+    "ALTER TABLE events ADD COLUMN incident_id INTEGER",
+]
 
 
 def _row_payload(ts: float, actor: str, action: str, details_json: str) -> str:
@@ -114,6 +127,11 @@ class Database:
         self._lock = threading.Lock()
         with self._lock:
             self._conn.executescript(SCHEMA)
+            for mig in MIGRATIONS:
+                try:
+                    self._conn.execute(mig)
+                except sqlite3.OperationalError:
+                    pass  # column already exists
             self._conn.commit()
 
     def close(self):
@@ -221,16 +239,65 @@ class Database:
     # -- events / clips / notifications --------------------------------------
     def insert_event(self, ts: float, camera: str, event_type: str, severity: str,
                      plate: str | None, track_ids: list[int], confidence: float,
-                     description: str, suppressed: bool = False) -> int:
+                     description: str, suppressed: bool = False,
+                     incident_window_s: float = 120.0) -> int:
+        """Events on the same camera within incident_window_s are grouped
+        into ONE incident (incident_id = id of the incident's first event)."""
         with self._lock:
             cur = self._conn.execute(
+                "SELECT incident_id, id FROM events WHERE camera = ? AND ts > ?"
+                " ORDER BY id DESC LIMIT 1", (camera, ts - incident_window_s))
+            row = cur.fetchone()
+            prior_incident = (row["incident_id"] or row["id"]) if row else None
+            cur = self._conn.execute(
                 "INSERT INTO events (ts, camera, event_type, severity, plate,"
-                " track_ids, confidence, description, suppressed)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " track_ids, confidence, description, suppressed, incident_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (ts, camera, event_type, severity, plate,
-                 json.dumps(track_ids), confidence, description, int(suppressed)))
+                 json.dumps(track_ids), confidence, description,
+                 int(suppressed), prior_incident))
+            event_id = cur.lastrowid
+            if prior_incident is None:
+                self._conn.execute(
+                    "UPDATE events SET incident_id = ? WHERE id = ?",
+                    (event_id, event_id))
             self._conn.commit()
-            return cur.lastrowid
+            return event_id
+
+    def get_event(self, event_id: int) -> dict | None:
+        with self._lock:
+            cur = self._conn.execute("SELECT * FROM events WHERE id = ?",
+                                     (event_id,))
+            r = cur.fetchone()
+            return dict(r) if r else None
+
+    # -- guard feedback (✅/❌ on Telegram alerts) ---------------------------
+    def insert_feedback(self, event_id: int, verdict: str,
+                        user_name: str = "") -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO feedback (event_id, verdict, user_name, ts)"
+                " VALUES (?, ?, ?, ?)",
+                (event_id, verdict, user_name, time.time()))
+            self._conn.commit()
+            fid = cur.lastrowid
+        self.append_audit(user_name or "telegram", "FEEDBACK",
+                          {"event_id": event_id, "verdict": verdict})
+        return fid
+
+    def feedback_summary(self) -> dict:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT verdict, COUNT(*) AS n FROM feedback GROUP BY verdict")
+            return {r["verdict"]: r["n"] for r in cur.fetchall()}
+
+    def notifications_for_incident(self, incident_id: int) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM notifications n JOIN events e"
+                " ON e.id = n.event_id WHERE e.incident_id = ?"
+                " AND n.status IN ('sent', 'sent-no-clip')", (incident_id,))
+            return cur.fetchone()["n"]
 
     def recent_events(self, limit: int = 100) -> list[dict]:
         with self._lock:

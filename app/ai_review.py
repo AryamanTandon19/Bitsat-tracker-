@@ -150,16 +150,25 @@ class TieredReviewer:
                 "source": {"type": "base64", "media_type": "image/jpeg",
                            "data": base64.standard_b64encode(jpg).decode("ascii")}})
         content.append({"type": "text", "text": prompt})
-        try:
-            resp = self._client.messages.create(
-                model=model, max_tokens=max_tokens,
-                messages=[{"role": "user", "content": content}])
-            text = next((b.text for b in resp.content if b.type == "text"), "")
-            in_tok = getattr(resp.usage, "input_tokens", 0)
-            out_tok = getattr(resp.usage, "output_tokens", 0)
-        except Exception as e:
-            log.warning("AI call failed (%s): %s", model, e)
+        # retry with backoff so a brief internet blip doesn't lose the review
+        resp = None
+        for attempt in range(3):
+            try:
+                resp = self._client.messages.create(
+                    model=model, max_tokens=max_tokens,
+                    messages=[{"role": "user", "content": content}])
+                break
+            except Exception as e:
+                log.warning("AI call failed (%s, try %d/3): %s",
+                            model, attempt + 1, e)
+                if attempt < 2:
+                    import time as _time
+                    _time.sleep(2 * (attempt + 1))
+        if resp is None:
             return "", 0.0
+        text = next((b.text for b in resp.content if b.type == "text"), "")
+        in_tok = getattr(resp.usage, "input_tokens", 0)
+        out_tok = getattr(resp.usage, "output_tokens", 0)
         cost = estimate_cost_usd(model, in_tok, out_tok)
         self.db.insert_ai_usage(camera, event_id, model, in_tok, out_tok, cost)
         return text, cost
