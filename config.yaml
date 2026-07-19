@@ -116,7 +116,7 @@ vlm:
   # "Smart AI Review" of uploaded videos (Claude watches the footage and reports
   # theft/break-in/vandalism). Needs ANTHROPIC_API_KEY set in the environment.
   review_model: "claude-opus-4-8"   # strongest vision model for scene understanding
-  review_max_frames: 16             # keyframes sampled across the clip
+  review_max_frames: 24             # keyframes sampled across the clip (more = better story, slightly costlier)
 
 ai_review:                     # LIVE two-tier AI review of triggered events
   enabled: true                # needs ANTHROPIC_API_KEY in the environment

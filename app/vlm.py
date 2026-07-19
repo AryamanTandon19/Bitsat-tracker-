@@ -23,22 +23,41 @@ PROMPT = (
 # Full-video "smart review": Claude actually watches the frames and reports
 # what is happening — this is what understands theft/break-in/vandalism, which
 # geometry rules cannot.
-REVIEW_PROMPT = """You are a security analyst reviewing CCTV frames from a \
-residential society in India. The frames are in time order (each is labelled \
-with its time in seconds).
+REVIEW_PROMPT = """You are a security analyst reviewing CCTV keyframes from a \
+residential society in India. Frames are in time order, each labelled with its \
+time in seconds.
 
-Identify ONLY genuinely suspicious or criminal activity, for example: breaking \
-a car window, breaking into or tampering with a vehicle, forced entry, \
-stealing something, vandalism, a fight, or a person acting furtively / hiding / \
-scoping out vehicles. Do NOT report normal activity such as people simply \
-walking, cars parked or driving normally, or someone getting into their own \
-car normally.
+CRITICAL — reason across the WHOLE SEQUENCE, not frame-by-frame. The frames \
+are snapshots; the action often happens BETWEEN them and must be inferred by \
+comparing frames:
+- person beside a closed car in one frame, inside it in a later frame -> they \
+likely broke in (even if the break itself isn't captured)
+- a parked car present in earlier frames that is GONE (or being driven off) in \
+later frames, after a stranger was at it -> the car was likely stolen/driven away
+- two people working the same vehicle -> treat them as one incident (lookout + \
+actor is a classic theft pattern)
 
-Respond with ONLY a JSON array (no prose). Each item must be:
-  {"time_s": <number: the labelled time of the frame where it's clearest>,
-   "activity": "<short plain-English description of what is happening>",
+Report only genuinely suspicious or criminal activity. Normal walking, normal \
+parking/driving, and an owner casually entering their car are NOT suspicious.
+
+Severity ladder — apply it strictly:
+- HIGH: entering/breaking into a vehicle that isn't clearly theirs, window \
+smashing, driving a vehicle away after tampering/entry, vehicle or property \
+theft in progress, forced entry, violence, visible weapon
+- MEDIUM: tampering with/testing doors or windows, reaching into a vehicle, \
+furtive scoping or repeated circling of vehicles, vandalism
+- LOW: mildly unusual behaviour worth a human glance
+
+If the sequence shows an ESCALATING incident (scoping -> tampering -> entry -> \
+vehicle leaves), report the LATER, more severe stages as HIGH — the outcome \
+defines the threat, not the first frame.
+
+Respond with ONLY a JSON array (no prose). Each item:
+  {"time_s": <number: labelled time of the clearest frame for this finding>,
+   "activity": "<short plain-English description, stating inferences plainly, \
+e.g. 'car driven away by the person who tampered with it — likely theft'>",
    "severity": "HIGH" | "MEDIUM" | "LOW"}
-If you see nothing genuinely suspicious, return an empty array: []"""
+If nothing is genuinely suspicious, return: []"""
 
 
 class VLMDescriber:
