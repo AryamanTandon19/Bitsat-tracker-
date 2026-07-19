@@ -45,6 +45,9 @@ REASON_TEXT = {
     "person_in_restricted": "person in restricted zone",
     "person_in_parking": "person in parking zone",
     "person_in_entry": "person in entry zone",
+    "pose_crouching": "person crouching",
+    "pose_reaching": "person reaching/arm raised",
+    "pose_arm_swing": "fast arm movement (possible strike)",
 }
 
 CULPRIT_GREEN = (0, 255, 0)
@@ -182,8 +185,15 @@ class VideoAnalyzer:
                             now_fn=lambda: clock[0])
         # the same candidate trigger that validate_triggers.py measures —
         # surfaces "suspicious activity" even when no strict rule fires
-        trig = CandidateTrigger(zones, self.config["rules"].get("trigger", {}),
+        trig_cfg = self.config["rules"].get("trigger", {})
+        trig = CandidateTrigger(zones, trig_cfg,
                                 localtime_fn=__import__("datetime").datetime.now)
+        pose = None
+        if trig_cfg.get("on_pose", True):
+            from .pose import PoseEstimator
+            pose = PoseEstimator({**trig_cfg,
+                                  "pose_model": self.config["detection"]
+                                  .get("pose_model", "yolo11n-pose.pt")})
         last_suspicious_ts = -1e9
         trig_flags: dict[int, float] = {}   # track_id -> green-box hold expiry
         TRIG_FLAG_HOLD_S = 10.0
@@ -227,7 +237,11 @@ class VideoAnalyzer:
 
                 # candidate trigger: green-box involved people and raise a
                 # "suspicious activity" event (with a refractory gap)
-                fire, reasons = trig.is_candidate(detections, ts)
+                pose_signals = {}
+                persons = [d for d in detections if d.is_person]
+                if pose is not None and persons:
+                    pose_signals = pose.analyze_frame(frame, persons, ts)
+                fire, reasons = trig.is_candidate(detections, ts, pose_signals)
                 if fire and ts - last_suspicious_ts >= SUSPICIOUS_REFRACTORY_S:
                     last_suspicious_ts = ts
                     why = ", ".join(REASON_TEXT.get(r, r) for r in reasons)

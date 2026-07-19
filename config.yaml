@@ -27,6 +27,7 @@ detection:
   # "botsort_reid" (appearance ReID — keeps the same culprit ID across
   # occlusions / re-entry; stronger tracking, ~1.5-2x the tracking cost).
   tracker: "bytetrack.yaml"
+  pose_model: "yolo11n-pose.pt"  # stick-figure model; auto-downloads on first use
 
 plates:
   enabled: true
@@ -72,9 +73,13 @@ rules:
     on_loiter: true            # person lingering (dwelling) in view
     on_zone: true              # person inside any drawn zone
     on_night_person: true      # any person present during night hours
+    on_pose: true              # stick-figure signals: crouching/reaching/swing
     near_vehicle_px: 180       # "near a vehicle" radius in pixels
     dwell_s: 8                 # seconds present before "lingering" fires
     night_hours: { start: "23:00", end: "05:00" }
+    crouch_ratio: 0.32         # pose: lower = stricter crouch detection
+    reach_x_ratio: 0.5         # pose: sideways reach threshold (of body width)
+    swing_speed_ratio: 1.5     # pose: wrist speed (body-heights/sec) = strike
 
   tamper:                      # A5
     enabled: true

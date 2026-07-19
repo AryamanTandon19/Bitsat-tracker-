@@ -38,8 +38,10 @@ class CandidateTrigger:
         return is_night(self.localtime_fn(), nh.get("start", "23:00"),
                         nh.get("end", "05:00"))
 
-    def is_candidate(self, detections, ts: float) -> tuple[bool, list[str]]:
-        """Return (fire?, reasons) for this frame."""
+    def is_candidate(self, detections, ts: float,
+                     pose_signals: dict | None = None) -> tuple[bool, list[str]]:
+        """Return (fire?, reasons) for this frame. pose_signals optionally maps
+        person track_id -> set of pose reasons (crouching/reaching/swing)."""
         persons = [d for d in detections if d.cls_name == "person"]
         vehicles = [d for d in detections if d.cls_name != "person"]
         reasons: set[str] = set()
@@ -81,6 +83,10 @@ class CandidateTrigger:
             if night and self.cfg.get("on_night_person", True):
                 reasons.add(AT_NIGHT)
                 fired_for_p = True
+            if pose_signals and self.cfg.get("on_pose", True):
+                for sig in pose_signals.get(p.track_id, ()):
+                    reasons.add(sig)
+                    fired_for_p = True
             if fired_for_p:
                 involved.add(p.track_id)
 

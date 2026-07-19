@@ -43,8 +43,14 @@ class CameraPipeline(threading.Thread):
         self.zones = zones or {}
         self.ctx = ctx
         self.rules = RulesEngine(name, self.zones, ctx.config["rules"])
-        self.trigger = CandidateTrigger(self.zones,
-                                        ctx.config["rules"].get("trigger", {}))
+        trig_cfg = ctx.config["rules"].get("trigger", {})
+        self.trigger = CandidateTrigger(self.zones, trig_cfg)
+        self.pose = None
+        if trig_cfg.get("on_pose", True):
+            from .pose import PoseEstimator
+            self.pose = PoseEstimator({**trig_cfg,
+                                       "pose_model": ctx.config["detection"]
+                                       .get("pose_model", "yolo11n-pose.pt")})
         self.detector: Detector | None = None
         self.annotated_jpeg: bytes | None = None
         self._stop = threading.Event()
@@ -107,7 +113,12 @@ class CameraPipeline(threading.Thread):
             events += self.rules.update_frame_stats(mean, lap, ts)
 
             # candidate trigger: live "suspicious activity" (the AI-review gate)
-            fire, reasons = self.trigger.is_candidate(detections, ts)
+            pose_signals = {}
+            persons = [d for d in detections if d.is_person]
+            if self.pose is not None and persons:
+                pose_signals = self.pose.analyze_frame(frame, persons, ts)
+            fire, reasons = self.trigger.is_candidate(detections, ts,
+                                                      pose_signals)
             if fire:
                 for tid in self.trigger.last_involved:
                     self._trig_flags[tid] = ts + TRIG_FLAG_HOLD_S
