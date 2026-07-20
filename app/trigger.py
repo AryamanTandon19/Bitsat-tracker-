@@ -21,6 +21,7 @@ LINGERING = "person_lingering"
 AT_NIGHT = "person_at_night"
 AT_VEHICLE = "person_at_vehicle"                       # touching/reaching into it
 DEPARTURE = "vehicle_departure_after_activity"         # the theft chain
+BREAK_IN = "possible_break_in"    # INSTANT escalation: strike/reach at a vehicle
 
 
 class CandidateTrigger:
@@ -82,8 +83,8 @@ class CandidateTrigger:
                         reasons.add(NEAR_VEHICLE)
                         fired_for_p = True
                         near_vehicles.append(v)
+            touching = sustained_touch = False
             if self.cfg.get("on_touch", True):
-                touching = False
                 for v in vehicles:
                     if iou(p.xyxy, v.xyxy) > 0.02:   # actually overlapping it
                         touching = True
@@ -98,7 +99,7 @@ class CandidateTrigger:
                     # is suspicious enough to arm the theft chain
                     t0 = self._touch_since.setdefault(p.track_id, ts)
                     if ts - t0 >= float(self.cfg.get("touch_arm_s", 3)):
-                        suspicious_for_p = True
+                        suspicious_for_p = sustained_touch = True
                 else:
                     self._touch_since.pop(p.track_id, None)
             if self.cfg.get("on_loiter", True) and \
@@ -115,10 +116,22 @@ class CandidateTrigger:
             if night and self.cfg.get("on_night_person", True):
                 reasons.add(AT_NIGHT)
                 fired_for_p = suspicious_for_p = True
+            p_pose = set()
             if pose_signals and self.cfg.get("on_pose", True):
                 for sig in pose_signals.get(p.track_id, ()):
                     reasons.add(sig)
+                    p_pose.add(sig)
                     fired_for_p = suspicious_for_p = True
+            # INSTANT break-in escalation — fires at the smash moment itself,
+            # not later at the drive-away. Requires the person to be at/near a
+            # vehicle plus a strong action: an arm strike, a sustained reach
+            # into the car, or crouching while touching it.
+            if self.cfg.get("on_break_in", True) and near_vehicles and (
+                    "pose_arm_swing" in p_pose
+                    or sustained_touch
+                    or ("pose_crouching" in p_pose and touching)):
+                reasons.add(BREAK_IN)
+                fired_for_p = suspicious_for_p = True
             if fired_for_p:
                 involved.add(p.track_id)
             # arm the theft chain: remember suspicious people per nearby vehicle

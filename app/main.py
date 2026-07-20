@@ -23,11 +23,13 @@ from .notify import TelegramNotifier
 from .plates import PlateReader, fuzzy_match
 from .rules import SUSPICIOUS_ACTIVITY, Event, RulesEngine
 from . import analyze as analyze_mod
+from .trigger import BREAK_IN as TRIG_BREAK_IN
 from .trigger import DEPARTURE as TRIG_DEPARTURE
 from .trigger import CandidateTrigger
 from .vlm import VLMDescriber
 
 SUSPICIOUS_REFRACTORY_S = 60.0  # min gap between live suspicious events/camera
+ESCALATION_REFRACTORY_S = 30.0  # min gap between HIGH break-in/theft alerts
 TRIG_FLAG_HOLD_S = 10.0         # keep the green box on trigger subjects
 
 log = logging.getLogger("watchdog")
@@ -59,6 +61,7 @@ class CameraPipeline(threading.Thread):
         self._stop = threading.Event()
         self._last_ts = 0.0
         self._last_suspicious_ts = 0.0
+        self._last_escalation_ts = 0.0
         self._trig_flags: dict[int, float] = {}
 
     def stop(self):
@@ -126,10 +129,15 @@ class CameraPipeline(threading.Thread):
             if fire:
                 for tid in self.trigger.last_involved:
                     self._trig_flags[tid] = ts + TRIG_FLAG_HOLD_S
+                break_in = TRIG_BREAK_IN in reasons
                 theft_chain = TRIG_DEPARTURE in reasons
-                if theft_chain or \
+                escalate = (break_in or theft_chain) and \
+                    ts - self._last_escalation_ts >= ESCALATION_REFRACTORY_S
+                if escalate or \
                         ts - self._last_suspicious_ts >= SUSPICIOUS_REFRACTORY_S:
                     self._last_suspicious_ts = ts
+                    if escalate:
+                        self._last_escalation_ts = ts
                     desc = "Suspicious activity: " + ", ".join(reasons)
                     sev = "MEDIUM"
                     if theft_chain:
@@ -138,6 +146,10 @@ class CameraPipeline(threading.Thread):
                         desc = (f"POSSIBLE VEHICLE THEFT: vehicle drove away "
                                 f"{dep.get('gap_s', '?')}s after suspicious "
                                 f"activity around it")
+                    elif break_in:
+                        sev = "HIGH"
+                        desc = ("POSSIBLE BREAK-IN AT VEHICLE: strike/reach "
+                                "detected at the car (" + ", ".join(reasons) + ")")
                     events.append(Event(
                         ts=ts, camera=self.cam_name,
                         event_type=SUSPICIOUS_ACTIVITY, severity=sev,

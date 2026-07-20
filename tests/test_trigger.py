@@ -176,3 +176,59 @@ def test_moving_car_never_counts_as_parked():
     for i, x in enumerate(range(100, 800, 70)):          # moves every frame
         fire, reasons = t.is_candidate([car_at(x), walker], ts=float(i))
         assert DEPARTURE not in reasons
+
+
+# --------------------------------------------- instant break-in escalation
+def test_arm_swing_at_car_fires_break_in_instantly():
+    """The smash moment itself: arm strike beside a car -> BREAK_IN on that
+    very frame, no waiting for dwell or departure."""
+    from app.trigger import BREAK_IN
+    t = trig(cfg=CHAIN_CFG)
+    thief = Det(7, "person", (205, 120, 225, 180))       # beside the car
+    fire, reasons = t.is_candidate([car_at(100), thief], ts=0.0,
+                                   pose_signals={7: {"pose_arm_swing"}})
+    assert fire and BREAK_IN in reasons                  # first frame!
+    assert 7 in t.last_involved
+
+
+def test_sustained_reach_fires_break_in():
+    from app.trigger import BREAK_IN
+    t = trig(cfg=CHAIN_CFG)
+    thief = Det(7, "person", (150, 110, 175, 170))       # overlapping the car
+    fire, reasons = t.is_candidate([car_at(100), thief], ts=0.0)
+    assert BREAK_IN not in reasons                       # touch just started
+    fire, reasons = t.is_candidate([car_at(100), thief], ts=4.0)  # > 3s touch
+    assert fire and BREAK_IN in reasons
+
+
+def test_owner_brief_touch_no_break_in():
+    from app.trigger import BREAK_IN
+    t = trig(cfg=CHAIN_CFG)
+    owner = Det(9, "person", (150, 110, 175, 170))
+    fire, reasons = t.is_candidate([car_at(100), owner], ts=0.0)
+    assert BREAK_IN not in reasons
+    # owner walks around (not touching), comes back — timer must have reset
+    away = Det(9, "person", (500, 110, 525, 170))
+    t.is_candidate([car_at(100), away], ts=2.0)
+    fire, reasons = t.is_candidate([car_at(100), owner], ts=4.0)
+    assert BREAK_IN not in reasons                       # fresh touch again
+
+
+def test_crouch_while_touching_fires_break_in():
+    from app.trigger import BREAK_IN
+    t = trig(cfg=CHAIN_CFG)
+    thief = Det(7, "person", (150, 110, 175, 170))       # overlapping
+    fire, reasons = t.is_candidate([car_at(100), thief], ts=0.0,
+                                   pose_signals={7: {"pose_crouching"}})
+    assert fire and BREAK_IN in reasons
+
+
+def test_swing_far_from_any_car_is_not_break_in():
+    """Someone exercising/waving far from vehicles: pose fires (wide net)
+    but no BREAK_IN escalation."""
+    from app.trigger import BREAK_IN
+    t = trig(cfg=CHAIN_CFG)
+    person = Det(7, "person", (600, 300, 620, 360))      # far from the car
+    fire, reasons = t.is_candidate([car_at(100), person], ts=0.0,
+                                   pose_signals={7: {"pose_arm_swing"}})
+    assert BREAK_IN not in reasons

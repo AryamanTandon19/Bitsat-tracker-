@@ -76,6 +76,7 @@ rules:
     on_pose: true              # stick-figure signals: crouching/reaching/swing
     on_touch: true             # person actually overlapping a vehicle
     on_departure: true         # THEFT CHAIN: parked car leaves after activity
+    on_break_in: true          # INSTANT HIGH: strike/sustained reach at a car
     near_vehicle_px: 180       # "near a vehicle" radius in pixels
     dwell_s: 8                 # seconds present before "lingering" fires
     touch_arm_s: 3             # sustained touch (s) before it counts as suspicious

@@ -33,10 +33,11 @@ from .camera import frame_stats
 from .plates import fuzzy_match
 from .rules import SUSPICIOUS_ACTIVITY as SUSPICIOUS
 from .rules import RulesEngine
-from .trigger import DEPARTURE, CandidateTrigger
+from .trigger import BREAK_IN, DEPARTURE, CandidateTrigger
 
 log = logging.getLogger(__name__)
 SUSPICIOUS_REFRACTORY_S = 20.0   # min gap between suspicious-activity events
+ESCALATION_REFRACTORY_S = 30.0   # min gap between HIGH break-in/theft events
 
 REASON_TEXT = {
     "person_near_vehicle": "person close to a vehicle",
@@ -51,6 +52,7 @@ REASON_TEXT = {
     "person_at_vehicle": "person touching / reaching into a vehicle",
     "vehicle_departure_after_activity":
         "parked vehicle driven away soon after suspicious activity around it",
+    "possible_break_in": "strike or sustained reach at a vehicle (break-in)",
 }
 
 CULPRIT_GREEN = (0, 255, 0)
@@ -216,6 +218,7 @@ class VideoAnalyzer:
                                   "pose_model": self.config["detection"]
                                   .get("pose_model", "yolo11n-pose.pt")})
         last_suspicious_ts = -1e9
+        last_escalation_ts = -1e9
         trig_flags: dict[int, float] = {}   # track_id -> green-box hold expiry
         TRIG_FLAG_HOLD_S = 10.0
         pcfg = self.config.get("plates", {})
@@ -268,10 +271,15 @@ class VideoAnalyzer:
                         _pose_worth_running(trig_cfg, detections):
                     pose_signals = pose.analyze_frame(frame, persons, ts)
                 fire, reasons = trig.is_candidate(detections, ts, pose_signals)
+                break_in = BREAK_IN in reasons
                 theft_chain = DEPARTURE in reasons
-                if fire and (theft_chain or
+                escalate = (break_in or theft_chain) and \
+                    ts - last_escalation_ts >= ESCALATION_REFRACTORY_S
+                if fire and (escalate or
                              ts - last_suspicious_ts >= SUSPICIOUS_REFRACTORY_S):
                     last_suspicious_ts = ts
+                    if escalate:
+                        last_escalation_ts = ts
                     why = ", ".join(REASON_TEXT.get(r, r) for r in reasons)
                     desc = f"Suspicious activity: {why}"
                     sev = "MEDIUM"
@@ -281,6 +289,10 @@ class VideoAnalyzer:
                         desc = (f"POSSIBLE VEHICLE THEFT: vehicle drove away "
                                 f"{dep.get('gap_s', '?')}s after suspicious "
                                 f"activity around it ({why})")
+                    elif break_in:
+                        sev = "HIGH"
+                        desc = ("POSSIBLE BREAK-IN AT VEHICLE: strike/reach "
+                                f"detected at the car ({why})")
                     from types import SimpleNamespace
                     events.append(SimpleNamespace(
                         ts=ts, event_type=SUSPICIOUS, severity=sev,
