@@ -22,6 +22,8 @@ from .detector import Detector, annotate
 from .notify import TelegramNotifier
 from .plates import PlateReader, fuzzy_match
 from .rules import SUSPICIOUS_ACTIVITY, Event, RulesEngine
+from . import analyze as analyze_mod
+from .trigger import DEPARTURE as TRIG_DEPARTURE
 from .trigger import CandidateTrigger
 from .vlm import VLMDescriber
 
@@ -44,6 +46,7 @@ class CameraPipeline(threading.Thread):
         self.ctx = ctx
         self.rules = RulesEngine(name, self.zones, ctx.config["rules"])
         trig_cfg = ctx.config["rules"].get("trigger", {})
+        self.trig_cfg = trig_cfg
         self.trigger = CandidateTrigger(self.zones, trig_cfg)
         self.pose = None
         if trig_cfg.get("on_pose", True):
@@ -115,21 +118,32 @@ class CameraPipeline(threading.Thread):
             # candidate trigger: live "suspicious activity" (the AI-review gate)
             pose_signals = {}
             persons = [d for d in detections if d.is_person]
-            if self.pose is not None and persons:
+            if self.pose is not None and persons and \
+                    analyze_mod._pose_worth_running(self.trig_cfg, detections):
                 pose_signals = self.pose.analyze_frame(frame, persons, ts)
             fire, reasons = self.trigger.is_candidate(detections, ts,
                                                       pose_signals)
             if fire:
                 for tid in self.trigger.last_involved:
                     self._trig_flags[tid] = ts + TRIG_FLAG_HOLD_S
-                if ts - self._last_suspicious_ts >= SUSPICIOUS_REFRACTORY_S:
+                theft_chain = TRIG_DEPARTURE in reasons
+                if theft_chain or \
+                        ts - self._last_suspicious_ts >= SUSPICIOUS_REFRACTORY_S:
                     self._last_suspicious_ts = ts
+                    desc = "Suspicious activity: " + ", ".join(reasons)
+                    sev = "MEDIUM"
+                    if theft_chain:
+                        sev = "HIGH"
+                        dep = self.trigger.last_departure or {}
+                        desc = (f"POSSIBLE VEHICLE THEFT: vehicle drove away "
+                                f"{dep.get('gap_s', '?')}s after suspicious "
+                                f"activity around it")
                     events.append(Event(
                         ts=ts, camera=self.cam_name,
-                        event_type=SUSPICIOUS_ACTIVITY, severity="MEDIUM",
-                        description="Suspicious activity: " + ", ".join(reasons),
+                        event_type=SUSPICIOUS_ACTIVITY, severity=sev,
+                        description=desc,
                         track_ids=sorted(self.trigger.last_involved),
-                        confidence=0.5))
+                        confidence=0.8 if theft_chain else 0.5))
 
             for ev in events:
                 self._handle_event(ev)

@@ -74,8 +74,15 @@ rules:
     on_zone: true              # person inside any drawn zone
     on_night_person: true      # any person present during night hours
     on_pose: true              # stick-figure signals: crouching/reaching/swing
+    on_touch: true             # person actually overlapping a vehicle
+    on_departure: true         # THEFT CHAIN: parked car leaves after activity
     near_vehicle_px: 180       # "near a vehicle" radius in pixels
     dwell_s: 8                 # seconds present before "lingering" fires
+    touch_arm_s: 3             # sustained touch (s) before it counts as suspicious
+    parked_min_s: 6            # car must sit still this long to count as parked
+    depart_frac: 0.6           # moved this fraction of its width = departed
+    link_s: 600                # link departure to activity up to this many s back
+    pose_only_near_vehicle: true  # speed: run pose model only near vehicles
     night_hours: { start: "23:00", end: "05:00" }
     crouch_ratio: 0.32         # pose: lower = stricter crouch detection
     reach_x_ratio: 0.5         # pose: sideways reach threshold (of body width)
@@ -137,6 +144,7 @@ analyze:                       # "upload a video and detect anomalies" feature
   enabled: true
   out_dir: "clips/uploads"
   max_upload_mb: 300
+  full_fps_video: false        # true = smoother output video but ~4x slower
 
 assistant:                     # Claude tuning chatbot in the dashboard
   enabled: false               # set true + ANTHROPIC_API_KEY to enable

@@ -107,3 +107,72 @@ def test_windows_overlap():
     assert windows_overlap((0, 10), (5, 15))
     assert windows_overlap((0, 10), (10, 20))       # touching counts
     assert not windows_overlap((0, 10), (11, 20))
+
+
+# ------------------------------------------------------- theft chain (A6)
+CHAIN_CFG = {**CFG, "on_touch": True, "on_departure": True,
+             "touch_arm_s": 3, "parked_min_s": 6, "depart_frac": 0.6,
+             "link_s": 600}
+
+
+def car_at(x, tid=1):
+    return Det(tid, "car", (x, 100, x + 100, 160))
+
+
+def test_theft_chain_smash_then_drive_fires():
+    """Thief lingers by a parked car, then the car drives away -> DEPARTURE."""
+    from app.trigger import DEPARTURE
+    t = trig(cfg=CHAIN_CFG)
+    thief = Det(7, "person", (205, 120, 225, 180))       # beside the car
+    # thief lingers next to the parked car for 10s (dwell 8s -> suspicious)
+    for ts in range(0, 11):
+        t.is_candidate([car_at(100), thief], ts=float(ts))
+    # thief leaves, then the car drives away (moved > 0.6 * width)
+    fire, reasons = t.is_candidate([car_at(300)], ts=15.0)
+    assert fire and DEPARTURE in reasons
+    assert t.last_departure["vehicle"] == 1
+    assert 7 in t.last_departure["people"]
+
+
+def test_plain_departure_is_silent():
+    """A parked car driving away with NO prior activity = owner, no alert."""
+    t = trig(cfg=CHAIN_CFG)
+    for ts in range(0, 11):
+        t.is_candidate([car_at(100)], ts=float(ts))      # parked, nobody near
+    fire, reasons = t.is_candidate([car_at(300)], ts=15.0)
+    assert not fire
+
+
+def test_owner_quick_pickup_is_silent_chain():
+    """Owner walks up, brief touch (<touch_arm_s), drives off: near_vehicle
+    fires (wide net) but the DEPARTURE chain must NOT fire."""
+    from app.trigger import DEPARTURE
+    t = trig(cfg=CHAIN_CFG)
+    for ts in range(0, 9):
+        t.is_candidate([car_at(100)], ts=float(ts))      # car parked alone
+    owner = Det(9, "person", (150, 110, 175, 170))       # overlaps the car
+    t.is_candidate([car_at(100), owner], ts=9.0)         # 1-frame touch only
+    fire, reasons = t.is_candidate([car_at(300)], ts=12.0)
+    assert DEPARTURE not in reasons
+
+
+def test_sustained_touch_arms_the_chain():
+    """Reaching into the car for > touch_arm_s = suspicious -> chain armed."""
+    from app.trigger import AT_VEHICLE, DEPARTURE
+    t = trig(cfg=CHAIN_CFG)
+    thief = Det(7, "person", (150, 110, 175, 170))       # overlapping the car
+    for ts in range(0, 7):                               # parked 6s w/ touching
+        fire, reasons = t.is_candidate([car_at(100), thief], ts=float(ts))
+    assert AT_VEHICLE in reasons                         # wide net saw the touch
+    fire, reasons = t.is_candidate([car_at(300)], ts=10.0)
+    assert fire and DEPARTURE in reasons
+
+
+def test_moving_car_never_counts_as_parked():
+    """A car just driving through never 'departs' (it was never parked)."""
+    from app.trigger import DEPARTURE
+    t = trig(cfg=CHAIN_CFG, localtime=NIGHT)             # night arms everything
+    walker = Det(7, "person", (205, 120, 225, 180))
+    for i, x in enumerate(range(100, 800, 70)):          # moves every frame
+        fire, reasons = t.is_candidate([car_at(x), walker], ts=float(i))
+        assert DEPARTURE not in reasons

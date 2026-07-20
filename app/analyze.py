@@ -33,7 +33,7 @@ from .camera import frame_stats
 from .plates import fuzzy_match
 from .rules import SUSPICIOUS_ACTIVITY as SUSPICIOUS
 from .rules import RulesEngine
-from .trigger import CandidateTrigger
+from .trigger import DEPARTURE, CandidateTrigger
 
 log = logging.getLogger(__name__)
 SUSPICIOUS_REFRACTORY_S = 20.0   # min gap between suspicious-activity events
@@ -48,6 +48,9 @@ REASON_TEXT = {
     "pose_crouching": "person crouching",
     "pose_reaching": "person reaching/arm raised",
     "pose_arm_swing": "fast arm movement (possible strike)",
+    "person_at_vehicle": "person touching / reaching into a vehicle",
+    "vehicle_departure_after_activity":
+        "parked vehicle driven away soon after suspicious activity around it",
 }
 
 CULPRIT_GREEN = (0, 255, 0)
@@ -74,6 +77,24 @@ class AnalyzeJob:
                 "events": self.events, "ai_findings": self.ai_findings,
                 "ai_note": self.ai_note, "error": self.error,
                 "video_ready": bool(self.annotated_path)}
+
+
+def _pose_worth_running(trig_cfg: dict, detections) -> bool:
+    """Skip the (slow) pose model unless somebody is actually close to a
+    vehicle — that's where crouch/reach/swing matters. Saves a lot of CPU."""
+    if not trig_cfg.get("pose_only_near_vehicle", True):
+        return True
+    near_r = float(trig_cfg.get("near_vehicle_px", 180))
+    persons = [d for d in detections if d.is_person]
+    vehicles = [d for d in detections if d.is_vehicle]
+    for p in persons:
+        px = (p.xyxy[0] + p.xyxy[2]) / 2
+        py = (p.xyxy[1] + p.xyxy[3]) / 2
+        for v in vehicles:
+            if (v.xyxy[0] - near_r <= px <= v.xyxy[2] + near_r and
+                    v.xyxy[1] - near_r <= py <= v.xyxy[3] + near_r):
+                return True
+    return False
 
 
 def _open_writer(path: str, w: int, h: int, fps: float):
@@ -212,6 +233,10 @@ class VideoAnalyzer:
         last_flagged = set()
         event_marks = []     # [(ts, type, severity)]
         idx = 0
+        # speed: by default only the ANALYZED frames go into the output video
+        # (proc_fps instead of full fps) — ~4x less drawing + encoding work.
+        full_fps = bool((self.config.get("analyze") or {})
+                        .get("full_fps_video", False))
 
         while True:
             ok, frame = cap.read()
@@ -239,18 +264,29 @@ class VideoAnalyzer:
                 # "suspicious activity" event (with a refractory gap)
                 pose_signals = {}
                 persons = [d for d in detections if d.is_person]
-                if pose is not None and persons:
+                if pose is not None and persons and \
+                        _pose_worth_running(trig_cfg, detections):
                     pose_signals = pose.analyze_frame(frame, persons, ts)
                 fire, reasons = trig.is_candidate(detections, ts, pose_signals)
-                if fire and ts - last_suspicious_ts >= SUSPICIOUS_REFRACTORY_S:
+                theft_chain = DEPARTURE in reasons
+                if fire and (theft_chain or
+                             ts - last_suspicious_ts >= SUSPICIOUS_REFRACTORY_S):
                     last_suspicious_ts = ts
                     why = ", ".join(REASON_TEXT.get(r, r) for r in reasons)
+                    desc = f"Suspicious activity: {why}"
+                    sev = "MEDIUM"
+                    if theft_chain:
+                        sev = "HIGH"
+                        dep = trig.last_departure or {}
+                        desc = (f"POSSIBLE VEHICLE THEFT: vehicle drove away "
+                                f"{dep.get('gap_s', '?')}s after suspicious "
+                                f"activity around it ({why})")
                     from types import SimpleNamespace
                     events.append(SimpleNamespace(
-                        ts=ts, event_type=SUSPICIOUS, severity="MEDIUM",
-                        description=f"Suspicious activity: {why}",
+                        ts=ts, event_type=SUSPICIOUS, severity=sev,
+                        description=desc,
                         plate=None, track_ids=sorted(trig.last_involved),
-                        confidence=0.5))
+                        confidence=0.8 if theft_chain else 0.5))
 
                 if fire:
                     for tid in trig.last_involved:
@@ -264,14 +300,16 @@ class VideoAnalyzer:
                 if total:
                     job.progress = min(0.98, idx / total)
 
-            if writer is None:
-                h, w = frame.shape[:2]
-                out_w, out_h = w - (w % 2), h - (h % 2)  # even dims for H.264
-                writer = _open_writer(str(annotated), out_w, out_h, fps)
-            vis = frame[:out_h, :out_w].copy()
-            self._draw(vis, last_boxes, last_flagged)
-            self._draw_banner(vis, ts, event_marks)
-            _write(writer, vis)
+            if full_fps or idx % step == 0:
+                if writer is None:
+                    h, w = frame.shape[:2]
+                    out_w, out_h = w - (w % 2), h - (h % 2)  # even dims: H.264
+                    writer = _open_writer(str(annotated), out_w, out_h,
+                                          fps if full_fps else fps / step)
+                vis = frame[:out_h, :out_w].copy()
+                self._draw(vis, last_boxes, last_flagged)
+                self._draw_banner(vis, ts, event_marks)
+                _write(writer, vis)
             idx += 1
 
         cap.release()

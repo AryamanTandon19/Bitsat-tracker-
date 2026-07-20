@@ -19,6 +19,8 @@ from .rules import iou, is_night, point_in_polygon
 NEAR_VEHICLE = "person_near_vehicle"
 LINGERING = "person_lingering"
 AT_NIGHT = "person_at_night"
+AT_VEHICLE = "person_at_vehicle"                       # touching/reaching into it
+DEPARTURE = "vehicle_departure_after_activity"         # the theft chain
 
 
 class CandidateTrigger:
@@ -32,6 +34,13 @@ class CandidateTrigger:
         self._person_since: dict[int, float] = {}   # track_id -> first-seen ts
         self._last_seen: dict[int, float] = {}
         self.last_involved: set[int] = set()  # person track_ids behind last fire
+        # theft-chain state: per-vehicle parking anchor + suspicious-activity
+        # memory, so "someone messed with this car" links to "car drove away"
+        self._veh: dict[int, dict] = {}          # tid -> anchor state
+        self._veh_activity: dict[int, float] = {}  # tid -> last suspicious ts
+        self._veh_people: dict[int, set[int]] = {}  # tid -> people involved
+        self._touch_since: dict[int, float] = {}  # person tid -> touch start ts
+        self.last_departure: dict | None = None   # info about the last chain fire
 
     def _night(self) -> bool:
         nh = self.cfg.get("night_hours", {"start": "23:00", "end": "05:00"})
@@ -63,6 +72,8 @@ class CandidateTrigger:
 
         for p in persons:
             fired_for_p = False
+            suspicious_for_p = False   # signals strong enough to arm the chain
+            near_vehicles: list = []   # vehicles this person is close to
             if self.cfg.get("on_near_vehicle", True):
                 for v in vehicles:
                     expanded = (v.xyxy[0] - near_r, v.xyxy[1] - near_r,
@@ -70,28 +81,108 @@ class CandidateTrigger:
                     if iou(p.xyxy, expanded) > 0:
                         reasons.add(NEAR_VEHICLE)
                         fired_for_p = True
+                        near_vehicles.append(v)
+            if self.cfg.get("on_touch", True):
+                touching = False
+                for v in vehicles:
+                    if iou(p.xyxy, v.xyxy) > 0.02:   # actually overlapping it
+                        touching = True
+                        reasons.add(AT_VEHICLE)
+                        fired_for_p = True
+                        if v not in near_vehicles:
+                            near_vehicles.append(v)
                         break
+                if touching:
+                    # a quick touch is what an owner does opening the door;
+                    # only a SUSTAINED touch (reaching in / working the door)
+                    # is suspicious enough to arm the theft chain
+                    t0 = self._touch_since.setdefault(p.track_id, ts)
+                    if ts - t0 >= float(self.cfg.get("touch_arm_s", 3)):
+                        suspicious_for_p = True
+                else:
+                    self._touch_since.pop(p.track_id, None)
             if self.cfg.get("on_loiter", True) and \
                     ts - self._person_since[p.track_id] >= dwell_s:
                 reasons.add(LINGERING)
-                fired_for_p = True
+                fired_for_p = suspicious_for_p = True
             if self.cfg.get("on_zone", True):
                 for zname in ("restricted", "parking", "entry"):
                     if point_in_polygon(p.foot_point, self.zones.get(zname)):
                         reasons.add(f"person_in_{zname}")
                         fired_for_p = True
+                        if zname == "restricted":
+                            suspicious_for_p = True
             if night and self.cfg.get("on_night_person", True):
                 reasons.add(AT_NIGHT)
-                fired_for_p = True
+                fired_for_p = suspicious_for_p = True
             if pose_signals and self.cfg.get("on_pose", True):
                 for sig in pose_signals.get(p.track_id, ()):
                     reasons.add(sig)
-                    fired_for_p = True
+                    fired_for_p = suspicious_for_p = True
             if fired_for_p:
                 involved.add(p.track_id)
+            # arm the theft chain: remember suspicious people per nearby vehicle
+            if suspicious_for_p:
+                for v in near_vehicles:
+                    self._veh_activity[v.track_id] = ts
+                    self._veh_people.setdefault(v.track_id, set()).add(p.track_id)
+
+        # theft chain: parked vehicle drives away after suspicious activity
+        if self.cfg.get("on_departure", True):
+            dep = self._update_vehicles(vehicles, ts)
+            if dep is not None:
+                reasons.add(DEPARTURE)
+                involved |= dep["people"]
+                self.last_departure = dep
 
         self.last_involved = involved
         return (bool(reasons), sorted(reasons))
+
+    def _update_vehicles(self, vehicles, ts: float) -> dict | None:
+        """Track each vehicle's parking anchor. Returns departure info when a
+        vehicle that sat parked >= parked_min_s starts moving AND someone acted
+        suspiciously around it within link_s. A plain departure (no prior
+        activity — e.g. the owner just driving off) stays silent."""
+        parked_min = float(self.cfg.get("parked_min_s", 6))
+        depart_frac = float(self.cfg.get("depart_frac", 0.6))
+        link_s = float(self.cfg.get("link_s", 600))
+        fired = None
+        seen = set()
+        for v in vehicles:
+            tid = v.track_id
+            seen.add(tid)
+            x1, y1, x2, y2 = v.xyxy
+            cx, cy, wv = (x1 + x2) / 2, (y1 + y2) / 2, max(1.0, x2 - x1)
+            st = self._veh.get(tid)
+            if st is None:
+                self._veh[tid] = {"ts0": ts, "cx": cx, "cy": cy, "w": wv,
+                                  "last": ts, "departed": False}
+                continue
+            st["last"] = ts
+            dist = ((cx - st["cx"]) ** 2 + (cy - st["cy"]) ** 2) ** 0.5
+            parked_for = ts - st["ts0"]
+            if dist >= depart_frac * st["w"]:
+                # moved a lot: departure if it was parked long enough
+                if parked_for >= parked_min and not st["departed"]:
+                    st["departed"] = True
+                    act = self._veh_activity.get(tid)
+                    if act is not None and ts - act <= link_s:
+                        fired = {"vehicle": tid, "gap_s": round(ts - act, 1),
+                                 "people": set(self._veh_people.get(tid, set()))}
+                st.update(ts0=ts, cx=cx, cy=cy, w=wv)
+            elif parked_for < parked_min and dist >= 0.25 * st["w"]:
+                # still drifting (never really parked) — follow it
+                st.update(ts0=ts, cx=cx, cy=cy, w=wv)
+            elif st["departed"] and dist < 0.2 * st["w"] and \
+                    parked_for >= parked_min:
+                st["departed"] = False        # parked again: re-arm
+        # expire vehicles unseen for a while
+        for tid in list(self._veh):
+            if tid not in seen and ts - self._veh[tid]["last"] > 5.0:
+                self._veh.pop(tid, None)
+                self._veh_activity.pop(tid, None)
+                self._veh_people.pop(tid, None)
+        return fired
 
 
 def merge_windows(candidate_times: list[float], gap_s: float = 3.0,
