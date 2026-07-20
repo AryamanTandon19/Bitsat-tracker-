@@ -232,3 +232,73 @@ def test_swing_far_from_any_car_is_not_break_in():
     fire, reasons = t.is_candidate([car_at(100), person], ts=0.0,
                                    pose_signals={7: {"pose_arm_swing"}})
     assert BREAK_IN not in reasons
+
+
+# ------------------------------------------ pose-free smash (disturbance)
+DIST_CFG = {**CHAIN_CFG, "on_disturb": True, "disturb_thresh": 16,
+            "disturb_frames": 2}
+
+
+def _park(t, frames=5):
+    """Let car #1 sit parked for a few seconds first."""
+    for ts in range(frames):
+        t.is_candidate([car_at(100)], ts=float(ts))
+
+
+def test_pixel_burst_on_parked_car_fires_break_in():
+    """The smash without any pose model: violent frame-diff on a parked car
+    with a person beside it -> DISTURBANCE, then BREAK_IN on the 2nd frame."""
+    from app.trigger import BREAK_IN, DISTURBANCE
+    t = trig(cfg=DIST_CFG)
+    _park(t)
+    thief = Det(7, "person", (205, 120, 225, 180))
+    fire, reasons = t.is_candidate([car_at(100), thief], ts=5.0,
+                                   motion={1: 40.0})
+    assert fire and DISTURBANCE in reasons and BREAK_IN not in reasons
+    fire, reasons = t.is_candidate([car_at(100), thief], ts=5.2,
+                                   motion={1: 35.0})
+    assert BREAK_IN in reasons                        # sustained burst
+    assert 7 in t.last_involved
+
+
+def test_burst_without_person_nearby_is_silent():
+    from app.trigger import DISTURBANCE
+    t = trig(cfg=DIST_CFG)
+    _park(t)
+    far = Det(7, "person", (600, 300, 620, 360))
+    fire, reasons = t.is_candidate([car_at(100), far], ts=5.0,
+                                   motion={1: 40.0})
+    assert DISTURBANCE not in reasons                 # tree shadow, not smash
+
+
+def test_burst_on_moving_car_is_silent():
+    """A moving car always has high frame-diff — must not count."""
+    from app.trigger import DISTURBANCE
+    t = trig(cfg=DIST_CFG)
+    walker = Det(7, "person", (205, 120, 225, 180))
+    for i, x in enumerate(range(100, 500, 80)):       # car driving through
+        fire, reasons = t.is_candidate([car_at(x), walker], ts=float(i),
+                                       motion={1: 60.0})
+        assert DISTURBANCE not in reasons
+
+
+def test_small_motion_below_threshold_is_silent():
+    from app.trigger import DISTURBANCE
+    t = trig(cfg=DIST_CFG)
+    _park(t)
+    person = Det(7, "person", (205, 120, 225, 180))
+    fire, reasons = t.is_candidate([car_at(100), person], ts=5.0,
+                                   motion={1: 8.0})   # gentle reflection etc.
+    assert DISTURBANCE not in reasons
+
+
+def test_disturbance_arms_theft_chain():
+    """Burst on parked car, thief walks away, car leaves -> DEPARTURE."""
+    from app.trigger import DEPARTURE
+    t = trig(cfg=DIST_CFG)
+    _park(t)
+    thief = Det(7, "person", (205, 120, 225, 180))
+    t.is_candidate([car_at(100), thief], ts=5.0, motion={1: 40.0})
+    t.is_candidate([car_at(100)], ts=8.0)             # thief gone
+    fire, reasons = t.is_candidate([car_at(300)], ts=12.0)
+    assert fire and DEPARTURE in reasons

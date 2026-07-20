@@ -22,6 +22,7 @@ AT_NIGHT = "person_at_night"
 AT_VEHICLE = "person_at_vehicle"                       # touching/reaching into it
 DEPARTURE = "vehicle_departure_after_activity"         # the theft chain
 BREAK_IN = "possible_break_in"    # INSTANT escalation: strike/reach at a vehicle
+DISTURBANCE = "vehicle_disturbance"   # violent pixel burst ON a parked vehicle
 
 
 class CandidateTrigger:
@@ -41,6 +42,7 @@ class CandidateTrigger:
         self._veh_activity: dict[int, float] = {}  # tid -> last suspicious ts
         self._veh_people: dict[int, set[int]] = {}  # tid -> people involved
         self._touch_since: dict[int, float] = {}  # person tid -> touch start ts
+        self._disturb_streak: dict[int, int] = {}  # vehicle tid -> burst frames
         self.last_departure: dict | None = None   # info about the last chain fire
 
     def _night(self) -> bool:
@@ -49,9 +51,12 @@ class CandidateTrigger:
                         nh.get("end", "05:00"))
 
     def is_candidate(self, detections, ts: float,
-                     pose_signals: dict | None = None) -> tuple[bool, list[str]]:
+                     pose_signals: dict | None = None,
+                     motion: dict | None = None) -> tuple[bool, list[str]]:
         """Return (fire?, reasons) for this frame. pose_signals optionally maps
-        person track_id -> set of pose reasons (crouching/reaching/swing)."""
+        person track_id -> set of pose reasons (crouching/reaching/swing).
+        motion optionally maps vehicle track_id -> frame-diff score (see
+        app.motion.VehicleMotion) for the pose-free smash detector."""
         persons = [d for d in detections if d.cls_name == "person"]
         vehicles = [d for d in detections if d.cls_name != "person"]
         reasons: set[str] = set()
@@ -70,6 +75,7 @@ class CandidateTrigger:
         dwell_s = float(self.cfg.get("dwell_s", 8))
         night = self._night()
         involved: set[int] = set()
+        veh_near_people: dict[int, set[int]] = {}  # vehicle tid -> person tids
 
         for p in persons:
             fired_for_p = False
@@ -134,11 +140,36 @@ class CandidateTrigger:
                 fired_for_p = suspicious_for_p = True
             if fired_for_p:
                 involved.add(p.track_id)
+            for v in near_vehicles:
+                veh_near_people.setdefault(v.track_id, set()).add(p.track_id)
             # arm the theft chain: remember suspicious people per nearby vehicle
             if suspicious_for_p:
                 for v in near_vehicles:
                     self._veh_activity[v.track_id] = ts
                     self._veh_people.setdefault(v.track_id, set()).add(p.track_id)
+
+        # pose-free smash detector: a violent pixel burst ON a parked vehicle
+        # while somebody is right next to it. Does not need the pose model to
+        # see the arm — glass shattering IS a pixel burst.
+        if motion and self.cfg.get("on_disturb", True):
+            thresh = float(self.cfg.get("disturb_thresh", 16.0))
+            need = int(self.cfg.get("disturb_frames", 2))
+            for vid, score in motion.items():
+                st = self._veh.get(vid)
+                parked = st is not None and not st["departed"] and \
+                    ts - st["ts0"] >= 2.0
+                people_near = veh_near_people.get(vid, set())
+                if score >= thresh and parked and people_near:
+                    self._disturb_streak[vid] = \
+                        self._disturb_streak.get(vid, 0) + 1
+                    reasons.add(DISTURBANCE)
+                    involved |= people_near
+                    self._veh_activity[vid] = ts     # arms the theft chain too
+                    self._veh_people.setdefault(vid, set()).update(people_near)
+                    if self._disturb_streak[vid] >= need:
+                        reasons.add(BREAK_IN)        # instant HIGH escalation
+                else:
+                    self._disturb_streak.pop(vid, None)
 
         # theft chain: parked vehicle drives away after suspicious activity
         if self.cfg.get("on_departure", True):

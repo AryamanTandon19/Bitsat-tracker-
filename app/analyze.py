@@ -30,6 +30,7 @@ from pathlib import Path
 import cv2
 
 from .camera import frame_stats
+from .motion import VehicleMotion
 from .plates import fuzzy_match
 from .rules import SUSPICIOUS_ACTIVITY as SUSPICIOUS
 from .rules import RulesEngine
@@ -53,6 +54,7 @@ REASON_TEXT = {
     "vehicle_departure_after_activity":
         "parked vehicle driven away soon after suspicious activity around it",
     "possible_break_in": "strike or sustained reach at a vehicle (break-in)",
+    "vehicle_disturbance": "sudden violent movement ON a parked vehicle",
 }
 
 CULPRIT_GREEN = (0, 255, 0)
@@ -219,6 +221,10 @@ class VideoAnalyzer:
                                   .get("pose_model", "yolo11n-pose.pt")})
         last_suspicious_ts = -1e9
         last_escalation_ts = -1e9
+        motion = VehicleMotion()
+        debug_overlay = bool((self.config.get("analyze") or {})
+                             .get("debug_overlay", True))
+        overlay_lines: list[str] = []
         trig_flags: dict[int, float] = {}   # track_id -> green-box hold expiry
         TRIG_FLAG_HOLD_S = 10.0
         pcfg = self.config.get("plates", {})
@@ -267,10 +273,19 @@ class VideoAnalyzer:
                 # "suspicious activity" event (with a refractory gap)
                 pose_signals = {}
                 persons = [d for d in detections if d.is_person]
+                pose_ran = False
                 if pose is not None and persons and \
                         _pose_worth_running(trig_cfg, detections):
                     pose_signals = pose.analyze_frame(frame, persons, ts)
-                fire, reasons = trig.is_candidate(detections, ts, pose_signals)
+                    pose_ran = True
+                vehicle_dets = [d for d in detections if d.is_vehicle]
+                motion_scores = motion.scores(frame, vehicle_dets)
+                fire, reasons = trig.is_candidate(detections, ts, pose_signals,
+                                                  motion=motion_scores)
+                if debug_overlay:
+                    overlay_lines = self._overlay_lines(
+                        pose, pose_ran, pose_signals, motion_scores,
+                        trig_cfg, reasons, persons, trig, ts)
                 break_in = BREAK_IN in reasons
                 theft_chain = DEPARTURE in reasons
                 escalate = (break_in or theft_chain) and \
@@ -321,6 +336,8 @@ class VideoAnalyzer:
                 vis = frame[:out_h, :out_w].copy()
                 self._draw(vis, last_boxes, last_flagged)
                 self._draw_banner(vis, ts, event_marks)
+                if debug_overlay and overlay_lines:
+                    self._draw_overlay(vis, overlay_lines)
                 _write(writer, vis)
             idx += 1
 
@@ -427,6 +444,49 @@ class VideoAnalyzer:
             "confidence": ev.confidence,
             "description": ev.description,
         })
+
+    @staticmethod
+    def _overlay_lines(pose, pose_ran, pose_signals, motion_scores,
+                       trig_cfg, reasons, persons, trig, ts) -> list[str]:
+        """Human-readable snapshot of everything the free layer saw this
+        frame — burned into the debug overlay so misses can be diagnosed
+        by just pausing the output video."""
+        if pose is None:
+            pstate = "off"
+        elif getattr(pose, "_failed", False):
+            pstate = "FAILED"
+        elif not pose_ran:
+            pstate = "skip"                      # nobody near a vehicle
+        else:
+            pstate = "on"
+        lines = [f"FREE LAYER t={ts:.1f}s  pose:{pstate}"]
+        thresh = float(trig_cfg.get("disturb_thresh", 16.0))
+        for vid, score in sorted(motion_scores.items())[:3]:
+            st = trig._veh.get(vid)
+            parked = bool(st and not st["departed"] and ts - st["ts0"] >= 2.0)
+            mark = "!" if score >= thresh else ""
+            lines.append(f"veh#{vid} motion={score:.0f}{mark}"
+                         f" (thr {thresh:.0f}) parked={'y' if parked else 'n'}")
+        for p in persons[:3]:
+            dwell = ts - trig._person_since.get(p.track_id, ts)
+            sigs = ",".join(sorted(pose_signals.get(p.track_id, ()))) or "-"
+            lines.append(f"person#{p.track_id} dwell={dwell:.0f}s pose={sigs}")
+        if reasons:
+            lines.append(("fired: " + ",".join(reasons))[:64])
+        return lines[:6]
+
+    @staticmethod
+    def _draw_overlay(frame, lines):
+        x0 = frame.shape[1] - 330
+        y = 46
+        for line in lines:
+            (tw, th), _ = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX,
+                                          0.45, 1)
+            cv2.rectangle(frame, (x0 - 4, y - th - 4), (x0 + tw + 4, y + 4),
+                          (0, 0, 0), -1)
+            cv2.putText(frame, line, (x0, y), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45, (0, 255, 255), 1)
+            y += th + 10
 
     @staticmethod
     def _draw(frame, boxes, flagged):

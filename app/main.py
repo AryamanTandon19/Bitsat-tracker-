@@ -50,6 +50,8 @@ class CameraPipeline(threading.Thread):
         trig_cfg = ctx.config["rules"].get("trigger", {})
         self.trig_cfg = trig_cfg
         self.trigger = CandidateTrigger(self.zones, trig_cfg)
+        from .motion import VehicleMotion
+        self.motion = VehicleMotion()
         self.pose = None
         if trig_cfg.get("on_pose", True):
             from .pose import PoseEstimator
@@ -124,8 +126,11 @@ class CameraPipeline(threading.Thread):
             if self.pose is not None and persons and \
                     analyze_mod._pose_worth_running(self.trig_cfg, detections):
                 pose_signals = self.pose.analyze_frame(frame, persons, ts)
+            motion_scores = self.motion.scores(
+                frame, [d for d in detections if d.is_vehicle])
             fire, reasons = self.trigger.is_candidate(detections, ts,
-                                                      pose_signals)
+                                                      pose_signals,
+                                                      motion=motion_scores)
             if fire:
                 for tid in self.trigger.last_involved:
                     self._trig_flags[tid] = ts + TRIG_FLAG_HOLD_S

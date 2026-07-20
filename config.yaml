@@ -77,6 +77,9 @@ rules:
     on_touch: true             # person actually overlapping a vehicle
     on_departure: true         # THEFT CHAIN: parked car leaves after activity
     on_break_in: true          # INSTANT HIGH: strike/sustained reach at a car
+    on_disturb: true           # pose-free smash detector (pixel burst on car)
+    disturb_thresh: 16         # motion score = "violent" (see debug overlay)
+    disturb_frames: 2          # bursts must last this many analyzed frames
     near_vehicle_px: 180       # "near a vehicle" radius in pixels
     dwell_s: 8                 # seconds present before "lingering" fires
     touch_arm_s: 3             # sustained touch (s) before it counts as suspicious
@@ -87,7 +90,7 @@ rules:
     night_hours: { start: "23:00", end: "05:00" }
     crouch_ratio: 0.32         # pose: lower = stricter crouch detection
     reach_x_ratio: 0.5         # pose: sideways reach threshold (of body width)
-    swing_speed_ratio: 1.5     # pose: wrist speed (body-heights/sec) = strike
+    swing_speed_ratio: 1.1     # pose: wrist speed (body-heights/sec) = strike
 
   tamper:                      # A5
     enabled: true
@@ -146,6 +149,7 @@ analyze:                       # "upload a video and detect anomalies" feature
   out_dir: "clips/uploads"
   max_upload_mb: 300
   full_fps_video: false        # true = smoother output video but ~4x slower
+  debug_overlay: true          # burn free-layer signal values into the video
 
 assistant:                     # Claude tuning chatbot in the dashboard
   enabled: false               # set true + ANTHROPIC_API_KEY to enable
