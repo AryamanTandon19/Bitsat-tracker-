@@ -1,8 +1,10 @@
-# Core (pinned) — Python 3.11+, works on Windows and Linux
-ultralytics==8.3.58            # YOLO11/YOLOv8 + ByteTrack (pulls torch)
-opencv-python==4.10.0.84
-numpy==1.26.4
-PyYAML==6.0.2
+# Core — Python 3.11 through 3.13. Lower bounds (not hard pins) so pip can
+# grab prebuilt wheels for your Python version instead of compiling from source
+# (compiling needs a C/C++ toolchain, which most Windows machines don't have).
+ultralytics>=8.3.58            # YOLO11/YOLOv8 + ByteTrack (pulls torch)
+opencv-python>=4.11            # 4.11+ ships Python 3.13 wheels (4.10 did not)
+numpy>=2.1                     # 2.1+ ships Python 3.13 wheels (1.26 did not)
+PyYAML>=6.0.2
 requests==2.32.3
 tzdata==2024.2                 # timezone database (required on Windows)
 fastapi==0.115.6
@@ -10,8 +12,9 @@ uvicorn==0.34.0
 python-multipart==0.0.20
 imageio-ffmpeg==0.5.1          # bundles ffmpeg; H.264 clips play in-browser
 
-# Plate OCR — install ONE of these (fast-plate-ocr preferred, much lighter)
-fast-plate-ocr==0.3.0
+# Plate OCR — OPTIONAL (number-plate reading; not needed for the theft demo).
+# The app runs fine without it. Uncomment one to enable licence-plate reading.
+# fast-plate-ocr>=0.3.0        # preferred, much lighter
 # easyocr==1.7.2               # fallback OCR (heavier; uncomment if needed)
 
 # Optional
