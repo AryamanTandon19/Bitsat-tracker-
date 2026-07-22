@@ -151,6 +151,33 @@ analyze:                       # "upload a video and detect anomalies" feature
   full_fps_video: false        # true = smoother output video but ~4x slower
   debug_overlay: true          # burn free-layer signal values into the video
 
+hybrid:                        # VisionGuard hybrid: specialist R3D-18 models +
+                               # temporal confirmation + explainable fusion.
+                               # The free layer runs with this fully disabled;
+                               # turn it on only once the .pt weights are present.
+  specialist:                  # learned evidence models (app.specialist)
+    enabled: false             # master switch — false = free layer only
+    device: "auto"             # auto | cpu | cuda:0
+    break_in:                  # P(HOUSE_BREAK_IN) from the UCF binary model
+      weights: "models/visionguard_ucf_binary_v3.pt"
+      classes: ["HOUSE_BREAK_IN", "NORMAL"]   # MUST match training label order
+      suspicious_class: "HOUSE_BREAK_IN"
+    vehicle:                   # P(VEHICLE_THEFT_OR_TAMPERING)
+      weights: "models/visionguard_vehicle_security_v2.pt"
+      classes: ["NORMAL_VEHICLE_ACTIVITY", "VEHICLE_THEFT_OR_TAMPERING"]
+      suspicious_class: "VEHICLE_THEFT_OR_TAMPERING"
+    clip_seconds: 4.0          # rolling clip fed to the model (do not change)
+    infer_every_s: 2.0         # run inference this often (clips overlap)
+  temporal:                    # per-(camera,event) confirmation (app.temporal)
+    history_size: 3            # latest N overlapping inference windows
+    required_hits: 2           # this many must be suspicious
+    base_threshold: 0.70       # score >= this = a suspicious vote  (DEV value)
+    strong_gate: 0.85          # recent peak must reach this to confirm (DEV value)
+    require_strong: true       # enforce the strong-evidence gate (live safeguard)
+  # NOTE: 0.70 / 0.85 are development calibration values observed to reduce live
+  # false positives — NOT production constants. Re-calibrate on an untouched
+  # multi-camera holdout before publishing any accuracy claim.
+
 assistant:                     # Claude tuning chatbot in the dashboard
   enabled: false               # set true + ANTHROPIC_API_KEY to enable
   model: "claude-opus-4-8"
