@@ -30,6 +30,7 @@ from pathlib import Path
 import cv2
 
 from .camera import frame_stats
+from .enhance import enhance_frame
 from .fusion import AI_REVIEW, CONFIRMED_INCIDENT, fuse
 from .hybrid import HybridSecurityMonitor, build_evidence, route_from_reasons
 from .motion import VehicleMotion
@@ -251,6 +252,9 @@ class VideoAnalyzer:
         plate_reader = PlateReader(pcfg)
         fuzzy_d = int(pcfg.get("fuzzy_max_distance", 1))
 
+        # low-light enhancement so dark night subjects become detectable
+        low_light = (self.config.get("detection") or {}).get("low_light", "auto")
+
         out_dir = self.out_dir / job.id
         out_dir.mkdir(parents=True, exist_ok=True)
         annotated = out_dir / "annotated.mp4"
@@ -272,6 +276,8 @@ class VideoAnalyzer:
                 break
             ts = idx / fps
             clock[0] = ts
+            if low_light and low_light != "off":
+                frame = enhance_frame(frame, low_light)   # brighten before YOLO
 
             if idx % step == 0:
                 detections = det.track(frame)

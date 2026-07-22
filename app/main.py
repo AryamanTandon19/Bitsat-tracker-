@@ -19,6 +19,7 @@ from .camera import CameraWorker, frame_stats
 from .clips import ClipSaver
 from .db import Database
 from .detector import Detector, annotate
+from .enhance import enhance_frame
 from .notify import TelegramNotifier
 from .plates import PlateReader, fuzzy_match
 from .rules import SUSPICIOUS_ACTIVITY, Event, RulesEngine
@@ -98,6 +99,9 @@ class CameraPipeline(threading.Thread):
                 self._stop.wait(0.1)
                 continue
             self._last_ts = ts
+            low_light = cfg["detection"].get("low_light", "auto")
+            if low_light and low_light != "off":
+                frame = enhance_frame(frame, low_light)   # brighten before YOLO
 
             detections = self.detector.track(frame)
 
