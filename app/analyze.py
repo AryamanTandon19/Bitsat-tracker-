@@ -30,11 +30,14 @@ from pathlib import Path
 import cv2
 
 from .camera import frame_stats
+from .fusion import AI_REVIEW, CONFIRMED_INCIDENT, fuse
+from .hybrid import HybridSecurityMonitor, build_evidence, route_from_reasons
 from .motion import VehicleMotion
 from .plates import fuzzy_match
 from .rules import SUSPICIOUS_ACTIVITY as SUSPICIOUS
 from .rules import RulesEngine
-from .trigger import BREAK_IN, DEPARTURE, CandidateTrigger
+from .trigger import (AT_VEHICLE, BREAK_IN, DEPARTURE, NEAR_VEHICLE,
+                      CandidateTrigger)
 
 log = logging.getLogger(__name__)
 SUSPICIOUS_REFRACTORY_S = 20.0   # min gap between suspicious-activity events
@@ -99,6 +102,16 @@ def _pose_worth_running(trig_cfg: dict, detections) -> bool:
                     v.xyxy[1] - near_r <= py <= v.xyxy[3] + near_r):
                 return True
     return False
+
+
+def _hybrid_overlay(fr) -> str:
+    """One debug-overlay line summarizing the hybrid decision (STEP 9: never
+    hide a decision — show raw scores, what confirmed, and the final state)."""
+    ev = fr.evidence
+    scores = " ".join(f"{k}={v:.2f}" for k, v in
+                      sorted(ev.specialist_scores.items())) or "no-score"
+    confirmed = ",".join(sorted(ev.specialist_confirmed)) or "-"
+    return f"HYBRID {fr.decision} spec[{scores}] confirmed[{confirmed}]"
 
 
 def _open_writer(path: str, w: int, h: int, fps: float):
@@ -222,6 +235,12 @@ class VideoAnalyzer:
         last_suspicious_ts = -1e9
         last_escalation_ts = -1e9
         motion = VehicleMotion()
+        # hybrid specialist layer (R3D-18 models + temporal confirm + fusion).
+        # Fully gated: with hybrid.specialist.enabled off (default) the monitor
+        # short-circuits and the free-layer behaviour below is unchanged.
+        monitor = HybridSecurityMonitor(self.config.get("hybrid", {}), "upload")
+        monitor.warmup()
+        hybrid_on = monitor.enabled
         debug_overlay = bool((self.config.get("analyze") or {})
                              .get("debug_overlay", True))
         overlay_lines: list[str] = []
@@ -282,19 +301,43 @@ class VideoAnalyzer:
                 motion_scores = motion.scores(frame, vehicle_dets)
                 fire, reasons = trig.is_candidate(detections, ts, pose_signals,
                                                   motion=motion_scores)
+                break_in = BREAK_IN in reasons
+                theft_chain = DEPARTURE in reasons
+
+                # hybrid specialist scoring + explainable fusion. When the
+                # hybrid layer is on, fusion is the FINAL gate: it can confirm a
+                # free-layer alarm with model evidence or downgrade one that
+                # lacks corroboration (false-alarm defense). When off,
+                # fusion_result stays None and the free layer decides alone.
+                fusion_result = None
+                if hybrid_on:
+                    try:
+                        obs = monitor.observe(frame, ts,
+                                              route=route_from_reasons(reasons))
+                        relationship = bool(trig.last_involved) and bool(
+                            {NEAR_VEHICLE, AT_VEHICLE} & set(reasons))
+                        contradictions = set()
+                        if any(pi.get("registered")
+                               for pi in plate_info.values()):
+                            contradictions.add("registered_plate")
+                        fusion_result = fuse(build_evidence(
+                            "upload", reasons, obs, relationship=relationship,
+                            contradictions=contradictions))
+                    except Exception:
+                        log.exception("hybrid layer failed; free layer only")
+                        fusion_result = None
+
                 if debug_overlay:
                     overlay_lines = self._overlay_lines(
                         pose, pose_ran, pose_signals, motion_scores,
                         trig_cfg, reasons, persons, trig, ts)
-                break_in = BREAK_IN in reasons
-                theft_chain = DEPARTURE in reasons
+                    if fusion_result is not None:
+                        overlay_lines.append(_hybrid_overlay(fusion_result))
+
                 escalate = (break_in or theft_chain) and \
                     ts - last_escalation_ts >= ESCALATION_REFRACTORY_S
                 if fire and (escalate or
                              ts - last_suspicious_ts >= SUSPICIOUS_REFRACTORY_S):
-                    last_suspicious_ts = ts
-                    if escalate:
-                        last_escalation_ts = ts
                     why = ", ".join(REASON_TEXT.get(r, r) for r in reasons)
                     desc = f"Suspicious activity: {why}"
                     sev = "MEDIUM"
@@ -308,12 +351,26 @@ class VideoAnalyzer:
                         sev = "HIGH"
                         desc = ("POSSIBLE BREAK-IN AT VEHICLE: strike/reach "
                                 f"detected at the car ({why})")
-                    from types import SimpleNamespace
-                    events.append(SimpleNamespace(
-                        ts=ts, event_type=SUSPICIOUS, severity=sev,
-                        description=desc,
-                        plate=None, track_ids=sorted(trig.last_involved),
-                        confidence=0.8 if theft_chain else 0.5))
+                    # fusion overrides severity when the hybrid layer is on:
+                    # CONFIRMED->HIGH, AI_REVIEW->MEDIUM, WATCH/NORMAL->suppress
+                    if fusion_result is not None:
+                        sev = {CONFIRMED_INCIDENT: "HIGH",
+                               AI_REVIEW: "MEDIUM"}.get(fusion_result.decision)
+                        if sev is not None:
+                            ev_why = "; ".join(fusion_result.accepted) \
+                                or "context only"
+                            desc = (f"[{fusion_result.decision}] {desc} "
+                                    f"| evidence: {ev_why}")
+                    if sev is not None:
+                        last_suspicious_ts = ts
+                        if escalate and sev == "HIGH":
+                            last_escalation_ts = ts
+                        from types import SimpleNamespace
+                        events.append(SimpleNamespace(
+                            ts=ts, event_type=SUSPICIOUS, severity=sev,
+                            description=desc,
+                            plate=None, track_ids=sorted(trig.last_involved),
+                            confidence=0.8 if theft_chain else 0.5))
 
                 if fire:
                     for tid in trig.last_involved:

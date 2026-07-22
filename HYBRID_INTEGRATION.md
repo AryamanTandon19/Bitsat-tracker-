@@ -15,6 +15,26 @@ pipeline yet** — they are safe to merge and wire in incrementally.
 | `app/specialist.py` | Load the two `.pt` models, reproduce the **exact** training preprocessing, return `P(suspicious)` | `tests/test_specialist.py` | only for inference; preprocessing + degradation tested without it |
 | `app/temporal.py` | Per-`(camera_id, event_type)` sliding-window confirmation (2-of-3 @ 0.70 + peak ≥ 0.85) | `tests/test_temporal.py` | no |
 | `app/fusion.py` | Fuse independent evidence groups → `NORMAL / WATCH / AI_REVIEW / CONFIRMED_INCIDENT` | `tests/test_fusion.py` | no |
+| `app/hybrid.py` | Faithful port of `LiveSecurityMonitor`: rolling clip buffer + bank + confirmer, per-camera, timestamp-driven (works offline too) | `tests/test_hybrid.py` | no (torch isolated in the bank) |
+
+## Verified against the ChatGPT source
+
+Cross-checked line-by-line against the uploaded `visionguard/` code, not
+assumed:
+
+- **Checkpoint format** (`train_security_binary.py`): saved as
+  `{"model": state_dict, "classes": labels, ...}`. `app/specialist.py` reads
+  both keys and resolves the suspicious index by **name** from the stored
+  `classes` — identical to `SecurityModel` in `security_event_engine.py`. The
+  class-order concern is self-resolving: the checkpoint describes its own order.
+- **Preprocessing** (`live_security.py::_build_tensor`): BGR→RGB, resize 128
+  `INTER_AREA`, `/255`, `permute→stack(dim=1)`, `linspace(0,n-1,16)`, Kinetics
+  mean/std. `preprocess_clip` produces the identical tensor.
+- **Temporal + strong gate** (`security_event_engine.py` + `live_security.py`):
+  engine does 2-of-3 ≥ 0.70; the live layer adds `peak(last 3) ≥ 0.85`.
+  `TemporalConfirmer` reproduces both as `temporal_ok AND strong_ok`.
+- **The multi-camera bug** (`VisionGuardEventEngine.triggers` keyed only by
+  event_type): fixed by keying every history on `(camera_id, event_type)`.
 
 Config lives under `hybrid:` in `config.yaml`, **disabled by default** — the
 free layer runs exactly as before until you set `hybrid.specialist.enabled: true`
@@ -173,12 +193,29 @@ Every `FusionResult` carries `accepted` / `rejected` reason lists and a
 ## Milestone checklist
 
 - [x] **M1** Specialist wrapper + temporal confirmer + fusion, isolated & tested
-- [ ] **M2** Wire into `app/main.py` live loop behind `hybrid.specialist.enabled`
-- [ ] **M2** Wire into `app/analyze.py` offline analyzer (same fusion, per clip)
-- [ ] **M3** Reality analyzer over `test_vd_2.mp4`: burn every score/gate/reason
-      into the debug overlay (extend the existing overlay)
+- [x] **M2** `app/hybrid.py` monitor + wired into `app/analyze.py` offline
+      analyzer behind `hybrid.specialist.enabled` (hybrid-off = unchanged)
+- [x] **M3 (partial)** Hybrid decision line burned into the debug overlay:
+      raw scores, what confirmed, and the final fusion state
+- [ ] **M2b** Wire into `app/main.py` live loop (after the offline analyzer is
+      validated on `test_vd_2.mp4`, per the handoff's STEP 9 ordering)
 - [ ] **M4** Incident memory: merge fused decisions into one timeline (buffer +
       refractory) instead of per-frame alerts
 - [ ] **M5** Evidence packet → Claude/VLM reviewer for `AI_REVIEW` decisions
 - [ ] **M6** Untouched multi-camera holdout before any accuracy claim
+
+## How to run the reality analyzer on `test_vd_2.mp4` (your GPU box)
+
+1. `git pull` this branch into your local clone.
+2. Put the two checkpoints in `models/` and set `hybrid.specialist.enabled: true`.
+3. Upload `test_vd_2.mp4` through the dashboard's analyze feature (or call the
+   analyzer directly). With `analyze.debug_overlay: true`, every analyzed frame
+   now shows a `HYBRID <state> spec[break_in=.. vehicle=..] confirmed[..]` line
+   plus the free-layer signals.
+4. Watch the startup log for the resolved class order / suspicious index per
+   model — that is the one thing to eyeball once.
+
+Because fusion is the final gate, a confirmed model score with no person↔object
+interaction shows as `WATCH` (not an alert) — that is the domain-shift guard
+doing its job on unrelated motion.
 ```
