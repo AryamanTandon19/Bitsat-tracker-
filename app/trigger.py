@@ -148,26 +148,36 @@ class CandidateTrigger:
                     self._veh_activity[v.track_id] = ts
                     self._veh_people.setdefault(v.track_id, set()).add(p.track_id)
 
-        # pose-free smash detector: a violent pixel burst ON a parked vehicle
-        # while somebody is right next to it. Does not need the pose model to
-        # see the arm — glass shattering IS a pixel burst.
+        # pose-free smash detector: a violent pixel burst ON a parked vehicle.
+        # Glass shattering IS a pixel burst — it does not need the pose model to
+        # see the arm. By default it also requires a detected person nearby, but
+        # if YOLO can't see the person (small/low-res/occluded), set
+        # `disturb_needs_person: false` so the burst still fires as a
+        # DISTURBANCE. Without a person it does NOT auto-escalate to BREAK_IN —
+        # it stays a signal for the fusion layer to weigh (a lone burst is only
+        # WATCH; a burst that the vehicle model ALSO confirms becomes an alert).
         if motion and self.cfg.get("on_disturb", True):
             thresh = float(self.cfg.get("disturb_thresh", 16.0))
             need = int(self.cfg.get("disturb_frames", 2))
+            needs_person = self.cfg.get("disturb_needs_person", True)
             for vid, score in motion.items():
                 st = self._veh.get(vid)
                 parked = st is not None and not st["departed"] and \
                     ts - st["ts0"] >= 2.0
                 people_near = veh_near_people.get(vid, set())
-                if score >= thresh and parked and people_near:
+                has_person = bool(people_near)
+                if score >= thresh and parked and (has_person or not needs_person):
                     self._disturb_streak[vid] = \
                         self._disturb_streak.get(vid, 0) + 1
                     reasons.add(DISTURBANCE)
-                    involved |= people_near
                     self._veh_activity[vid] = ts     # arms the theft chain too
-                    self._veh_people.setdefault(vid, set()).update(people_near)
-                    if self._disturb_streak[vid] >= need:
-                        reasons.add(BREAK_IN)        # instant HIGH escalation
+                    if has_person:
+                        involved |= people_near
+                        self._veh_people.setdefault(vid, set()).update(people_near)
+                        if self._disturb_streak[vid] >= need:
+                            reasons.add(BREAK_IN)    # instant HIGH escalation
+                    # no detected person: DISTURBANCE only — corroboration
+                    # (the vehicle model) is what turns it into an alert
                 else:
                     self._disturb_streak.pop(vid, None)
 

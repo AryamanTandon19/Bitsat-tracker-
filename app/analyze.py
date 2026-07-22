@@ -312,8 +312,13 @@ class VideoAnalyzer:
                 fusion_result = None
                 if hybrid_on:
                     try:
-                        obs = monitor.observe(frame, ts,
-                                              route=route_from_reasons(reasons))
+                        # route the vehicle model whenever a car is on screen —
+                        # not only when a person was detected near it — so a
+                        # smash is still scored if YOLO missed the person
+                        route = route_from_reasons(reasons)
+                        if vehicle_dets:
+                            route["vehicle"] = True
+                        obs = monitor.observe(frame, ts, route=route)
                         relationship = bool(trig.last_involved) and bool(
                             {NEAR_VEHICLE, AT_VEHICLE} & set(reasons))
                         contradictions = set()

@@ -80,6 +80,10 @@ rules:
     on_disturb: true           # pose-free smash detector (pixel burst on car)
     disturb_thresh: 16         # motion score = "violent" (see debug overlay)
     disturb_frames: 2          # bursts must last this many analyzed frames
+    disturb_needs_person: true # false = a burst on a parked car fires even when
+                               # YOLO can't see the person (small/low-res); it
+                               # stays a WATCH signal until the vehicle model
+                               # also confirms it (then it becomes an alert)
     near_vehicle_px: 180       # "near a vehicle" radius in pixels
     dwell_s: 8                 # seconds present before "lingering" fires
     touch_arm_s: 3             # sustained touch (s) before it counts as suspicious

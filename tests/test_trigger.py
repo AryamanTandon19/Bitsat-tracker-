@@ -271,6 +271,28 @@ def test_burst_without_person_nearby_is_silent():
     assert DISTURBANCE not in reasons                 # tree shadow, not smash
 
 
+def test_burst_without_person_fires_when_gate_disabled():
+    """YOLO can't see the person (small/low-res): with disturb_needs_person off,
+    a strong burst on a parked car still fires DISTURBANCE — but never an
+    autonomous BREAK_IN. Corroboration (the vehicle model) is left to fusion."""
+    from app.trigger import BREAK_IN, DISTURBANCE
+    t = trig(cfg={**DIST_CFG, "disturb_needs_person": False})
+    _park(t)                                     # car #1 only, no person at all
+    fire, reasons = t.is_candidate([car_at(100)], ts=5.0, motion={1: 40.0})
+    assert DISTURBANCE in reasons and BREAK_IN not in reasons
+    fire, reasons = t.is_candidate([car_at(100)], ts=5.2, motion={1: 45.0})
+    assert BREAK_IN not in reasons               # never auto-HIGH without a person
+
+
+def test_burst_without_person_still_silent_by_default():
+    """Default keeps the person gate: no detected person -> no DISTURBANCE."""
+    from app.trigger import DISTURBANCE
+    t = trig(cfg=DIST_CFG)
+    _park(t)
+    fire, reasons = t.is_candidate([car_at(100)], ts=5.0, motion={1: 40.0})
+    assert DISTURBANCE not in reasons
+
+
 def test_burst_on_moving_car_is_silent():
     """A moving car always has high frame-diff — must not count."""
     from app.trigger import DISTURBANCE
