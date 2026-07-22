@@ -83,7 +83,9 @@ rules:
     on_departure: true         # THEFT CHAIN: parked car leaves after activity
     on_break_in: true          # INSTANT HIGH: strike/sustained reach at a car
     on_disturb: true           # pose-free smash detector (pixel burst on car)
-    disturb_thresh: 16         # motion score = "violent" (see debug overlay)
+    disturb_thresh: 60         # localized peak motion = "violent". Measured on
+                               # real night CCTV: quiet ~15, a real break-in
+                               # reach-in peaked 90-160. 60 separates them.
     disturb_frames: 2          # bursts must last this many analyzed frames
     disturb_needs_person: true # false = a burst on a parked car fires even when
                                # YOLO can't see the person (small/low-res); it

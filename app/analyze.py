@@ -304,7 +304,7 @@ class VideoAnalyzer:
                     pose_signals = pose.analyze_frame(frame, persons, ts)
                     pose_ran = True
                 vehicle_dets = [d for d in detections if d.is_vehicle]
-                motion_scores = motion.scores(frame, vehicle_dets)
+                motion_scores = motion.scores(frame, vehicle_dets, persons)
                 fire, reasons = trig.is_candidate(detections, ts, pose_signals,
                                                   motion=motion_scores)
                 break_in = BREAK_IN in reasons

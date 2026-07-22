@@ -131,7 +131,7 @@ class CameraPipeline(threading.Thread):
                     analyze_mod._pose_worth_running(self.trig_cfg, detections):
                 pose_signals = self.pose.analyze_frame(frame, persons, ts)
             motion_scores = self.motion.scores(
-                frame, [d for d in detections if d.is_vehicle])
+                frame, [d for d in detections if d.is_vehicle], persons)
             fire, reasons = self.trigger.is_candidate(detections, ts,
                                                       pose_signals,
                                                       motion=motion_scores)
