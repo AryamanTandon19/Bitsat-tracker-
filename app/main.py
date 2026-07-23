@@ -20,12 +20,16 @@ from .clips import ClipSaver
 from .db import Database
 from .detector import Detector, annotate
 from .enhance import enhance_frame
+from .fusion import AI_REVIEW, CONFIRMED_INCIDENT, fuse
+from .hybrid import HybridSecurityMonitor, build_evidence, route_from_reasons
 from .notify import TelegramNotifier
 from .plates import PlateReader, fuzzy_match
 from .rules import SUSPICIOUS_ACTIVITY, Event, RulesEngine
 from . import analyze as analyze_mod
+from .trigger import AT_VEHICLE as TRIG_AT_VEHICLE
 from .trigger import BREAK_IN as TRIG_BREAK_IN
 from .trigger import DEPARTURE as TRIG_DEPARTURE
+from .trigger import NEAR_VEHICLE as TRIG_NEAR_VEHICLE
 from .trigger import CandidateTrigger
 from .vlm import VLMDescriber
 
@@ -53,6 +57,11 @@ class CameraPipeline(threading.Thread):
         self.trigger = CandidateTrigger(self.zones, trig_cfg)
         from .motion import VehicleMotion
         self.motion = VehicleMotion()
+        # hybrid specialist layer (R3D-18 models + temporal confirm + fusion).
+        # No-op unless hybrid.specialist.enabled — free-layer behaviour unchanged.
+        self.monitor = HybridSecurityMonitor(ctx.config.get("hybrid", {}), name)
+        self.monitor.warmup()
+        self.hybrid_on = self.monitor.enabled
         self.pose = None
         if trig_cfg.get("on_pose", True):
             from .pose import PoseEstimator
@@ -135,18 +144,40 @@ class CameraPipeline(threading.Thread):
             fire, reasons = self.trigger.is_candidate(detections, ts,
                                                       pose_signals,
                                                       motion=motion_scores)
+            break_in = TRIG_BREAK_IN in reasons
+            theft_chain = TRIG_DEPARTURE in reasons
+
+            # hybrid specialist scoring + fusion. Runs every analyzed frame so
+            # the rolling clip buffer stays warm; when enabled, fusion is the
+            # FINAL gate on severity (and can suppress an uncorroborated
+            # free-layer alarm). No-op / free-layer-only when disabled.
+            fusion_result = None
+            if self.hybrid_on:
+                try:
+                    route = route_from_reasons(reasons)
+                    if any(d.is_vehicle for d in detections):
+                        route["vehicle"] = True
+                    obs = self.monitor.observe(frame, ts, route=route)
+                    relationship = bool(self.trigger.last_involved) and bool(
+                        {TRIG_NEAR_VEHICLE, TRIG_AT_VEHICLE} & set(reasons))
+                    contradictions = set()
+                    if any(pi.get("registered") for pi in plate_info.values()):
+                        contradictions.add("registered_plate")
+                    fusion_result = fuse(build_evidence(
+                        self.cam_name, reasons, obs, relationship=relationship,
+                        contradictions=contradictions))
+                except Exception:
+                    log.exception("[%s] hybrid layer failed; free layer only",
+                                  self.cam_name)
+                    fusion_result = None
+
             if fire:
                 for tid in self.trigger.last_involved:
                     self._trig_flags[tid] = ts + TRIG_FLAG_HOLD_S
-                break_in = TRIG_BREAK_IN in reasons
-                theft_chain = TRIG_DEPARTURE in reasons
                 escalate = (break_in or theft_chain) and \
                     ts - self._last_escalation_ts >= ESCALATION_REFRACTORY_S
                 if escalate or \
                         ts - self._last_suspicious_ts >= SUSPICIOUS_REFRACTORY_S:
-                    self._last_suspicious_ts = ts
-                    if escalate:
-                        self._last_escalation_ts = ts
                     desc = "Suspicious activity: " + ", ".join(reasons)
                     sev = "MEDIUM"
                     if theft_chain:
@@ -159,12 +190,26 @@ class CameraPipeline(threading.Thread):
                         sev = "HIGH"
                         desc = ("POSSIBLE BREAK-IN AT VEHICLE: strike/reach "
                                 "detected at the car (" + ", ".join(reasons) + ")")
-                    events.append(Event(
-                        ts=ts, camera=self.cam_name,
-                        event_type=SUSPICIOUS_ACTIVITY, severity=sev,
-                        description=desc,
-                        track_ids=sorted(self.trigger.last_involved),
-                        confidence=0.8 if theft_chain else 0.5))
+                    # fusion is the final gate when the hybrid layer is on:
+                    # CONFIRMED->HIGH, AI_REVIEW->MEDIUM, WATCH/NORMAL->suppress
+                    if fusion_result is not None:
+                        sev = {CONFIRMED_INCIDENT: "HIGH",
+                               AI_REVIEW: "MEDIUM"}.get(fusion_result.decision)
+                        if sev is not None:
+                            ev_why = "; ".join(fusion_result.accepted) \
+                                or "context only"
+                            desc = (f"[{fusion_result.decision}] {desc} "
+                                    f"| evidence: {ev_why}")
+                    if sev is not None:
+                        self._last_suspicious_ts = ts
+                        if escalate and sev == "HIGH":
+                            self._last_escalation_ts = ts
+                        events.append(Event(
+                            ts=ts, camera=self.cam_name,
+                            event_type=SUSPICIOUS_ACTIVITY, severity=sev,
+                            description=desc,
+                            track_ids=sorted(self.trigger.last_involved),
+                            confidence=0.8 if theft_chain else 0.5))
 
             for ev in events:
                 self._handle_event(ev)

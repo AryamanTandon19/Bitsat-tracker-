@@ -197,8 +197,9 @@ Every `FusionResult` carries `accepted` / `rejected` reason lists and a
       analyzer behind `hybrid.specialist.enabled` (hybrid-off = unchanged)
 - [x] **M3 (partial)** Hybrid decision line burned into the debug overlay:
       raw scores, what confirmed, and the final fusion state
-- [ ] **M2b** Wire into `app/main.py` live loop (after the offline analyzer is
-      validated on `test_vd_2.mp4`, per the handoff's STEP 9 ordering)
+- [x] **M2b** Wired into `app/main.py` live loop (specialist scoring + fusion
+      as the final severity gate, gated behind `hybrid.specialist.enabled`;
+      free-layer behaviour unchanged when disabled)
 - [ ] **M4** Incident memory: merge fused decisions into one timeline (buffer +
       refractory) instead of per-frame alerts
 - [ ] **M5** Evidence packet → Claude/VLM reviewer for `AI_REVIEW` decisions
