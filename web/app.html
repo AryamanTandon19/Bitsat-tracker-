@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VisionGuard — Demo</title>
+<style>
+:root{--bg:#050505;--text:#e8ecee;--muted:#9fb2b3;--cyan:#00f2ff;--purple:#b06bff;
+ --red:#ff8f84;--amber:#ffd28a;--green:#7ef0a2}
+*{box-sizing:border-box;margin:0;font-family:Inter,Segoe UI,system-ui,sans-serif}
+body{min-height:100vh;color:var(--text);padding:0 0 60px;
+ background:radial-gradient(1200px 600px at 20% -10%,rgba(0,242,255,.05),transparent),
+ radial-gradient(1000px 500px at 95% 5%,rgba(176,107,255,.05),transparent),var(--bg)}
+header{display:flex;align-items:center;justify-content:space-between;padding:18px 26px;
+ border-bottom:1px solid rgba(255,255,255,.08);position:sticky;top:0;backdrop-filter:blur(8px);
+ background:rgba(5,5,5,.6);z-index:5}
+.brand{font-size:19px;font-weight:800}.brand b{color:var(--cyan)}
+.who{display:flex;align-items:center;gap:14px;font-size:12px;color:var(--muted)}
+.who button{background:rgba(255,255,255,.06);color:var(--muted);border:1px solid rgba(255,255,255,.14);
+ border-radius:8px;padding:7px 12px;font-size:12px;cursor:pointer}
+.who button:hover{color:var(--text)}
+.wrap{max-width:1100px;margin:0 auto;padding:30px 26px}
+h1{font-size:26px;font-weight:800;letter-spacing:-.01em}
+.sub{color:var(--muted);font-size:13px;margin:6px 0 26px;max-width:640px}
+.demo{margin-bottom:34px;border:1px solid rgba(255,255,255,.1);border-radius:16px;overflow:hidden;
+ background:rgba(255,255,255,.02)}
+.demo .title{padding:15px 18px;font-size:15px;font-weight:700;border-bottom:1px solid rgba(255,255,255,.08)}
+.banner{display:flex;align-items:center;gap:12px;margin:14px 18px;padding:12px 16px;border-radius:12px;
+ background:rgba(147,0,10,.16);border:1px solid rgba(255,143,132,.3)}
+.banner .w{width:34px;height:34px;border-radius:9px;flex-shrink:0;background:rgba(147,0,10,.3);
+ display:flex;align-items:center;justify-content:center;font-size:17px}
+.banner h3{color:var(--red);font-size:13px;text-transform:uppercase;letter-spacing:.03em}
+video{display:block;width:100%;background:#000}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;font-size:10px;
+ font-weight:700;letter-spacing:.06em;border:1px solid}
+.chip.HIGH{background:rgba(255,143,132,.14);color:var(--red);border-color:rgba(255,143,132,.35)}
+.chip.MEDIUM{background:rgba(255,210,138,.14);color:var(--amber);border-color:rgba(255,210,138,.35)}
+.chip i{width:6px;height:6px;border-radius:50%;background:currentColor}
+.inc{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;padding:16px 18px}
+.inc .c{padding:14px 16px;border-radius:12px;background:rgba(255,255,255,.03);
+ border:1px solid rgba(255,255,255,.1);position:relative;overflow:hidden}
+.inc .c::before{content:"";position:absolute;top:0;left:0;width:100%;height:3px;
+ background:linear-gradient(90deg,var(--cyan),transparent)}
+.inc .c.HIGH::before{background:linear-gradient(90deg,var(--red),transparent)}
+.inc .c.MEDIUM::before{background:linear-gradient(90deg,var(--amber),transparent)}
+.inc .top{display:flex;justify-content:space-between;margin-bottom:8px}
+.inc .no{font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.inc .h{font-size:13px;line-height:1.4;margin-bottom:10px}
+.inc .m{font-size:11px;color:var(--muted);display:flex;gap:14px;flex-wrap:wrap}
+.inc .m b{color:var(--cyan)}
+.loading{color:var(--muted);font-size:13px;padding:40px 0;text-align:center}
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand">Vision<b>Guard</b></div>
+    <div class="who"><span id="user"></span><button id="out">Sign out</button></div>
+  </header>
+  <div class="wrap">
+    <h1>Catching theft the moment it happens</h1>
+    <div class="sub">A live look at VisionGuard on real, low-resolution night CCTV — the
+      footage every AI camera fails on. Each clip below was analyzed automatically.</div>
+    <div id="content"><div class="loading">Loading…</div></div>
+  </div>
+
+  <script src="config.js"></script>
+  <script type="module">
+    import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+    const cfg = window.VISIONGUARD_CONFIG;
+    const supabase = createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY);
+
+    // gate: no session -> back to login
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) { location.replace("login.html"); }
+    else {
+      document.getElementById("user").textContent = session.user.email;
+      render(cfg.DEMOS || []);
+    }
+
+    document.getElementById("out").addEventListener("click", async () => {
+      await supabase.auth.signOut();
+      location.replace("login.html");
+    });
+
+    function esc(s){return (s==null?"":String(s)).replace(/[&<>"]/g,
+      c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+
+    function render(demos){
+      const el = document.getElementById("content");
+      if(!demos.length){ el.innerHTML='<div class="loading">No demos configured yet.</div>'; return; }
+      el.innerHTML = demos.map(d => `
+        <div class="demo">
+          <div class="title">${esc(d.title)}</div>
+          ${d.verdict ? `<div class="banner"><div class="w">⚠️</div>
+            <div><h3>Claude verdict: ${esc(d.verdict)}</h3></div></div>` : ""}
+          <video src="${esc(d.video_url)}" controls preload="metadata"></video>
+          <div class="inc">${(d.incidents||[]).map((c,i)=>`
+            <div class="c ${esc(c.severity)}">
+              <div class="top"><span class="no">Incident ${i+1}</span>
+                <span class="chip ${esc(c.severity)}"><i></i>${esc(c.severity)}</span></div>
+              <div class="h">${esc(c.summary)}</div>
+              <div class="m"><span>🕐 <b>${esc(c.span)}</b></span>
+                <span>👤 culprit <b>${esc(c.culprit)}</b></span></div>
+            </div>`).join("")}</div>
+        </div>`).join("");
+    }
+  </script>
+</body>
+</html>
