@@ -325,6 +325,15 @@ class VideoAnalyzer:
                         .get("full_fps_video", False))
 
         while True:
+            # speed: only DECODE the frames we actually use. Frames we skip are
+            # advanced with grab() (no BGR decode, no color-convert, no
+            # enhancement) — on a 30fps source analyzed at 6fps that is ~5x less
+            # decode + enhance work than read()-ing every frame.
+            if not (full_fps or idx % step == 0):
+                if not cap.grab():
+                    break
+                idx += 1
+                continue
             ok, frame = cap.read()
             if not ok:
                 break
