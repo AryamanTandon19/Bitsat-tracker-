@@ -422,6 +422,28 @@ select option{background:#101415}
  letter-spacing:.04em}
 .threat-banner p{color:var(--muted);font-size:11px;margin-top:2px}
 
+/* incident cards (step-3 incident memory, headline of the analysis) */
+#incidents_box{display:none;margin-top:16px}
+.inc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));
+ gap:14px}
+.inc-card{padding:16px 18px;border-radius:14px;background:rgba(255,255,255,.03);
+ border:1px solid rgba(255,255,255,.1);position:relative;overflow:hidden;
+ transition:transform .2s,box-shadow .2s;cursor:pointer}
+.inc-card:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.35)}
+.inc-card::before{content:"";position:absolute;top:0;left:0;width:100%;height:3px;
+ background:linear-gradient(90deg,var(--cyan),transparent)}
+.inc-card.HIGH::before{background:linear-gradient(90deg,var(--red),transparent)}
+.inc-card.MEDIUM::before{background:linear-gradient(90deg,var(--amber),transparent)}
+.inc-card .top{display:flex;justify-content:space-between;align-items:center;
+ margin-bottom:10px}
+.inc-card .no{font-size:11px;font-weight:800;letter-spacing:.14em;
+ text-transform:uppercase;color:var(--muted)}
+.inc-card .headline{font-size:14px;font-weight:600;color:var(--text);
+ line-height:1.4;margin-bottom:12px}
+.inc-card .meta{display:flex;gap:16px;flex-wrap:wrap;font-size:11px;
+ color:var(--muted)}
+.inc-card .meta b{color:var(--cyan);font-weight:700}
+
 /* tables */
 .tbl-card{overflow:hidden;margin-top:14px}
 .tbl-head{padding:12px 16px;border-bottom:1px solid rgba(255,255,255,.1);
@@ -572,6 +594,12 @@ footer{position:fixed;bottom:0;right:0;z-index:30;padding:6px 16px;font-size:10p
  <div class="threat-banner" id="threat_banner">
   <div class="warn">&#9888;</div>
   <div><h3 id="threat_title">High threat detected</h3><p id="threat_sub"></p></div>
+ </div>
+
+ <div id="incidents_box">
+  <div class="tbl-head" style="background:none;border:none;padding:16px 2px 4px">
+   Incidents detected</div>
+  <div class="inc-grid" id="incidents_grid"></div>
  </div>
 
  <video id="up_player" controls></video>
@@ -859,6 +887,7 @@ async function analyze(){
  const player=document.getElementById('up_player');
  player.style.display='none';
  document.getElementById('threat_banner').style.display='none';
+ document.getElementById('incidents_box').style.display='none';
  const poll=setInterval(async()=>{
   const j=await (await fetch('/api/analyze/'+job_id)).json();
   st.textContent=`${j.status} \\u2014 ${Math.round(j.progress*100)}% (${j.events.length} found)`;
@@ -869,6 +898,21 @@ async function analyze(){
    <td>${esc(e.description)}</td>
    <td><a class="jump" onclick="seekTo(${e.video_time_s})">&#9654; jump</a></td></tr>`
   ).join('')||'<tr><td colspan="6" class="empty">Nothing flagged yet\\u2026</td></tr>';
+  // incident cards (merged) — the headline of the analysis
+  const incs=j.incidents||[];
+  if(incs.length){
+   document.getElementById('incidents_box').style.display='block';
+   document.getElementById('incidents_grid').innerHTML=incs.map(c=>{
+    const span=(c.start_s===c.end_s)?`${c.start_s}s`:`${c.start_s}\\u2013${c.end_s}s`;
+    const ids=(c.track_ids&&c.track_ids.length)?c.track_ids.map(t=>'#'+t).join(', '):'\\u2014';
+    return `<div class="inc-card ${esc(c.severity)}" onclick="seekTo(${c.start_s})">
+     <div class="top"><span class="no">Incident ${c.index+1}</span>${sevChip(c.severity)}</div>
+     <div class="headline">${esc(c.summary)||esc(c.event_type)}</div>
+     <div class="meta"><span>&#128337; <b>${span}</b></span>
+      <span>&#128100; culprit <b>${ids}</b></span>
+      <span>&#9654; ${c.count} alert(s)</span></div></div>`;
+   }).join('');
+  }
   // AI scene review findings
   const aiBox=document.getElementById('ai_box');
   if((j.ai_findings&&j.ai_findings.length)||j.ai_note){
