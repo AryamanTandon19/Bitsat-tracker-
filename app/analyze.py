@@ -74,6 +74,7 @@ class AnalyzeJob:
     progress: float = 0.0         # 0..1
     message: str = ""
     events: list = field(default_factory=list)   # serialized rule-based events
+    incidents: list = field(default_factory=list)   # events merged into incidents
     ai_findings: list = field(default_factory=list)   # Claude scene-review findings
     ai_verdict: str = ""                         # one-line headline verdict
     ai_note: str = ""                            # message when AI review unavailable
@@ -83,9 +84,10 @@ class AnalyzeJob:
     def public(self) -> dict:
         return {"id": self.id, "filename": self.filename, "status": self.status,
                 "progress": round(self.progress, 3), "message": self.message,
-                "events": self.events, "ai_findings": self.ai_findings,
-                "ai_verdict": self.ai_verdict, "ai_note": self.ai_note,
-                "error": self.error, "video_ready": bool(self.annotated_path)}
+                "events": self.events, "incidents": self.incidents,
+                "ai_findings": self.ai_findings, "ai_verdict": self.ai_verdict,
+                "ai_note": self.ai_note, "error": self.error,
+                "video_ready": bool(self.annotated_path)}
 
 
 def _pose_worth_running(trig_cfg: dict, detections) -> bool:
@@ -126,6 +128,41 @@ def _verdict_headline(findings: list) -> str:
                                        f.get("time_s", 0)))
     act = (top.get("activity") or "suspicious activity").strip()
     return f"{top.get('severity', 'MEDIUM')} at {top.get('time_s', 0):.0f}s — {act}"
+
+
+_SEV_RANK = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+
+
+def _merge_incidents(events: list, gap_s: float = 20.0) -> list:
+    """Collapse per-frame events into INCIDENTS so the demo shows one theft, not
+    a wall of rows. Events whose times are within `gap_s` become one incident
+    that spans start->end, carries the PEAK severity, unions the track_ids, and
+    keeps the strongest event's description as its headline."""
+    if not events:
+        return []
+    evs = sorted(events, key=lambda e: e.get("video_time_s", 0.0))
+    groups = [[evs[0]]]
+    for e in evs[1:]:
+        if e.get("video_time_s", 0.0) - groups[-1][-1].get("video_time_s", 0.0) \
+                <= gap_s:
+            groups[-1].append(e)
+        else:
+            groups.append([e])
+    incidents = []
+    for i, g in enumerate(groups):
+        peak = min(g, key=lambda e: _SEV_RANK.get(e.get("severity", "MEDIUM"), 1))
+        tids = sorted({t for e in g for t in (e.get("track_ids") or [])})
+        incidents.append({
+            "index": i,
+            "start_s": round(g[0].get("video_time_s", 0.0), 1),
+            "end_s": round(g[-1].get("video_time_s", 0.0), 1),
+            "severity": peak.get("severity", "MEDIUM"),
+            "event_type": peak.get("event_type", ""),
+            "track_ids": tids,
+            "count": len(g),
+            "summary": peak.get("description", ""),
+        })
+    return incidents
 
 
 def _open_writer(path: str, w: int, h: int, fps: float):
@@ -200,10 +237,14 @@ class VideoAnalyzer:
         try:
             job.status = "running"
             self._analyze(job, path, zones, registry)
+            gap = float((self.config.get("analyze") or {}).get(
+                "incident_gap_s", 20.0))
+            job.incidents = _merge_incidents(job.events, gap)
             if ai_review:
                 self._ai_review(job, path)
             job.status = "done"
-            job.message = (f"{len(job.events)} rule alerts, "
+            job.message = (f"{len(job.incidents)} incident(s), "
+                           f"{len(job.events)} alerts, "
                            f"{len(job.ai_findings)} AI findings")
         except Exception as e:
             log.exception("analysis failed")

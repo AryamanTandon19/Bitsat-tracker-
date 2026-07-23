@@ -161,6 +161,8 @@ analyze:                       # "upload a video and detect anomalies" feature
   max_upload_mb: 300
   full_fps_video: false        # true = smoother output video but ~4x slower
   debug_overlay: true          # burn free-layer signal values into the video
+  incident_gap_s: 20           # merge alerts within this many seconds into ONE
+                               # incident (so a theft shows as 1 event, not many)
 
 hybrid:                        # VisionGuard hybrid: specialist R3D-18 models +
                                # temporal confirmation + explainable fusion.
