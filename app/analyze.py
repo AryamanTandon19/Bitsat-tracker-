@@ -75,6 +75,7 @@ class AnalyzeJob:
     message: str = ""
     events: list = field(default_factory=list)   # serialized rule-based events
     ai_findings: list = field(default_factory=list)   # Claude scene-review findings
+    ai_verdict: str = ""                         # one-line headline verdict
     ai_note: str = ""                            # message when AI review unavailable
     annotated_path: str | None = None            # playback video path
     error: str | None = None
@@ -83,8 +84,8 @@ class AnalyzeJob:
         return {"id": self.id, "filename": self.filename, "status": self.status,
                 "progress": round(self.progress, 3), "message": self.message,
                 "events": self.events, "ai_findings": self.ai_findings,
-                "ai_note": self.ai_note, "error": self.error,
-                "video_ready": bool(self.annotated_path)}
+                "ai_verdict": self.ai_verdict, "ai_note": self.ai_note,
+                "error": self.error, "video_ready": bool(self.annotated_path)}
 
 
 def _pose_worth_running(trig_cfg: dict, detections) -> bool:
@@ -113,6 +114,18 @@ def _hybrid_overlay(fr) -> str:
                       sorted(ev.specialist_scores.items())) or "no-score"
     confirmed = ",".join(sorted(ev.specialist_confirmed)) or "-"
     return f"HYBRID {fr.decision} spec[{scores}] confirmed[{confirmed}]"
+
+
+def _verdict_headline(findings: list) -> str:
+    """One-line headline verdict for the demo: the single most severe finding,
+    stated plainly (HIGH beats MEDIUM beats LOW; earliest breaks ties)."""
+    if not findings:
+        return ""
+    rank = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+    top = min(findings, key=lambda f: (rank.get(f.get("severity", "MEDIUM"), 1),
+                                       f.get("time_s", 0)))
+    act = (top.get("activity") or "suspicious activity").strip()
+    return f"{top.get('severity', 'MEDIUM')} at {top.get('time_s', 0):.0f}s — {act}"
 
 
 def _open_writer(path: str, w: int, h: int, fps: float):
@@ -432,11 +445,16 @@ class VideoAnalyzer:
         duration = self._video_duration(path)
         focus = [e["video_time_s"] for e in job.events]
         times = smart_sample_times(duration, focus, reviewer.review_max_frames)
-        frames = self._keyframes_at_times(path, times)
+        # brighten the keyframes so Claude can SEE a dark night scene — the same
+        # low-light fix that let YOLO detect the person also lets the reviewer
+        # read the frame instead of a near-black rectangle.
+        low_light = (self.config.get("detection") or {}).get("low_light", "auto")
+        frames = self._keyframes_at_times(path, times, low_light)
         if not frames:
             job.ai_note = "could not read frames for AI review"
             return
         job.ai_findings = reviewer.review_video(frames)
+        job.ai_verdict = _verdict_headline(job.ai_findings)
         if not job.ai_findings:
             job.ai_note = "Claude reviewed the clip and found nothing clearly suspicious."
 
@@ -452,7 +470,7 @@ class VideoAnalyzer:
             cap.release()
 
     @staticmethod
-    def _keyframes_at_times(path, times):
+    def _keyframes_at_times(path, times, low_light="off"):
         cap = cv2.VideoCapture(path)
         out = []
         try:
@@ -461,6 +479,8 @@ class VideoAnalyzer:
                 ok, frame = cap.read()
                 if not ok:
                     continue
+                if low_light and low_light != "off":
+                    frame = enhance_frame(frame, low_light)
                 h, w = frame.shape[:2]
                 if w > 768:
                     frame = cv2.resize(frame, (768, int(h * 768 / w)))

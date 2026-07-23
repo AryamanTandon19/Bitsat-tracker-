@@ -882,13 +882,13 @@ async function analyze(){
     <td><a class="jump" onclick="seekTo(${x.time_s})">&#9654; jump</a></td></tr>`
    ).join('');
    const high=finds.filter(x=>x.severity==='HIGH');
-   if(high.length){
+   if(j.ai_verdict){
     const b=document.getElementById('threat_banner');
     b.style.display='flex';
     document.getElementById('threat_title').textContent=
-     'High threat: '+high[0].activity;
+     'Claude verdict: '+j.ai_verdict;
     document.getElementById('threat_sub').textContent=
-     high.length+' HIGH finding(s) \\u2014 timestamps listed below';
+     finds.length+' finding(s) \\u2014 timestamps listed below';
    }
   }
   if(j.status==='done'||j.status==='error'){clearInterval(poll);
