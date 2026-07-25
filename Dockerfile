@@ -21,5 +21,15 @@ COPY . .
 # console at "/" automatically.
 RUN rm -f app/demo.html
 
+# Cloud profile, derived from config.yaml so there is one source of truth:
+#   - no cameras: a hosted box has no CCTV, and pointing at a missing file made
+#     the worker retry forever and show a dead tile. Upload/analysis is the
+#     feature investors actually use.
+#   - no HTTP Basic auth: the app has its own login page; the browser popup on
+#     top of it was a confusing double login.
+RUN python -c "import yaml; c=yaml.safe_load(open('config.yaml')); c['cameras']=[]; \
+c.setdefault('dashboard',{}).setdefault('auth',{})['enabled']=False; \
+yaml.safe_dump(c, open('config.cloud.yaml','w'), sort_keys=False)"
+
 EXPOSE 8000
-CMD ["python", "-m", "app.main"]
+CMD ["python", "-m", "app.main", "--config", "config.cloud.yaml"]

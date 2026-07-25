@@ -665,7 +665,21 @@ document.getElementById('cams').innerHTML=cams.length?cams.map(c=>
     <span class="chip ok" id="st_${esc(c)}"><i></i>LIVE</span>
    </div>
   </div>`).join('')
- :'<div class="glass cam-card empty">No cameras configured — add one in config.yaml</div>';
+ :'<div class="glass cam-card empty" style="padding:28px;line-height:1.6">'+
+  '<b style="color:var(--text)">No cameras connected to this preview.</b><br>'+
+  'VisionGuard installs on-site and reads the existing CCTV in a building, so '+
+  'there '+
+  'are no live feeds on a hosted demo.<br><br>'+
+  'Open <b style="color:var(--text)">Forensic Lab</b> to upload a clip and watch '+
+  'the AI analyse real footage.</div>';
+
+// With no cameras, drop the "Live" badge and the live-feed wording so the page
+// never claims something it is not showing.
+if(!cams.length){
+ const lp=document.querySelector('#view-view .live-pill'); if(lp)lp.style.display='none';
+ const sub=document.querySelector('#view-view .page-head p');
+ if(sub)sub.textContent='Live feeds appear here once cameras are connected on-site.';
+}
 
 function openCam(name){
  document.getElementById('cam-modal-img').src='/stream/'+encodeURIComponent(name);
