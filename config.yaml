@@ -199,7 +199,7 @@ assistant:                     # Claude tuning chatbot in the dashboard
 dashboard:
   host: "0.0.0.0"      # 0.0.0.0 = reachable on the LAN; 127.0.0.1 = this PC only
   port: 8000
-  auth:                # HTTP Basic login for the dashboard (browser prompts)
-    enabled: true
-    username: "admin"
-    password: ""       # REQUIRED: set a strong password before first run
+  auth:                # HTTP Basic login (browser popup) — OFF; the app has its
+    enabled: false     # own VisionGuard login page (YC / 11012235), so this
+    username: "admin"  # server-level popup is disabled to avoid a double login.
+    password: ""
