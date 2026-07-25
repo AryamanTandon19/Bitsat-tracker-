@@ -229,18 +229,19 @@ body:not(.authed) .app-chrome{display:none!important}
 <section class="view" id="view-lab">
  <div class="page-head">
   <h1>Forensic Lab</h1>
-  <p>Upload CCTV footage and the AI actually watches it — flagging theft, break-ins and vandalism with timestamps. Try the sample case below.</p>
+  <p>How VisionGuard reviews footage: it watches a clip and flags theft, break-ins and vandalism with timestamps. Below is a recorded walkthrough of one such analysis.</p>
  </div>
- <div class="dropzone" id="dropzone" onclick="document.getElementById('up_file').click()">
-  <div class="drop-orb"><svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg></div>
-  <h2>Ingest CCTV Footage</h2>
-  <p>Drag &amp; drop a clip here, or browse. mp4 / avi / mov / mkv / dav — deleted after analysis.</p>
-  <button class="btn" type="button">Browse &amp; analyze a clip</button>
-  <input type="file" id="up_file" accept="video/*" hidden>
+ <div class="dropzone">
+  <div class="drop-orb"><svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div>
+  <h2>Recorded sample case</h2>
+  <p>A walkthrough of one real analysis, replayed step by step. This preview does
+     not run the detector, so it cannot analyse footage you upload.</p>
+  <button class="btn" id="lab-btn" onclick="runLab()">Play sample case</button>
  </div>
- <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:14px">
-  <button class="btn" id="lab-btn" style="background:var(--surface-2);color:var(--text)" onclick="runLab()">Run built-in sample</button>
-  <span class="lab-note">The upload of a clip and its analysis might take some time in the prototype review, but it will produce the desired result.</span>
+ <div style="margin-top:14px">
+  <span class="lab-note"><b>Want your own footage analysed?</b> That runs in the
+   live app, where the detector actually watches the video. Analysis there takes
+   a couple of minutes per clip on a prototype server.</span>
  </div>
  <div class="lab-progress" id="lab-prog"><b id="lab-bar"></b></div>
  <div class="status-line" id="lab-status" style="margin-top:8px"></div>
@@ -484,12 +485,7 @@ function sevCol(s){return s==='HIGH'?'var(--red-deep)':s==='MEDIUM'?'var(--amber
 
 // ---------- forensic lab demo ----------
 let labRun=false;
-function wireUpload(){const up=document.getElementById('up_file'),dz=document.getElementById('dropzone');
- if(!up||!dz)return;
- up.addEventListener('change',()=>{if(up.files[0])runLab(up.files[0].name);});
- dz.addEventListener('dragover',e=>{e.preventDefault();dz.style.borderColor='var(--cyan)';});
- dz.addEventListener('dragleave',()=>{dz.style.borderColor='';});
- dz.addEventListener('drop',e=>{e.preventDefault();dz.style.borderColor='';if(e.dataTransfer.files[0])runLab(e.dataTransfer.files[0].name);});}
+
 function runLab(name){if(labRun)return;labRun=true;
  const fname=name||'sample_alley.mp4';
  const btn=document.getElementById('lab-btn');btn.disabled=true;
@@ -517,5 +513,5 @@ function labDone(){const st=document.getElementById('lab-status');
  document.getElementById('lab-btn').disabled=false;labRun=false;}
 
 // ---------- boot ----------
-function boot(){buildWall();startTicker();renderEvents();wireUpload();}
+function boot(){buildWall();startTicker();renderEvents();}
 </script>
