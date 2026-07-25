@@ -13,6 +13,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Pre-download the YOLO weights at build time. Otherwise the very first upload
+# stalls (or fails) while it fetches them from GitHub at request time.
+RUN python -c "from ultralytics import YOLO; YOLO('yolo11n.pt')"
+
 # App code.
 COPY . .
 

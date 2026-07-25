@@ -2,6 +2,10 @@
 # grab prebuilt wheels for your Python version instead of compiling from source
 # (compiling needs a C/C++ toolchain, which most Windows machines don't have).
 ultralytics>=8.3.58            # YOLO11/YOLOv8 + ByteTrack (pulls torch)
+lap>=0.5.12                    # ByteTrack's assignment solver. Ultralytics only
+                               # pip-installs this the first time tracking runs,
+                               # which fails (or needs a restart) on a container
+                               # — so install it up front.
 opencv-python>=4.11            # 4.11+ ships Python 3.13 wheels (4.10 did not)
 numpy>=2.1                     # 2.1+ ships Python 3.13 wheels (1.26 did not)
 PyYAML>=6.0.2
