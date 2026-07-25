@@ -487,7 +487,9 @@ footer{position:fixed;bottom:0;right:0;z-index:30;padding:6px 16px;font-size:10p
  text-transform:uppercase;letter-spacing:.14em;color:var(--muted);font-weight:600}
 .login-card input{width:100%}
 .login-err{margin-top:12px;font-size:13px;color:var(--red-deep)}
-.login-foot{margin-top:16px;text-align:center;font-size:12px;color:var(--muted-soft)}
+.login-note{margin-top:16px;padding:10px 12px;border-radius:10px;
+ background:var(--surface-2);font-size:11px;line-height:1.55;color:var(--muted)}
+.login-foot{margin-top:12px;text-align:center;font-size:12px;color:var(--muted-soft)}
 
 @media(prefers-reduced-motion:reduce){
  *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;
@@ -506,6 +508,8 @@ footer{position:fixed;bottom:0;right:0;z-index:30;padding:6px 16px;font-size:10p
   <input id="lg_pass" type="password" autocomplete="current-password">
   <div id="lg_err" class="login-err"></div>
   <button class="btn grad" type="submit" style="width:100%;margin-top:20px">Sign in</button>
+  <p class="login-note">This is a working prototype under active development, so
+   some steps may be slow or behave unexpectedly.</p>
   <p class="login-foot">Access is by invitation.</p>
  </form>
 </div>
