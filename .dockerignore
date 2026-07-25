@@ -1,0 +1,14 @@
+.git
+frontend
+web
+public
+node_modules
+__pycache__
+*.pyc
+*.db
+clips
+testset
+*.mp4
+*.avi
+.pytest_cache
+.venv
