@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import threading
 import time
 
@@ -334,9 +335,10 @@ def main():
             import uvicorn
             from .dashboard import create_app
             dcfg = config.get("dashboard", {})
+            # Honor a PORT env var (Railway/Render/most hosts set it); else config.
             uvicorn.run(create_app(ctx),
                         host=dcfg.get("host", "0.0.0.0"),
-                        port=int(dcfg.get("port", 8000)),
+                        port=int(os.environ.get("PORT") or dcfg.get("port", 8000)),
                         log_level="warning")
     except KeyboardInterrupt:
         pass
