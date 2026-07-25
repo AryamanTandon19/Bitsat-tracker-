@@ -57,18 +57,24 @@ def create_app(ctx) -> FastAPI:
         return PAGE.replace("__CAMERAS__",
                             ",".join(f'"{n}"' for n in ctx.workers))
 
+    # The real console is the only thing this server serves. It used to fall
+    # back to a bundled static demo page, which meant a stale copy could shadow
+    # the working app and show canned results — never again.
+    # no-store keeps a browser from holding on to an old copy of the shell.
+    _NO_CACHE = {"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"}
+
     @app.get("/", response_class=HTMLResponse)
     def index():
-        # Investor / customer prototype is the front door. The full live
-        # console (real camera streams + real analysis) stays at /console.
-        demo = Path(__file__).with_name("demo.html")
-        if demo.exists():
-            return demo.read_text(encoding="utf-8")
-        return _console_html()
+        return HTMLResponse(_console_html(), headers=_NO_CACHE)
 
     @app.get("/console", response_class=HTMLResponse)
     def console():
-        return _console_html()
+        return HTMLResponse(_console_html(), headers=_NO_CACHE)
+
+    @app.get("/health")
+    def health():
+        """Cheap liveness + build check: confirms which UI this server serves."""
+        return {"ok": True, "ui": "console", "cameras": list(ctx.workers)}
 
     # ---------------------------------------------------------- live view
     async def mjpeg_gen(camera: str):
