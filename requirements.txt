@@ -23,7 +23,10 @@ imageio-ffmpeg==0.5.1          # bundles ffmpeg; H.264 clips play in-browser
 
 # Optional
 # onvif-zeep==0.2.12           # Option C: ONVIF camera discovery
-# anthropic==0.43.0            # optional VLM incident descriptions
+anthropic>=0.40.0              # Smart AI Review + VLM incident descriptions.
+                               # Required whenever ai_review.enabled is true —
+                               # without it the reviewer silently stays off even
+                               # with ANTHROPIC_API_KEY set.
 
 # Dev
 pytest==8.3.4

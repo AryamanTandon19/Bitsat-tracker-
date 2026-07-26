@@ -66,17 +66,28 @@ class TieredReviewer:
         self.daily_cap = int(self.cfg.get("daily_cap_per_camera", 100))
         self.usd_to_inr = float(self.cfg.get("usd_to_inr", 90.0))
         self._client = None
+        # Why the reviewer is off, so the UI can say something actionable
+        # instead of always blaming a missing key.
+        self.off_reason = ""
         if self.enabled:
-            api_key = os.environ.get(
-                self.cfg.get("api_key_env", "ANTHROPIC_API_KEY"), "")
+            key_env = self.cfg.get("api_key_env", "ANTHROPIC_API_KEY")
+            api_key = os.environ.get(key_env, "").strip()
             if api_key:
                 try:
                     import anthropic
                     self._client = anthropic.Anthropic(api_key=api_key)
+                except ImportError as e:
+                    self.off_reason = ("the anthropic SDK is not installed on "
+                                       "the server (pip install anthropic)")
+                    log.warning("anthropic SDK not installed — AI review off: %s", e)
                 except Exception as e:
-                    log.warning("anthropic SDK unavailable — AI review off: %s", e)
+                    self.off_reason = f"the Anthropic client failed to start ({e})"
+                    log.warning("anthropic client init failed — AI review off: %s", e)
             else:
-                log.warning("ai_review.enabled but no API key in env — AI review off")
+                self.off_reason = (f"no API key found in the {key_env} "
+                                   "environment variable")
+                log.warning("ai_review.enabled but %s is unset — AI review off",
+                            key_env)
 
     @property
     def available(self) -> bool:

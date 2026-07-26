@@ -68,14 +68,26 @@ class VLMDescriber:
         self.review_model = cfg.get("review_model", "claude-opus-4-8")
         self.max_keyframes = int(cfg.get("max_keyframes", 6))
         self.review_max_frames = int(cfg.get("review_max_frames", 16))
-        self.api_key = os.environ.get(cfg.get("api_key_env", "ANTHROPIC_API_KEY"), "")
+        key_env = cfg.get("api_key_env", "ANTHROPIC_API_KEY")
+        self.api_key = os.environ.get(key_env, "").strip()
         self._client = None
+        # Why the reviewer is off, so callers can show an accurate message
+        # rather than always blaming a missing key.
+        self.off_reason = ""
         if self.enabled and self.api_key:
             try:
                 import anthropic
                 self._client = anthropic.Anthropic(api_key=self.api_key)
+            except ImportError as e:
+                self.off_reason = ("the anthropic SDK is not installed on the "
+                                   "server (pip install anthropic)")
+                log.warning("anthropic SDK not installed, VLM disabled: %s", e)
             except Exception as e:
-                log.warning("anthropic SDK unavailable, VLM disabled: %s", e)
+                self.off_reason = f"the Anthropic client failed to start ({e})"
+                log.warning("anthropic client init failed, VLM disabled: %s", e)
+        elif self.enabled:
+            self.off_reason = (f"no API key found in the {key_env} environment "
+                               "variable")
 
     @property
     def available(self) -> bool:

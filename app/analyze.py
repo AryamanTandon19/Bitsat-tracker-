@@ -489,8 +489,9 @@ class VideoAnalyzer:
         from .vlm import VLMDescriber
         reviewer = VLMDescriber({**self.config.get("vlm", {}), "enabled": True})
         if not reviewer.available:
-            job.ai_note = ("Smart AI Review needs an Anthropic API key. Set the "
-                           "ANTHROPIC_API_KEY environment variable and try again.")
+            reason = getattr(reviewer, "off_reason", "") or "it is not configured"
+            job.ai_note = (f"Smart AI Review is off because {reason}. "
+                           "The rule-based results below are unaffected.")
             return
         duration = self._video_duration(path)
         focus = [e["video_time_s"] for e in job.events]
