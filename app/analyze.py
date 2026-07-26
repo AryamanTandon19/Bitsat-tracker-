@@ -78,6 +78,13 @@ class AnalyzeJob:
     ai_findings: list = field(default_factory=list)   # Claude scene-review findings
     ai_verdict: str = ""                         # one-line headline verdict
     ai_note: str = ""                            # message when AI review unavailable
+    # What the AI layer concluded, so the UI doesn't have to read ai_note prose:
+    #   ""        not requested
+    #   "threat"  reviewed, found something
+    #   "clear"   reviewed, found nothing — a genuine all-clear, not a failure
+    #   "off"     could not run (no SDK / no key / disabled)
+    #   "error"   tried to run and failed
+    ai_status: str = ""
     annotated_path: str | None = None            # playback video path
     error: str | None = None
 
@@ -86,7 +93,8 @@ class AnalyzeJob:
                 "progress": round(self.progress, 3), "message": self.message,
                 "events": self.events, "incidents": self.incidents,
                 "ai_findings": self.ai_findings, "ai_verdict": self.ai_verdict,
-                "ai_note": self.ai_note, "error": self.error,
+                "ai_note": self.ai_note, "ai_status": self.ai_status,
+                "error": self.error,
                 "video_ready": bool(self.annotated_path)}
 
 
@@ -490,6 +498,7 @@ class VideoAnalyzer:
         reviewer = VLMDescriber({**self.config.get("vlm", {}), "enabled": True})
         if not reviewer.available:
             reason = getattr(reviewer, "off_reason", "") or "it is not configured"
+            job.ai_status = "off"
             job.ai_note = (f"Smart AI Review is off because {reason}. "
                            "The rule-based results below are unaffected.")
             return
@@ -502,12 +511,17 @@ class VideoAnalyzer:
         low_light = (self.config.get("detection") or {}).get("low_light", "auto")
         frames = self._keyframes_at_times(path, times, low_light)
         if not frames:
+            job.ai_status = "error"
             job.ai_note = "could not read frames for AI review"
             return
         job.ai_findings = reviewer.review_video(frames)
         job.ai_verdict = _verdict_headline(job.ai_findings)
-        if not job.ai_findings:
-            job.ai_note = "Claude reviewed the clip and found nothing clearly suspicious."
+        if job.ai_findings:
+            job.ai_status = "threat"
+        else:
+            job.ai_status = "clear"
+            job.ai_note = ("Claude watched the footage and found no theft, "
+                           "break-in or vandalism.")
 
     @staticmethod
     def _video_duration(path) -> float:

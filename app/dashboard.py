@@ -458,13 +458,22 @@ select option{background:#fff}
  box-shadow:var(--shadow);display:none;margin:14px 0;background:#000}
 .status-line{font-size:12px;color:var(--muted)}
 
-/* AI threat banner */
-.threat-banner{display:none;margin:14px 0;padding:14px 18px;border-radius:14px;
+/* AI verdict banner — red when Claude finds something, green when it clears
+   the clip. An all-clear is a real result, so it gets the same weight as an
+   alert rather than a footnote. */
+.threat-banner{display:none;margin:14px 0;padding:16px 20px;border-radius:14px;
  background:color-mix(in oklab,var(--red) 8%,white);
  border:1px solid color-mix(in oklab,var(--red) 30%,transparent);
- border-left:3px solid var(--red)}
-.threat-banner h3{color:var(--red-deep);font-size:15px;text-transform:uppercase;letter-spacing:.04em}
-.threat-banner p{color:var(--muted);font-size:11px;margin-top:2px}
+ border-left:4px solid var(--red)}
+.threat-banner h3{color:var(--red-deep);font-size:16px;text-transform:uppercase;letter-spacing:.04em}
+.threat-banner p{color:var(--muted);font-size:12px;margin-top:4px;line-height:1.5}
+.threat-banner.clear{background:color-mix(in oklab,var(--green) 9%,white);
+ border-color:color-mix(in oklab,var(--green) 32%,transparent);
+ border-left-color:var(--green)}
+.threat-banner.clear h3{color:var(--green)}
+.threat-banner .vhead{display:flex;align-items:center;gap:10px}
+.threat-banner .vdot{width:11px;height:11px;border-radius:50%;background:var(--red);flex-shrink:0}
+.threat-banner.clear .vdot{background:var(--green)}
 
 /* incident cards */
 #incidents_box{display:none;margin-top:16px}
@@ -615,7 +624,8 @@ footer{position:fixed;bottom:0;right:0;z-index:30;padding:6px 16px;font-size:10p
  </div>
 
  <div class="threat-banner" id="threat_banner">
-  <h3 id="threat_title">High threat detected</h3><p id="threat_sub"></p>
+  <div class="vhead"><span class="vdot"></span><h3 id="threat_title"></h3></div>
+  <p id="threat_sub"></p>
  </div>
 
  <div id="incidents_box">
@@ -846,12 +856,23 @@ async function analyze(){
     <td>${esc(x.activity)}</td>
     <td><a class="jump" onclick="seekTo(${x.time_s})">jump</a></td></tr>`
    ).join('');
-   if(j.ai_verdict){
-    const b=document.getElementById('threat_banner');
-    b.style.display='block';
-    document.getElementById('threat_title').textContent='Claude verdict: '+j.ai_verdict;
-    document.getElementById('threat_sub').textContent=
-     finds.length+' finding(s) — timestamps listed below';
+   // Headline the verdict either way. A cleared clip is a real answer — it is
+   // what rules out a false alarm — so it gets the same banner, in green.
+   const b=document.getElementById('threat_banner');
+   const t=document.getElementById('threat_title');
+   const sub=document.getElementById('threat_sub');
+   if(j.ai_status==='threat'||j.ai_verdict){
+    b.style.display='block'; b.classList.remove('clear');
+    t.textContent='Threat confirmed — '+j.ai_verdict;
+    sub.textContent=finds.length+' finding(s) — timestamps listed below.';
+   }else if(j.ai_status==='clear'){
+    b.style.display='block'; b.classList.add('clear');
+    t.textContent='All clear — no threat found';
+    const n=(j.incidents||[]).length;
+    sub.textContent='Claude watched the footage and found no theft, break-in '+
+     'or vandalism.'+(n?' The '+n+' rule-based alert(s) below look like a false alarm.':'');
+   }else{
+    b.style.display='none'; b.classList.remove('clear');
    }
   }
   if(j.status==='done'||j.status==='error'){clearInterval(poll);
