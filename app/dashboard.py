@@ -9,9 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import secrets
 import tempfile
 from pathlib import Path
+
+# Bump when shipping a fix that must be verifiable in production. /health
+# echoes it, so "is my change actually live?" has a definite answer.
+BUILD = "2026-07-26-ai-review-sdk"
 
 from fastapi import (Depends, FastAPI, File, Form, HTTPException, Request,
                      UploadFile)
@@ -73,8 +78,31 @@ def create_app(ctx) -> FastAPI:
 
     @app.get("/health")
     def health():
-        """Cheap liveness + build check: confirms which UI this server serves."""
-        return {"ok": True, "ui": "console", "cameras": list(ctx.workers)}
+        """Liveness + build check. Reports whether Smart AI Review can actually
+        run, so a stale image or a missing key is visible without uploading a
+        clip — the two failures look identical from the UI otherwise."""
+        try:
+            import anthropic
+            sdk = getattr(anthropic, "__version__", "installed")
+        except ImportError:
+            sdk = None
+        key_env = (ctx.config.get("vlm") or {}).get("api_key_env",
+                                                    "ANTHROPIC_API_KEY")
+        from .vlm import VLMDescriber
+        reviewer = VLMDescriber({**(ctx.config.get("vlm") or {}), "enabled": True})
+        return {
+            "ok": True,
+            "ui": "console",
+            "build": BUILD,
+            "cameras": list(ctx.workers),
+            "ai_review": {
+                "available": reviewer.available,
+                "anthropic_sdk": sdk,
+                "key_env": key_env,
+                "key_present": bool(os.environ.get(key_env, "").strip()),
+                "off_reason": reviewer.off_reason or None,
+            },
+        }
 
     # ---------------------------------------------------------- live view
     async def mjpeg_gen(camera: str):
