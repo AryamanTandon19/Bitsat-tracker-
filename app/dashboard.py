@@ -20,11 +20,13 @@ BUILD = "2026-07-26-ai-review-sdk"
 
 from fastapi import (Depends, FastAPI, File, Form, HTTPException, Request,
                      UploadFile)
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               Response, StreamingResponse)
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from . import assistant as assistant_mod
 from . import clips as clips_mod
+from . import operator as operator_mod
 from .plates import normalize_plate
 
 log = logging.getLogger(__name__)
@@ -75,6 +77,29 @@ def create_app(ctx) -> FastAPI:
     @app.get("/console", response_class=HTMLResponse)
     def console():
         return HTMLResponse(_console_html(), headers=_NO_CACHE)
+
+    # ------------------------------------------- operator app (guards' PWA)
+    @app.get("/operator", response_class=HTMLResponse)
+    def operator():
+        return HTMLResponse(operator_mod.PAGE, headers=_NO_CACHE)
+
+    @app.get("/operator/manifest.webmanifest")
+    def operator_manifest():
+        return Response(operator_mod.manifest_json(),
+                        media_type="application/manifest+json")
+
+    @app.get("/operator/sw.js")
+    def operator_sw():
+        # never cached: the service worker is how a stale app gets replaced
+        return Response(operator_mod.SW, media_type="application/javascript",
+                        headers=_NO_CACHE)
+
+    @app.get("/operator/icon-{size}.png")
+    def operator_icon(size: int):
+        if size not in (192, 512):
+            raise HTTPException(404, "no such icon")
+        return Response(operator_mod.icon_png(size), media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
 
     @app.get("/health")
     def health():
