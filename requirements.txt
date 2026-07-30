@@ -16,10 +16,13 @@ uvicorn==0.34.0
 python-multipart==0.0.20
 imageio-ffmpeg==0.5.1          # bundles ffmpeg; H.264 clips play in-browser
 
-# Plate OCR — OPTIONAL (number-plate reading; not needed for the theft demo).
-# The app runs fine without it. Uncomment one to enable licence-plate reading.
-# fast-plate-ocr>=0.3.0        # preferred, much lighter
-# easyocr==1.7.2               # fallback OCR (heavier; uncomment if needed)
+# Plate OCR — required for the vehicle registry, visitor log, known-vs-unknown
+# vehicle checks and journey tracking. Without it plates read as unreadable and
+# every plate-dependent feature silently does nothing.
+# NOTE: the [onnx] extra is NOT optional — the bare package imports but raises
+# "ONNX Runtime is not installed" the first time it runs.
+fast-plate-ocr[onnx]>=0.3.0
+# easyocr==1.7.2               # heavier fallback; only needed if ONNX is a problem
 
 # Optional
 # onvif-zeep==0.2.12           # Option C: ONVIF camera discovery

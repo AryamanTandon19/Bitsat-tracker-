@@ -107,10 +107,17 @@ class PlateReader:
 
         backend = self.cfg.get("ocr_backend", "auto")
         if backend in ("auto", "fast-plate-ocr"):
+            model = self.cfg.get("ocr_model", "global-plates-mobile-vit-v2-model")
             try:
-                from fast_plate_ocr import ONNXPlateRecognizer
-                self._ocr = ONNXPlateRecognizer("global-plates-mobile-vit-v2-model")
+                # fast-plate-ocr >= 1.0 renamed the class; keep the old name
+                # working so either version of the package is usable.
+                try:
+                    from fast_plate_ocr import LicensePlateRecognizer as _Rec
+                except ImportError:
+                    from fast_plate_ocr import ONNXPlateRecognizer as _Rec
+                self._ocr = _Rec(model)
                 self._ocr_kind = "fast-plate-ocr"
+                log.info("plate OCR ready: fast-plate-ocr (%s)", model)
                 return
             except Exception as e:  # pragma: no cover
                 if backend == "fast-plate-ocr":
@@ -189,7 +196,12 @@ class PlateReader:
                 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                 out = self._ocr.run(gray)
                 if out:
-                    return str(out[0]).replace("_", "")
+                    # >= 1.0 yields PlatePrediction objects; older versions
+                    # yielded plain strings. str() on a prediction would return
+                    # the repr, so read .plate when it is there.
+                    first = out[0]
+                    text = getattr(first, "plate", first)
+                    return str(text).replace("_", "")
             elif self._ocr_kind == "easyocr":
                 results = self._ocr.readtext(img, detail=1)
                 results = [r for r in results if r[2] >= self.min_conf]

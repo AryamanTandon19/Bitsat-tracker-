@@ -90,11 +90,19 @@ def create_app(ctx) -> FastAPI:
                                                     "ANTHROPIC_API_KEY")
         from .vlm import VLMDescriber
         reviewer = VLMDescriber({**(ctx.config.get("vlm") or {}), "enabled": True})
+        # Plate OCR is a hard dependency for the registry, visitor log and
+        # journey tracking, and it fails silently — so report it here too.
+        from .plates import PlateReader
+        _pr = PlateReader({**(ctx.config.get("plates") or {}), "enabled": True})
         return {
             "ok": True,
             "ui": "console",
             "build": BUILD,
             "cameras": list(ctx.workers),
+            "plate_ocr": {
+                "available": _pr._ocr is not None,
+                "backend": _pr._ocr_kind or None,
+            },
             "ai_review": {
                 "available": reviewer.available,
                 "anthropic_sdk": sdk,
