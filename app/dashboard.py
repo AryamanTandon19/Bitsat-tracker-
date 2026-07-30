@@ -140,7 +140,57 @@ def create_app(ctx) -> FastAPI:
     # -------------------------------------------------------------- events
     @app.get("/api/events")
     def events(limit: int = 100):
-        return ctx.db.recent_events(limit)
+        rows = ctx.db.recent_events(limit)
+        # attach the triage verdict so the operator app can show what a
+        # colleague has already dealt with instead of asking twice
+        verdicts = ctx.db.event_verdicts([r["id"] for r in rows])
+        for r in rows:
+            v = verdicts.get(r["id"])
+            r["verdict"] = v["verdict"] if v else None
+            r["verdict_by"] = v["user_name"] if v else None
+        return rows
+
+    @app.post("/api/events/{event_id}/feedback")
+    def event_feedback(event_id: int, verdict: str = Form(...),
+                       user_name: str = Form("")):
+        """A guard marking an alert real or a false alarm. This is the label
+        the detection layer is tuned against, so it is worth one tap."""
+        if verdict not in ("real", "false_alarm"):
+            raise HTTPException(400, "verdict must be 'real' or 'false_alarm'")
+        if ctx.db.get_event(event_id) is None:
+            raise HTTPException(404, "event not found")
+        ctx.db.insert_feedback(event_id, verdict, user_name.strip() or "operator")
+        return {"ok": True, "event_id": event_id, "verdict": verdict}
+
+    # ------------------------------------------- notices (to residents)
+    @app.get("/api/notices")
+    def notices(limit: int = 50):
+        return ctx.db.recent_notices(min(limit, 200))
+
+    @app.post("/api/notices")
+    def notice_add(title: str = Form(...), body: str = Form(...),
+                   author: str = Form(""), audience: str = Form("all"),
+                   flat_number: str = Form("")):
+        if not title.strip() or not body.strip():
+            raise HTTPException(400, "title and body are required")
+        if audience not in ("all", "flat"):
+            raise HTTPException(400, "audience must be 'all' or 'flat'")
+        if audience == "flat" and not flat_number.strip():
+            raise HTTPException(400, "flat_number is required for audience=flat")
+        nid = ctx.db.add_notice(title.strip(), body.strip(),
+                                author.strip() or "committee", audience,
+                                flat_number.strip())
+        sent = 0
+        notifier = getattr(ctx, "notifier", None)
+        if notifier is not None:
+            try:
+                sent = notifier.broadcast_notice(title.strip(), body.strip(),
+                                                 audience, flat_number.strip())
+            except Exception:
+                log.exception("notice broadcast failed")
+        ctx.db.mark_notice_sent(nid, sent)
+        # sent=0 is normal when Telegram is off — the notice is still recorded
+        return {"ok": True, "id": nid, "recipients": sent}
 
     @app.get("/api/status")
     def status():

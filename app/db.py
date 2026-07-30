@@ -115,6 +115,18 @@ CREATE TABLE IF NOT EXISTS feedback (
     user_name TEXT,
     ts REAL NOT NULL
 );
+-- Committee/guard announcements to residents, written from the operator app.
+CREATE TABLE IF NOT EXISTS notices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    author TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    audience TEXT NOT NULL DEFAULT 'all',   -- 'all' | 'flat'
+    flat_number TEXT,                       -- set when audience = 'flat'
+    sent_ts REAL,                           -- NULL = not delivered yet
+    recipients INTEGER NOT NULL DEFAULT 0
+);
 """
 
 # columns added after first release — applied with ALTER TABLE on startup so
@@ -399,6 +411,48 @@ class Database:
             cur = self._conn.execute(
                 "SELECT verdict, COUNT(*) AS n FROM feedback GROUP BY verdict")
             return {r["verdict"]: r["n"] for r in cur.fetchall()}
+
+    def event_verdicts(self, event_ids: list[int]) -> dict[int, dict]:
+        """Latest verdict per event — what the operator app shows as 'already
+        triaged' so two guards don't work the same alert twice."""
+        if not event_ids:
+            return {}
+        marks = ",".join("?" * len(event_ids))
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT event_id, verdict, user_name, ts FROM feedback"
+                f" WHERE event_id IN ({marks}) ORDER BY id ASC",
+                event_ids).fetchall()
+        # ascending, so the last write for an event wins
+        return {r["event_id"]: dict(r) for r in rows}
+
+    # -- notices (committee -> members) --------------------------------------
+    def add_notice(self, title: str, body: str, author: str,
+                   audience: str = "all", flat_number: str = "") -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO notices (ts, author, title, body, audience,"
+                " flat_number) VALUES (?, ?, ?, ?, ?, ?)",
+                (time.time(), author, title, body, audience, flat_number))
+            self._conn.commit()
+            nid = cur.lastrowid
+        self.append_audit(author, "NOTICE", {"id": nid, "title": title,
+                                             "audience": audience})
+        return nid
+
+    def recent_notices(self, limit: int = 50) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM notices ORDER BY id DESC LIMIT ?",
+                (limit,)).fetchall()
+            return [dict(r) for r in rows]
+
+    def mark_notice_sent(self, notice_id: int, recipients: int):
+        with self._lock:
+            self._conn.execute(
+                "UPDATE notices SET sent_ts = ?, recipients = ? WHERE id = ?",
+                (time.time(), recipients, notice_id))
+            self._conn.commit()
 
     def notifications_for_incident(self, incident_id: int) -> int:
         with self._lock:

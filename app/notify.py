@@ -162,6 +162,26 @@ class TelegramNotifier:
         lines.append(f"\U0001F4C4 {desc}")
         return "\n".join(lines)
 
+    def broadcast_notice(self, title: str, body: str, audience: str = "all",
+                         flat_number: str = "") -> int:
+        """Push a committee announcement to residents. Returns how many chats
+        it reached — 0 (not an error) when Telegram is off or nobody in the
+        registry has a chat id yet."""
+        if not self.enabled or not self.token:
+            return 0
+        chats: dict[str, str] = {}
+        if audience == "flat" and flat_number:
+            for v in self.db.list_vehicles():
+                if v.get("flat_number") == flat_number and v.get("telegram_chat_id"):
+                    chats[str(v["telegram_chat_id"])] = str(v["telegram_chat_id"])
+        else:
+            chats.update({v: v for v in self.chat_ids.values()})
+            for v in self.db.list_vehicles():
+                if v.get("telegram_chat_id"):
+                    chats[str(v["telegram_chat_id"])] = str(v["telegram_chat_id"])
+        text = f"{title}\n\n{body}" if title else body
+        return sum(1 for c in chats.values() if self._send_text(c, text))
+
     def _send_text(self, chat_id: str, text: str, keyboard: dict | None = None) -> bool:
         try:
             payload = {"chat_id": chat_id, "text": text}
