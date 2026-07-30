@@ -76,6 +76,14 @@ class CameraPipeline(threading.Thread):
         self._last_suspicious_ts = 0.0
         self._last_escalation_ts = 0.0
         self._trig_flags: dict[int, float] = {}
+        # visitor log: only gate-facing cameras write to the register, so a
+        # parking camera watching the same cars all day doesn't log crossings.
+        vl = ctx.config.get("visitor_log") or {}
+        gate_cams = vl.get("cameras") or []
+        self.visitor_log = bool(vl.get("enabled", True)) and \
+            (not gate_cams or name in gate_cams)
+        self.vl_cfg = vl
+        self._logged_tracks: dict[int, float] = {}   # track_id -> ts logged
 
     def stop(self):
         self._stop.set()
@@ -129,6 +137,9 @@ class CameraPipeline(threading.Thread):
                     plate_info[d.track_id] = {
                         "plate": match or plate,
                         "registered": match is not None}
+
+            if self.visitor_log and plate_info:
+                self._log_gate_crossings(plate_info, ts)
 
             events = self.rules.update(detections, ts, plate_info)
             mean, lap = frame_stats(frame)
@@ -228,6 +239,38 @@ class CameraPipeline(threading.Thread):
             delay = interval - (time.time() - t0)
             if delay > 0:
                 self._stop.wait(delay)
+
+    def _log_gate_crossings(self, plate_info: dict, ts: float):
+        """One gate crossing per tracked vehicle, not per frame.
+
+        A vehicle keeps the same track id for as long as it stays in view, so
+        the track id is the natural unit of "one pass through the gate". The
+        time debounce inside the DB is the backstop for when the tracker drops
+        and re-acquires the same car under a new id.
+        """
+        debounce = float(self.vl_cfg.get("debounce_s", 60.0))
+        min_visit = float(self.vl_cfg.get("min_visit_s", 30.0))
+        for tid, info in plate_info.items():
+            if tid in self._logged_tracks:
+                continue
+            self._logged_tracks[tid] = ts
+            try:
+                out = self.ctx.db.record_gate_crossing(
+                    info["plate"], self.cam_name, ts,
+                    debounce_s=debounce, min_visit_s=min_visit)
+            except Exception:
+                log.exception("[%s] visitor log write failed", self.cam_name)
+                continue
+            if out and out["action"] != "ignored":
+                who = out["visit"]["owner_name"] or (
+                    "resident" if out["visit"]["registered"] else "visitor")
+                log.info("[%s] gate %s: %s (%s)", self.cam_name,
+                         out["action"], info["plate"], who)
+        # keep the seen-track map from growing without bound
+        if len(self._logged_tracks) > 500:
+            cutoff = ts - 3600
+            self._logged_tracks = {k: v for k, v in self._logged_tracks.items()
+                                   if v > cutoff}
 
     def _handle_event(self, ev):
         log.warning("EVENT [%s] %s: %s", ev.severity, ev.event_type, ev.description)

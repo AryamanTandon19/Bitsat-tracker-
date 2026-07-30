@@ -17,6 +17,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 # stalls (or fails) while it fetches them from GitHub at request time.
 RUN python -c "from ultralytics import YOLO; YOLO('yolo11n.pt')"
 
+# Same for the plate-OCR model — it is fetched from HuggingFace on first use,
+# which otherwise turns the first analysis of the day into a ~90s stall.
+RUN python - <<'PY' || echo "plate OCR prefetch skipped — first read will be slow"
+try:
+    from fast_plate_ocr import LicensePlateRecognizer as R
+except ImportError:
+    from fast_plate_ocr import ONNXPlateRecognizer as R
+R("global-plates-mobile-vit-v2-model")
+PY
+
 # App code.
 COPY . .
 

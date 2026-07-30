@@ -91,6 +91,23 @@ CREATE TABLE IF NOT EXISTS ai_usage (
     output_tokens INTEGER NOT NULL,
     cost_usd REAL NOT NULL
 );
+-- Automated gate register. One row per visit: a vehicle crossing the gate
+-- opens a visit, the next crossing (after a debounce) closes it. Replaces the
+-- handwritten visitor book, and works for residents too.
+CREATE TABLE IF NOT EXISTS vehicle_visits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plate TEXT NOT NULL,
+    registered INTEGER NOT NULL DEFAULT 0,   -- 1 = in the vehicle registry
+    owner_name TEXT,
+    flat_number TEXT,
+    entry_ts REAL NOT NULL,
+    entry_camera TEXT,
+    exit_ts REAL,                            -- NULL = still inside
+    exit_camera TEXT,
+    last_seen_ts REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_visits_plate ON vehicle_visits(plate);
+CREATE INDEX IF NOT EXISTS idx_visits_open ON vehicle_visits(exit_ts);
 CREATE TABLE IF NOT EXISTS feedback (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id INTEGER NOT NULL REFERENCES events(id),
@@ -237,6 +254,98 @@ class Database:
         return count
 
     # -- events / clips / notifications --------------------------------------
+    # -- visitor log (automated gate register) ----------------------------
+    def record_gate_crossing(self, plate: str, camera: str, ts: float,
+                             debounce_s: float = 60.0,
+                             min_visit_s: float = 30.0) -> dict | None:
+        """Record a vehicle crossing the gate and return the affected visit.
+
+        Crossings alternate: the first opens a visit, the next closes it. A
+        vehicle dwelling in view produces many sightings, so `debounce_s`
+        collapses them into one crossing, and `min_visit_s` stops a car that
+        pauses at the gate from being logged as an instant in-and-out.
+
+        Returns {"action": "entry"|"exit"|"ignored", "visit": {...}}.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM vehicle_visits WHERE plate = ? AND exit_ts IS NULL"
+                " ORDER BY id DESC LIMIT 1", (plate,)).fetchone()
+
+            if row is not None:
+                # Same pass still in view, or too soon to be a real exit.
+                if ts - row["last_seen_ts"] < debounce_s or \
+                        ts - row["entry_ts"] < min_visit_s:
+                    self._conn.execute(
+                        "UPDATE vehicle_visits SET last_seen_ts = ? WHERE id = ?",
+                        (ts, row["id"]))
+                    self._conn.commit()
+                    return {"action": "ignored",
+                            "visit": dict(row) | {"last_seen_ts": ts}}
+                self._conn.execute(
+                    "UPDATE vehicle_visits SET exit_ts = ?, exit_camera = ?,"
+                    " last_seen_ts = ? WHERE id = ?", (ts, camera, ts, row["id"]))
+                self._conn.commit()
+                out = self._conn.execute(
+                    "SELECT * FROM vehicle_visits WHERE id = ?",
+                    (row["id"],)).fetchone()
+                return {"action": "exit", "visit": dict(out)}
+
+            veh = self._conn.execute(
+                "SELECT owner_name, flat_number FROM vehicles WHERE plate_number = ?",
+                (plate,)).fetchone()
+            cur = self._conn.execute(
+                "INSERT INTO vehicle_visits (plate, registered, owner_name,"
+                " flat_number, entry_ts, entry_camera, last_seen_ts)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (plate, int(veh is not None),
+                 veh["owner_name"] if veh else None,
+                 veh["flat_number"] if veh else None, ts, camera, ts))
+            self._conn.commit()
+            new = self._conn.execute(
+                "SELECT * FROM vehicle_visits WHERE id = ?",
+                (cur.lastrowid,)).fetchone()
+            return {"action": "entry", "visit": dict(new)}
+
+    def open_visits(self) -> list[dict]:
+        """Vehicles currently inside — the 'who is in the society now' view."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM vehicle_visits WHERE exit_ts IS NULL"
+                " ORDER BY entry_ts DESC").fetchall()
+            return [dict(r) for r in rows]
+
+    def recent_visits(self, limit: int = 200, plate: str | None = None,
+                      registered: bool | None = None) -> list[dict]:
+        """The gate register, newest first. Optionally filter by plate or by
+        whether the vehicle is a known resident."""
+        sql = "SELECT * FROM vehicle_visits"
+        where, args = [], []
+        if plate:
+            where.append("plate LIKE ?")
+            args.append(f"%{plate}%")
+        if registered is not None:
+            where.append("registered = ?")
+            args.append(int(registered))
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY entry_ts DESC LIMIT ?"
+        args.append(limit)
+        with self._lock:
+            rows = self._conn.execute(sql, args).fetchall()
+            return [dict(r) for r in rows]
+
+    def overstaying_visits(self, hours: float = 12.0) -> list[dict]:
+        """Unregistered vehicles still inside after `hours` — the flag a guard
+        actually acts on."""
+        cutoff = time.time() - hours * 3600
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM vehicle_visits WHERE exit_ts IS NULL"
+                " AND registered = 0 AND entry_ts < ?"
+                " ORDER BY entry_ts ASC", (cutoff,)).fetchall()
+            return [dict(r) for r in rows]
+
     def insert_event(self, ts: float, camera: str, event_type: str, severity: str,
                      plate: str | None, track_ids: list[int], confidence: float,
                      description: str, suppressed: bool = False,

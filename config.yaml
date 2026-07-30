@@ -44,6 +44,18 @@ plates:
   min_confidence: 0.5
   fuzzy_max_distance: 1        # Levenshtein distance for registry matching
 
+# Automated gate register — replaces the handwritten visitor book. Every plate
+# read on a gate camera opens a visit; the next pass closes it. Needs plates.
+visitor_log:
+  enabled: true
+  cameras: [gate]              # cameras that watch the gate. Empty = all
+                               # cameras (only sane on a single-camera setup:
+                               # a parking camera would log parked cars).
+  debounce_s: 60               # ignore repeat sightings within this window
+  min_visit_s: 30              # a car pausing at the gate isn't an exit
+  overstay_hours: 12           # unregistered vehicle still inside after this
+                               # many hours shows up in /api/visits/overstays
+
 rules:
   night_hours: { start: "23:00", end: "05:00" }
   debounce_s: 120              # one event type per tracked object per N seconds

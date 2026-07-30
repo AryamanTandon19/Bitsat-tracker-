@@ -171,6 +171,29 @@ def create_app(ctx) -> FastAPI:
             raise HTTPException(404, "plate not found")
         return {"ok": True}
 
+    # --------------------------------------------------- visitor log (gate)
+    @app.get("/api/visits")
+    def visits(limit: int = 200, plate: str = "", registered: str = ""):
+        """The gate register, newest first. `registered` filters residents
+        (1/true) from visitors (0/false); blank returns both."""
+        reg = None
+        if registered != "":
+            reg = registered.lower() in ("1", "true", "yes")
+        return ctx.db.recent_visits(min(limit, 1000),
+                                    normalize_plate(plate) or None, reg)
+
+    @app.get("/api/visits/open")
+    def visits_open():
+        """Vehicles currently inside — 'who is in the society right now'."""
+        return ctx.db.open_visits()
+
+    @app.get("/api/visits/overstays")
+    def visits_overstays(hours: float = 0):
+        """Unregistered vehicles still inside past the overstay threshold."""
+        cfg = ctx.config.get("visitor_log") or {}
+        return ctx.db.overstaying_visits(
+            hours or float(cfg.get("overstay_hours", 12)))
+
     # --------------------------------------------------------------- clips
     @app.get("/clips/{clip_id}")
     def clip_file(clip_id: int):
