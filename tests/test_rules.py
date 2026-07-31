@@ -75,7 +75,22 @@ def test_a1_unauthorized_vehicle():
                    plate_info={1: {"plate": "MH12CD4567", "registered": False}})
     assert [ev.event_type for ev in evs] == [UNAUTHORIZED_VEHICLE]
     assert evs[0].plate == "MH12CD4567"
+    # Deliberate change from the old fixed table, which called this HIGH.
+    # An unknown plate arriving in daylight is a visitor, dozens of times a
+    # day; calling every one of them HIGH is what made the alerts worthless.
+    # It is logged in the gate register regardless — the alert is the extra.
+    assert evs[0].severity == "MEDIUM"
+    assert evs[0].score > 0
+
+
+def test_a1_the_same_vehicle_at_night_is_high():
+    """...and the situation the old table could not tell apart."""
+    e = engine(zones={"entry": SQUARE}, localtime=NIGHT)
+    car = Det(1, "car", (30, 30, 70, 70))
+    evs = e.update([car], ts=1000.0,
+                   plate_info={1: {"plate": "MH12CD4567", "registered": False}})
     assert evs[0].severity == "HIGH"
+    assert "after dark" in evs[0].score_why
 
 
 def test_a1_registered_vehicle_is_silent():

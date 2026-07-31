@@ -56,6 +56,26 @@ visitor_log:
   overstay_hours: 12           # unregistered vehicle still inside after this
                                # many hours shows up in /api/visits/overstays
 
+# Threat scoring — replaces the old fixed severity table. Every rule still
+# fires; what changes is that a firing is scored 0..1 from the situation and
+# only becomes an alert above `dismiss`. Turn `enabled` off to go back to the
+# fixed table. Weights are additive on top of the per-type base.
+scoring:
+  enabled: true
+  thresholds:
+    dismiss: 0.30              # below this it is not raised at all
+    low: 0.45
+    medium: 0.65               # at or above -> HIGH
+  ai_review_above: 0.55        # only spend money above this
+  reference:
+    dwell_s: 45                # "a long time to stand still", for this site
+  # base:                      # per event type, if a site needs to differ
+  #   loitering: 0.34
+  # weights:
+  #   night: 0.12
+  #   registered: -0.34
+  #   false_alarms: -0.26
+
 rules:
   night_hours: { start: "23:00", end: "05:00" }
   debounce_s: 120              # one event type per tracked object per N seconds

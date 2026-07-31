@@ -356,12 +356,22 @@ Extend `zones.py` to labelled slots with plate/flat metadata. Add slot-occupancy
 tracking and the "your car left its spot" push.
 **Effect:** the highest-value security feature at near-zero AI cost.
 
-### Priority 5 — Track-level scoring layer  ⬅ NEXT
-Replace the static severity table with a 0–1 score from dwell, proximity, pose,
-trajectory, vehicle motion, hour and registry match. Thresholds in `config.yaml`:
-`<0.3` dismiss · `0.3–0.6` WATCH · `>0.6` AI review.
-**Effect:** fixes "everything is MEDIUM" **and** cuts AI spend — one change,
-both problems. Target: ~100% recall on incidents, fire-rate as low as possible.
+### ~~Priority 5 — Track-level scoring layer~~ ✅ SHIPPED
+`app/scoring.py`. Every rule still fires; a firing is now scored 0–1 from the
+hour, dwell, registry match, vehicle contact, zone and — crucially — what the
+guards at *that site* have been saying about that alert. Below `dismiss` it is
+never raised. Thresholds, weights and per-type bases all live in `config.yaml`,
+so a noisy site is calmed without a release, and `scoring.enabled: false`
+restores the old table exactly.
+
+Every score carries its reasoning in words, stored on the event and shown in
+the operator app — an alert that cannot say why it fired is one guards learn
+to ignore.
+
+**Measured** (`python compare_scoring.py`, 15 written scenarios — *not*
+footage): alerts on everyday situations 9 → 4, incidents missed 0 → 0, and the
+five real incidents all moved to HIGH. Turning that into a real number is
+exactly what Priority 2 is for.
 
 ### Priority 6 — Security hardening ⛔ before any pilot — PART DONE
 **Done:** operator accounts and server-side sessions. scrypt password hashing

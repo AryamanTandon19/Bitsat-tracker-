@@ -156,6 +156,10 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 # existing databases upgrade in place
 MIGRATIONS = [
     "ALTER TABLE events ADD COLUMN incident_id INTEGER",
+    # the scoring layer: the number and the words behind it, so an alert can
+    # always answer "why?" long after the frame is gone
+    "ALTER TABLE events ADD COLUMN score REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE events ADD COLUMN score_why TEXT",
 ]
 
 
@@ -384,7 +388,8 @@ class Database:
     def insert_event(self, ts: float, camera: str, event_type: str, severity: str,
                      plate: str | None, track_ids: list[int], confidence: float,
                      description: str, suppressed: bool = False,
-                     incident_window_s: float = 120.0) -> int:
+                     incident_window_s: float = 120.0,
+                     score: float = 0.0, score_why: str = "") -> int:
         """Events on the same camera within incident_window_s are grouped
         into ONE incident (incident_id = id of the incident's first event)."""
         with self._lock:
@@ -395,11 +400,12 @@ class Database:
             prior_incident = (row["incident_id"] or row["id"]) if row else None
             cur = self._conn.execute(
                 "INSERT INTO events (ts, camera, event_type, severity, plate,"
-                " track_ids, confidence, description, suppressed, incident_id)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " track_ids, confidence, description, suppressed, incident_id,"
+                " score, score_why)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (ts, camera, event_type, severity, plate,
                  json.dumps(track_ids), confidence, description,
-                 int(suppressed), prior_incident))
+                 int(suppressed), prior_incident, float(score), score_why))
             event_id = cur.lastrowid
             if prior_incident is None:
                 self._conn.execute(
@@ -434,6 +440,33 @@ class Database:
             cur = self._conn.execute(
                 "SELECT verdict, COUNT(*) AS n FROM feedback GROUP BY verdict")
             return {r["verdict"]: r["n"] for r in cur.fetchall()}
+
+    def verdict_rates(self, min_samples: int = 5,
+                      days: float = 60.0) -> dict[tuple[str, str], dict]:
+        """How often each (camera, event_type) turned out to be nothing.
+
+        This is what the guards' taps are *for*: an alert a site keeps
+        dismissing should get quieter at that site. Only the latest verdict per
+        event counts, and a pairing needs `min_samples` before it is allowed to
+        move anything — two dismissals are an opinion, not a pattern.
+        """
+        since = time.time() - days * 86400
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT e.camera, e.event_type, f.verdict FROM events e"
+                " JOIN feedback f ON f.id = (SELECT id FROM feedback"
+                "   WHERE event_id = e.id ORDER BY id DESC LIMIT 1)"
+                " WHERE e.ts >= ?", (since,)).fetchall()
+        tally: dict[tuple[str, str], dict] = {}
+        for r in rows:
+            k = (r["camera"], r["event_type"])
+            t = tally.setdefault(k, {"n": 0, "false": 0, "real": 0})
+            t["n"] += 1
+            t["false" if r["verdict"] == "false_alarm" else "real"] += 1
+        return {k: {**t,
+                    "false_alarm_rate": t["false"] / t["n"],
+                    "confirmed_rate": t["real"] / t["n"]}
+                for k, t in tally.items() if t["n"] >= min_samples}
 
     def event_verdicts(self, event_ids: list[int]) -> dict[int, dict]:
         """Latest verdict per event — what the operator app shows as 'already

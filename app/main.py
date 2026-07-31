@@ -85,6 +85,7 @@ class CameraPipeline(threading.Thread):
             (not gate_cams or name in gate_cams)
         self.vl_cfg = vl
         self._logged_tracks: dict[int, float] = {}   # track_id -> ts logged
+        self._rates_refreshed = 0.0                  # verdict-rate cache
 
     def stop(self):
         self._stop.set()
@@ -141,6 +142,17 @@ class CameraPipeline(threading.Thread):
 
             if self.visitor_log and plate_info:
                 self._log_gate_crossings(plate_info, ts)
+
+            # Feed the guards' verdicts back into scoring. Read every few
+            # minutes, not every frame: it is a slow-moving aggregate and this
+            # is the hot loop.
+            if ts - self._rates_refreshed > 300:
+                self._rates_refreshed = ts
+                try:
+                    self.rules.verdict_rates = self.ctx.db.verdict_rates()
+                except Exception:
+                    log.exception("[%s] could not read verdict rates",
+                                  self.cam_name)
 
             events = self.rules.update(detections, ts, plate_info)
             mean, lap = frame_stats(frame)
@@ -277,7 +289,8 @@ class CameraPipeline(threading.Thread):
         log.warning("EVENT [%s] %s: %s", ev.severity, ev.event_type, ev.description)
         event_id = self.ctx.db.insert_event(
             ev.ts, ev.camera, ev.event_type, ev.severity, ev.plate,
-            ev.track_ids, ev.confidence, ev.description)
+            ev.track_ids, ev.confidence, ev.description,
+            score=ev.score, score_why=ev.score_why)
         self.ctx.clip_saver.save_async(self.worker, ev, event_id)
 
 

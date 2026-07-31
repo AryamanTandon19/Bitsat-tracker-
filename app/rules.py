@@ -55,6 +55,8 @@ class Event:
     plate: str | None = None
     track_ids: list[int] = field(default_factory=list)
     confidence: float = 0.0
+    score: float = 0.0        # 0..1 from the scoring layer (0 = not scored)
+    score_why: str = ""       # the signals that produced it, in words
 
 
 # ---------------------------------------------------------------- geometry
@@ -95,6 +97,14 @@ def dist(p, q) -> float:
 def parse_hhmm(s: str) -> tuple[int, int]:
     h, m = s.split(":")
     return int(h), int(m)
+
+
+def _all_registered(states) -> bool | None:
+    """True only if every vehicle we could identify is on the registry.
+    None when no plate was read — `all([])` is True, which would have read a
+    total absence of information as a clean bill of health."""
+    known = [bool(st.plate_registered) for st in states if st and st.plate]
+    return all(known) if known else None
 
 
 def is_night(now: datetime, start: str, end: str) -> bool:
@@ -156,6 +166,15 @@ class RulesEngine:
         self._tamper_since: float | None = None
         self._offline_fired = False
         self._tamper_ok = True
+        # Scoring layer. Replaces the fixed SEVERITY table when on; the table
+        # is kept as the fallback so a site can switch back in one line.
+        self.scoring_cfg = cfg.get("scoring") or {}
+        self.scoring_on = bool(self.scoring_cfg.get("enabled", True))
+        # (camera, event_type) -> {"false_alarm_rate", "confirmed_rate"};
+        # refreshed from the DB by the pipeline, empty until then
+        self.verdict_rates: dict = {}
+        # what the layer chose not to raise, for the tuning page
+        self.dismissed: list[dict] = []
 
     # ------------------------------------------------------------ helpers
     def _night(self) -> bool:
@@ -174,20 +193,60 @@ class RulesEngine:
     def _rule_enabled(self, name: str) -> bool:
         return bool(self.cfg.get(name, {}).get("enabled", True))
 
+    def _score_context(self, etype: str, track_ids: list[int],
+                       ts: float, registered: bool | None,
+                       plate: str | None) -> dict:
+        """Everything the scoring layer is allowed to know about this firing.
+        Read off state the engine already keeps — no new tracking."""
+        dwell = 0.0
+        for tid in track_ids:
+            st = self.tracks.get(tid)
+            if st and st.positions:
+                dwell = max(dwell, ts - st.positions[0][0])
+        rates = self.verdict_rates.get((self.camera, etype), {})
+        return {
+            "night": self._night(),
+            "registered": registered,
+            "plate_known": None if registered is not None else bool(plate),
+            "dwell_s": dwell,
+            "at_vehicle": etype in (VEHICLE_CONTACT, LOITERING),
+            "restricted": etype == RESTRICTED_ZONE,
+            "false_alarm_rate": rates.get("false_alarm_rate", 0.0),
+            "confirmed_rate": rates.get("confirmed_rate", 0.0),
+        }
+
     def _emit(self, events: list, ts: float, etype: str, description: str,
               track_ids: list[int], plate: str | None = None,
-              confidence: float = 0.0, debounce_key=None):
+              confidence: float = 0.0, debounce_key=None,
+              registered: bool | None = None):
         key = debounce_key or (tuple(sorted(track_ids)) or self.camera, etype)
         if self._debounced(key, ts):
             return
+
+        severity, score, why = SEVERITY[etype], 0.0, ""
+        if self.scoring_on:
+            from .scoring import score_event
+            ctx = self._score_context(etype, track_ids, ts, registered, plate)
+            s = score_event(etype, ctx, self.scoring_cfg)
+            severity, score, why = s.severity, s.value, s.explain()
+            if s.dismissed:
+                # Not an alert. Kept visible for tuning so "why did it stay
+                # quiet?" is as answerable as "why did it alarm?".
+                self.dismissed.append({"ts": ts, "event_type": etype,
+                                       "score": score, "why": why,
+                                       "description": description})
+                del self.dismissed[:-200]
+                return
+
         # flag every track involved in a fired anomaly as a "culprit" so the
         # annotator can mark it green and follow it across the frame
         for tid in track_ids:
             self._flagged[tid] = ts + self.flag_seconds
         events.append(Event(ts=ts, camera=self.camera, event_type=etype,
-                            severity=SEVERITY[etype], description=description,
+                            severity=severity, description=description,
                             plate=plate, track_ids=track_ids,
-                            confidence=confidence))
+                            confidence=confidence, score=score,
+                            score_why=why))
 
     # -------------------------------------------------- culprit tracking
     def active_flags(self, ts: float | None = None) -> set:
@@ -263,7 +322,8 @@ class RulesEngine:
                        f"Vehicle {d.cls_name} #{d.track_id} entered with "
                        f"unregistered plate {st.plate}",
                        [d.track_id], plate=st.plate, confidence=0.9,
-                       debounce_key=(d.track_id, UNAUTHORIZED_VEHICLE))
+                       debounce_key=(d.track_id, UNAUTHORIZED_VEHICLE),
+                       registered=False)
         else:
             timeout = float(self.cfg.get("unauthorized_vehicle", {})
                             .get("plate_read_timeout_s", 5))
@@ -306,7 +366,25 @@ class RulesEngine:
                        f"Person #{d.track_id} loitering in parking zone for "
                        f"{dwell:.0f}s (moved {st.max_parking_displacement:.0f}px)",
                        [d.track_id], confidence=0.7,
-                       debounce_key=(d.track_id, LOITERING))
+                       debounce_key=(d.track_id, LOITERING),
+                       registered=self._nearby_vehicle_registered(d.xyxy, cfg))
+
+    def _nearby_vehicle_registered(self, person_xyxy, cfg) -> bool | None:
+        """Is the vehicle this person is standing at one the society knows?
+
+        None when no plate has been read — the scorer treats that as "no
+        information" rather than guessing either way.
+        """
+        radius = float(cfg.get("near_vehicle_px", 160))
+        px = ((person_xyxy[0] + person_xyxy[2]) / 2, person_xyxy[3])
+        best, best_d = None, radius
+        for st in self.tracks.values():
+            if st.plate is None or not st.positions:
+                continue
+            d = dist(px, st.positions[-1][1])
+            if d <= best_d:
+                best, best_d = st, d
+        return None if best is None else bool(best.plate_registered)
 
     def _near_any_vehicle(self, person_xyxy, cfg) -> bool:
         """True if the person's box overlaps any vehicle box expanded by
@@ -364,7 +442,9 @@ class RulesEngine:
                                list(pair),
                                plate=plates[0] if plates else None,
                                confidence=0.4,
-                               debounce_key=(pair, VEHICLE_CONTACT))
+                               debounce_key=(pair, VEHICLE_CONTACT),
+                               registered=_all_registered(
+                                   self.tracks.get(t) for t in pair))
                     break
 
     # --------------------------------------------- A4: restricted at night

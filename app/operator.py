@@ -258,6 +258,12 @@ h2{font-size:11px; font-weight:700; letter-spacing:.12em; text-transform:upperca
 .when{color:var(--muted); font-size:12.5px; font-weight:520; white-space:nowrap;
       font-variant-numeric:tabular-nums}
 .desc{margin:6px 0 0; font-size:15px; color:var(--soft); line-height:1.48}
+/* why the system raised this — a guard who cannot see the reasoning stops
+   trusting the alerts, and is right to */
+.why{margin:10px 0 0; padding:9px 12px; border-radius:12px;
+     background:rgba(255,255,255,.05); border:1px solid var(--edge);
+     color:var(--soft); font-size:13px; line-height:1.45}
+.why::first-letter{text-transform:uppercase}
 .meta{margin:11px 0 0; color:var(--muted); font-size:13px;
       display:flex; align-items:center; gap:9px; flex-wrap:wrap}
 .pill{
@@ -736,6 +742,7 @@ async function loadAlerts(){
       <p class="desc">${esc(r.description || "")}</p>
       <p class="meta"><span class="pill ${sev.toLowerCase()}">${sev}</span>
         &nbsp;${esc(r.camera || "")}${r.plate ? " &middot; " + esc(r.plate) : ""}</p>
+      ${r.score_why ? `<p class="why">${esc(r.score_why)}</p>` : ""}
       ${r.ai_summary ? `<p class="meta">AI: ${esc(r.ai_summary)}</p>` : ""}
       ${clip}${body}
     </article>`;
