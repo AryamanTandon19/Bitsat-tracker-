@@ -94,6 +94,16 @@ def create_app(ctx) -> FastAPI:
         return Response(operator_mod.SW, media_type="application/javascript",
                         headers=_NO_CACHE)
 
+    @app.get("/operator/font.woff2")
+    def operator_font():
+        """Manrope, served from disk rather than a font CDN — a guard at a gate
+        with no signal must not fall back to the system font mid-shift."""
+        path = Path(__file__).parent / "static" / "manrope-latin.woff2"
+        if not path.exists():
+            raise HTTPException(404, "font not bundled")
+        return FileResponse(path, media_type="font/woff2",
+                            headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
     @app.get("/operator/icon-{size}.png")
     def operator_icon(size: int):
         if size not in (192, 512):

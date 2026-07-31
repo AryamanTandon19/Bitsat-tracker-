@@ -67,6 +67,25 @@ def test_icon_is_the_requested_size(client):
     assert cv2.imdecode(buf, cv2.IMREAD_COLOR).shape[:2] == (512, 512)
 
 
+def test_the_typeface_is_bundled_not_fetched_from_a_cdn(client):
+    html = client.get("/operator").text
+    # a font CDN would silently fall back to the system font at a gate with
+    # no signal, which is the one place this app has to work
+    assert "fonts.googleapis.com" not in html and "fonts.gstatic.com" not in html
+    assert 'src:url(/operator/font.woff2)' in html
+
+    r = client.get("/operator/font.woff2")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "font/woff2"
+    assert r.content[:4] == b"wOF2"
+    assert "immutable" in r.headers["cache-control"]
+
+
+def test_the_service_worker_caches_the_typeface(client):
+    # otherwise the shell loads offline but loses the font
+    assert "/operator/font.woff2" in client.get("/operator/sw.js").text
+
+
 def test_service_worker_is_served_uncached(client):
     r = client.get("/operator/sw.js")
     assert r.status_code == 200

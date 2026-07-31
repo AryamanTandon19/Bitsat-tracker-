@@ -30,17 +30,26 @@ PAGE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#150a2b">
+<meta name="theme-color" content="#08050f">
 <title>VisionGuard Operator</title>
 <link rel="manifest" href="/operator/manifest.webmanifest">
 <link rel="icon" href="/operator/icon-192.png">
 <link rel="apple-touch-icon" href="/operator/icon-192.png">
 <style>
+/* Manrope, served from this app rather than a font CDN — a guard at a gate
+   with no signal must not drop to the system font mid-shift. One variable
+   file covers every weight the app uses. SIL OFL, app/static/manrope-OFL.txt */
+@font-face{
+  font-family:"Manrope"; font-style:normal; font-weight:200 800;
+  font-display:swap; src:url(/operator/font.woff2) format("woff2");
+}
 :root{
-  --night:#150a2b; --night-2:#1d0f3d;
-  --glass:rgba(255,255,255,.055); --glass-2:rgba(255,255,255,.085);
-  --edge:rgba(255,255,255,.10); --edge-lit:rgba(255,255,255,.20);
-  --text:#f4f1ff; --soft:#cdc4ee; --muted:#9a90c2;
+  /* Near-black with a violet cast, so the metal and the signal hues are the
+     only things on screen with real saturation. */
+  --night:#08050f; --night-2:#100a1e;
+  --glass:rgba(255,255,255,.045); --glass-2:rgba(255,255,255,.075);
+  --edge:rgba(255,255,255,.085); --edge-lit:rgba(255,255,255,.19);
+  --text:#f4f1ff; --soft:#c8bfe8; --muted:#8d84b0;
 
   /* The metallic: a violet run through light, saturated, deep and back to
      light again. Six stops, not two — that turn from dark back to pale is
@@ -61,7 +70,7 @@ PAGE = """<!doctype html>
 html,body{margin:0;padding:0}
 body{
   background:var(--night); color:var(--text);
-  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display",system-ui,
+  font-family:"Manrope",-apple-system,BlinkMacSystemFont,system-ui,
               "Segoe UI",Roboto,sans-serif;
   font-size:16px; line-height:1.5; letter-spacing:-.012em;
   -webkit-font-smoothing:antialiased;
@@ -72,13 +81,13 @@ body{
 
 /* --- the light in the room: three slow violet blooms behind everything --- */
 .aurora{position:fixed; inset:0; z-index:-1; overflow:hidden; background:var(--night)}
-.aurora span{position:absolute; border-radius:50%; filter:blur(72px); opacity:.62}
+.aurora span{position:absolute; border-radius:50%; filter:blur(80px); opacity:.34}
 .aurora span:nth-child(1){width:78vw; height:78vw; top:-26vw; left:-22vw;
-  background:radial-gradient(circle,#7b4ae8,transparent 68%); animation:drift1 26s ease-in-out infinite}
+  background:radial-gradient(circle,#5f2fc4,transparent 68%); animation:drift1 26s ease-in-out infinite}
 .aurora span:nth-child(2){width:62vw; height:62vw; top:24vh; right:-26vw;
-  background:radial-gradient(circle,#4b2bb5,transparent 70%); animation:drift2 32s ease-in-out infinite}
+  background:radial-gradient(circle,#33208a,transparent 70%); animation:drift2 32s ease-in-out infinite}
 .aurora span:nth-child(3){width:70vw; height:70vw; bottom:-24vh; left:-14vw;
-  background:radial-gradient(circle,#9a6bff,transparent 72%); opacity:.4;
+  background:radial-gradient(circle,#7346e0,transparent 72%); opacity:.22;
   animation:drift3 38s ease-in-out infinite}
 @keyframes drift1{50%{transform:translate(9vw,7vh) scale(1.12)}}
 @keyframes drift2{50%{transform:translate(-8vw,-6vh) scale(1.16)}}
@@ -86,7 +95,7 @@ body{
 
 header{
   position:sticky; top:0; z-index:10;
-  background:linear-gradient(var(--night) 55%,rgba(21,10,43,0));
+  background:linear-gradient(var(--night) 55%,rgba(8,5,15,0));
   padding:calc(18px + env(safe-area-inset-top)) 20px 14px;
   display:flex; align-items:center; justify-content:space-between; gap:12px;
 }
@@ -114,7 +123,7 @@ main{padding:2px 20px 24px; max-width:560px; margin:0 auto}
 
 .eyebrow{margin:6px 0 4px; font-size:12.5px; font-weight:600; color:var(--muted);
          letter-spacing:.05em; text-transform:uppercase}
-h1{font-size:30px; line-height:1.16; font-weight:680; letter-spacing:-.035em;
+h1{font-size:30px; line-height:1.15; font-weight:700; letter-spacing:-.028em;
    margin:0 0 10px; text-wrap:balance}
 h1 em{
   font-style:normal;
@@ -145,8 +154,8 @@ h2{font-size:11px; font-weight:700; letter-spacing:.12em; text-transform:upperca
 .hero .cap{font-size:12px; font-weight:620; letter-spacing:.06em;
            text-transform:uppercase; color:rgba(255,255,255,.82); position:relative; z-index:2}
 .hero .fig{position:relative; z-index:2}
-.hero .fig b{display:block; font-size:56px; font-weight:640; line-height:.92;
-             letter-spacing:-.045em; font-variant-numeric:tabular-nums;
+.hero .fig b{display:block; font-size:58px; font-weight:700; line-height:.92;
+             letter-spacing:-.035em; font-variant-numeric:tabular-nums;
              text-shadow:0 4px 20px rgba(40,10,90,.45)}
 .hero .fig small{display:block; margin-top:4px; font-size:12.5px; font-weight:560;
                  color:rgba(255,255,255,.8)}
@@ -162,8 +171,8 @@ h2{font-size:11px; font-weight:700; letter-spacing:.12em; text-transform:upperca
 }
 .tile .cap{font-size:10.5px; font-weight:640; letter-spacing:.08em;
            text-transform:uppercase; color:var(--muted)}
-.tile b{display:block; margin-top:6px; font-size:30px; font-weight:640;
-        line-height:1; letter-spacing:-.035em; font-variant-numeric:tabular-nums}
+.tile b{display:block; margin-top:6px; font-size:30px; font-weight:700;
+        line-height:1; letter-spacing:-.028em; font-variant-numeric:tabular-nums}
 .tile.warn b{color:var(--caution)} .tile.bad b{color:var(--alert)}
 .tile.zero b{color:var(--soft)}
 .spark{display:block; width:100%; height:26px; margin-top:8px; overflow:visible}
@@ -186,7 +195,7 @@ h2{font-size:11px; font-weight:700; letter-spacing:.12em; text-transform:upperca
 .card.sev-LOW::before{background:var(--muted)}
 .card.sev-HIGH{background:linear-gradient(120deg,rgba(255,97,131,.13),var(--glass) 62%)}
 .card.sev-MEDIUM{background:linear-gradient(120deg,rgba(255,180,92,.12),var(--glass) 62%)}
-.card.done{background:rgba(255,255,255,.03); box-shadow:none; opacity:.82}
+.card.done{background:rgba(255,255,255,.022); box-shadow:none; opacity:.8}
 .card.done::before{background:var(--calm); opacity:.9}
 
 .row{display:flex; justify-content:space-between; align-items:baseline; gap:12px}
@@ -237,7 +246,7 @@ label{display:block; font-size:10.5px; font-weight:700; letter-spacing:.12em;
       text-transform:uppercase; color:var(--muted); margin:22px 0 9px}
 input,textarea,select{
   width:100%; font:inherit; color:var(--text); appearance:none;
-  background:rgba(255,255,255,.05); border:1px solid var(--edge);
+  background:rgba(255,255,255,.04); border:1px solid var(--edge);
   border-radius:var(--r-sm); padding:15px 17px;
   backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
   transition:border-color .18s, box-shadow .18s;
@@ -270,7 +279,7 @@ button.primary[disabled]{opacity:.55}
   position:fixed; left:20px; right:20px;
   bottom:calc(122px + env(safe-area-inset-bottom));
   max-width:520px; margin:0 auto; z-index:30;
-  background:rgba(40,22,78,.9); border:1px solid var(--edge-lit);
+  background:rgba(20,13,36,.93); border:1px solid var(--edge-lit);
   border-radius:var(--r-sm); padding:15px 18px; font-size:14.5px; font-weight:540;
   color:var(--text); box-shadow:var(--lift-2);
   backdrop-filter:blur(22px); -webkit-backdrop-filter:blur(22px);
@@ -284,7 +293,7 @@ button.primary[disabled]{opacity:.55}
 .toast.err::before{background:var(--alert); box-shadow:0 0 14px var(--alert)}
 .toast.on{opacity:1; visibility:visible; transform:none; transition-delay:0s}
 .empty{color:var(--muted); text-align:center; padding:44px 20px; font-size:15px;
-  background:rgba(255,255,255,.035); border:1px solid var(--edge);
+  background:rgba(255,255,255,.028); border:1px solid var(--edge);
   border-radius:var(--r)}
 
 /* --- floating nav bar --- */
@@ -292,7 +301,7 @@ nav{
   position:fixed; left:16px; right:16px; z-index:20; max-width:520px;
   margin:0 auto; bottom:calc(16px + env(safe-area-inset-bottom));
   display:grid; grid-template-columns:repeat(3,1fr); gap:4px; padding:6px;
-  border-radius:24px; background:rgba(28,15,58,.9); border:1px solid var(--edge);
+  border-radius:24px; background:rgba(14,9,26,.92); border:1px solid var(--edge);
   box-shadow:0 20px 46px -16px rgba(0,0,0,.7);
   backdrop-filter:saturate(160%) blur(26px);
   -webkit-backdrop-filter:saturate(160%) blur(26px);
@@ -726,8 +735,8 @@ MANIFEST = {
     "scope": "/operator",
     "display": "standalone",
     "orientation": "portrait",
-    "background_color": "#150a2b",
-    "theme_color": "#150a2b",
+    "background_color": "#08050f",
+    "theme_color": "#08050f",
     "icons": [
         {"src": "/operator/icon-192.png", "sizes": "192x192", "type": "image/png",
          "purpose": "any"},
@@ -741,9 +750,9 @@ MANIFEST = {
 # than a browser error page. Alert data is never served from cache — stale
 # alerts are worse than none.
 SW = """
-const SHELL = "vg-operator-shell-v1";
+const SHELL = "vg-operator-shell-v2";
 self.addEventListener("install", e => {
-  e.waitUntil(caches.open(SHELL).then(c => c.addAll(["/operator"]))
+  e.waitUntil(caches.open(SHELL).then(c => c.addAll(["/operator", "/operator/font.woff2"]))
               .then(() => self.skipWaiting()));
 });
 self.addEventListener("activate", e => {
