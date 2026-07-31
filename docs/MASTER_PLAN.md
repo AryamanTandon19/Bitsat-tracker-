@@ -351,9 +351,26 @@ still inside past `visitor_log.overstay_hours` are surfaced separately.
 API: `/api/visits`, `/api/visits/open`, `/api/visits/overstays`.
 **Effect:** the wedge feature. Sells without needing anyone to believe in AI.
 
-### Priority 4 — Slot map + departure notification
-Extend `zones.py` to labelled slots with plate/flat metadata. Add slot-occupancy
-tracking and the "your car left its spot" push.
+### ~~Priority 4 — Slot map + departure notification~~ ✅ SHIPPED
+`app/slots.py` + `parking_slots` / `slot_activity` tables. A slot is a drawn
+polygon with a label, optionally assigned to a plate and flat. `SlotTracker`
+holds occupancy per camera and reports three things: a space taken, a space
+vacated, and a vehicle in an assigned space that does not belong there.
+
+The engineering that matters is the hysteresis, not the geometry. A tracker
+drops a parked car for a few frames constantly — someone walks in front of it,
+the exposure shifts — and announcing "your car has left" on that would get the
+notifications muted within a day. Nothing is believed until it has held for
+`vacate_confirm_s` (25s default), and startup adopts whatever is already parked
+silently rather than announcing every resident's car as a fresh arrival.
+
+The departure message goes to that owner alone. Nobody else needs to know when
+a neighbour comes and goes, and a system that tells them is a surveillance
+complaint waiting to happen.
+
+API: `/api/slots` (GET/POST/DELETE, drawing needs the registry permission),
+`/api/slots/activity` — which is what answers "when did my car leave?" months
+later.
 **Effect:** the highest-value security feature at near-zero AI cost.
 
 ### ~~Priority 5 — Track-level scoring layer~~ ✅ SHIPPED

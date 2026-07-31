@@ -162,6 +162,21 @@ class TelegramNotifier:
         lines.append(f"\U0001F4C4 {desc}")
         return "\n".join(lines)
 
+    def notify_slot_owner(self, change, when: str) -> bool:
+        """Tell one resident their car moved. Owner only — nobody else needs
+        to know when a neighbour comes and goes, and a system that tells them
+        is a surveillance complaint waiting to happen."""
+        if not self.enabled or not self.token:
+            return False
+        plate = change.slot.plate or change.plate
+        owner = self.db.vehicle_by_plate(plate) if plate else None
+        chat = (owner or {}).get("telegram_chat_id")
+        if not chat:
+            return False
+        return self._send_text(str(chat),
+                               f"{change.message()} at {when}.\n\n"
+                               "If that was you, nothing to do.")
+
     def broadcast_notice(self, title: str, body: str, audience: str = "all",
                          flat_number: str = "") -> int:
         """Push a committee announcement to residents. Returns how many chats

@@ -56,6 +56,18 @@ visitor_log:
   overstay_hours: 12           # unregistered vehicle still inside after this
                                # many hours shows up in /api/visits/overstays
 
+# Parking slots — drawn spaces, optionally assigned to a vehicle. Draw them
+# with `python zones.py`, assign them in the console. Nothing here runs until
+# at least one slot exists.
+slots:
+  enabled: true
+  occupy_confirm_s: 15         # a car must settle this long to take a space
+  vacate_confirm_s: 25         # ...and be gone this long before anyone is told.
+                               # This is the number that decides whether the
+                               # notification is trusted or muted: the tracker
+                               # drops a parked car for a few frames routinely.
+  notify_owner: true           # "your car left its spot", to that owner only
+
 # Threat scoring — replaces the old fixed severity table. Every rule still
 # fires; what changes is that a firing is scored 0..1 from the situation and
 # only becomes an alert above `dismiss`. Turn `enabled` off to go back to the

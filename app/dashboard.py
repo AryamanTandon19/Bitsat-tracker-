@@ -328,6 +328,53 @@ def create_app(ctx) -> FastAPI:
             raise HTTPException(404, "plate not found")
         return {"ok": True}
 
+    # ------------------------------------------------------- parking slots
+    @app.get("/api/slots")
+    def slots(camera: str = "", user: dict = Depends(require("gate"))):
+        rows = ctx.db.list_slots(camera or None)
+        occupancy = {}
+        for name, pipe in ctx.pipelines.items():
+            tracker = getattr(pipe, "slots", None)
+            if tracker is not None:
+                occupancy.update(tracker.occupancy())
+        for r in rows:
+            r.pop("polygon_json", None)
+            r["occupant"] = occupancy.get(r["id"])
+        return rows
+
+    @app.post("/api/slots")
+    def slot_add(camera: str = Form(...), label: str = Form(...),
+                 polygon: str = Form(...), plate: str = Form(""),
+                 flat_number: str = Form(""),
+                 user: dict = Depends(require("registry"))):
+        """polygon is a JSON array of [x, y] pairs in source-frame pixels."""
+        import json as _json
+        try:
+            points = _json.loads(polygon)
+        except ValueError:
+            raise HTTPException(400, "polygon must be JSON")
+        if not isinstance(points, list) or len(points) < 3:
+            raise HTTPException(400, "a slot needs at least three points")
+        if not label.strip():
+            raise HTTPException(400, "label is required")
+        sid = ctx.db.add_slot(camera, label.strip(), points,
+                              normalize_plate(plate) or None,
+                              flat_number.strip(), actor=user["username"])
+        return {"ok": True, "id": sid}
+
+    @app.delete("/api/slots/{slot_id}")
+    def slot_remove(slot_id: int, user: dict = Depends(require("registry"))):
+        if not ctx.db.remove_slot(slot_id, actor=user["username"]):
+            raise HTTPException(404, "no such slot")
+        return {"ok": True}
+
+    @app.get("/api/slots/activity")
+    def slot_activity(limit: int = 200, plate: str = "",
+                      user: dict = Depends(require("gate"))):
+        """Arrivals and departures — the answer to 'when did my car leave?'"""
+        return ctx.db.slot_activity(min(limit, 1000),
+                                    plate=normalize_plate(plate) or None)
+
     # --------------------------------------------------- visitor log (gate)
     @app.get("/api/visits")
     def visits(limit: int = 200, plate: str = "", registered: str = "",

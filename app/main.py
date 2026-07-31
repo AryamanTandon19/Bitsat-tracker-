@@ -26,6 +26,7 @@ from .hybrid import HybridSecurityMonitor, build_evidence, route_from_reasons
 from .notify import TelegramNotifier
 from .plates import PlateReader, fuzzy_match
 from .rules import SUSPICIOUS_ACTIVITY, Event, RulesEngine
+from . import slots as slots_mod
 from . import users as users_mod
 from . import analyze as analyze_mod
 from .trigger import AT_VEHICLE as TRIG_AT_VEHICLE
@@ -86,6 +87,10 @@ class CameraPipeline(threading.Thread):
         self.vl_cfg = vl
         self._logged_tracks: dict[int, float] = {}   # track_id -> ts logged
         self._rates_refreshed = 0.0                  # verdict-rate cache
+        # parking slots: drawn spaces, optionally assigned to a vehicle
+        self.slot_cfg = ctx.config.get("slots") or {}
+        self.slots = None                            # built on the first frame
+        self._slots_loaded = 0.0
 
     def stop(self):
         self._stop.set()
@@ -142,6 +147,9 @@ class CameraPipeline(threading.Thread):
 
             if self.visitor_log and plate_info:
                 self._log_gate_crossings(plate_info, ts)
+
+            if self.slot_cfg.get("enabled", True):
+                self._track_slots(detections, plate_info, ts)
 
             # Feed the guards' verdicts back into scoring. Read every few
             # minutes, not every frame: it is a slow-moving aggregate and this
@@ -284,6 +292,52 @@ class CameraPipeline(threading.Thread):
             cutoff = ts - 3600
             self._logged_tracks = {k: v for k, v in self._logged_tracks.items()
                                    if v > cutoff}
+
+    def _track_slots(self, detections, plate_info: dict, ts: float):
+        """Watch the assigned spaces on this camera and tell owners when their
+        own vehicle moves."""
+        vehicles = [d for d in detections if d.is_vehicle]
+        # Slots are edited from the console, so pick changes up without a
+        # restart — but not on every frame.
+        if self.slots is None or ts - self._slots_loaded > 120:
+            self._slots_loaded = ts
+            try:
+                rows = self.ctx.db.list_slots(self.cam_name)
+            except Exception:
+                log.exception("[%s] could not load parking slots", self.cam_name)
+                rows = []
+            slots = [slots_mod.Slot(id=r["id"], camera=r["camera"],
+                                    label=r["label"], polygon=r["polygon"],
+                                    plate=r["plate"],
+                                    flat_number=r["flat_number"],
+                                    owner_name=r.get("owner_name"))
+                     for r in rows]
+            first = self.slots is None
+            self.slots = slots_mod.SlotTracker(slots, self.slot_cfg)
+            if first and slots:
+                # adopt what is already parked, or every car sitting in its own
+                # space at startup is announced as having just arrived
+                self.slots.prime(vehicles, plate_info, ts)
+                return
+
+        if not self.slots.slots:
+            return
+        for change in self.slots.update(vehicles, plate_info, ts):
+            sent = False
+            if change.kind == slots_mod.VACATED and \
+                    self.slot_cfg.get("notify_owner", True):
+                try:
+                    when = time.strftime("%H:%M", time.localtime(change.ts))
+                    sent = self.ctx.notifier.notify_slot_owner(change, when)
+                except Exception:
+                    log.exception("[%s] slot notification failed", self.cam_name)
+            try:
+                self.ctx.db.record_slot_activity(change.slot.id, change.kind,
+                                                 change.plate, change.ts, sent)
+            except Exception:
+                log.exception("[%s] could not record slot activity",
+                              self.cam_name)
+            log.info("[%s] slot: %s", self.cam_name, change.message())
 
     def _handle_event(self, ev):
         log.warning("EVENT [%s] %s: %s", ev.severity, ev.event_type, ev.description)

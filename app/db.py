@@ -150,6 +150,29 @@ CREATE TABLE IF NOT EXISTS sessions (
     user_agent TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+-- Parking slots: a drawn space, optionally assigned to a vehicle. This is the
+-- knowledge a society has that a generic camera system never does.
+CREATE TABLE IF NOT EXISTS parking_slots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    camera TEXT NOT NULL,
+    label TEXT NOT NULL,                     -- "B-12", "Visitor 3"
+    polygon_json TEXT NOT NULL,              -- [[x, y], ...] source pixels
+    plate TEXT,                              -- the vehicle that belongs here
+    flat_number TEXT,
+    created_at REAL NOT NULL,
+    UNIQUE (camera, label)
+);
+-- Every arrival and departure, so "when did my car leave?" has an answer
+-- months later and a dispute has a record.
+CREATE TABLE IF NOT EXISTS slot_activity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slot_id INTEGER NOT NULL REFERENCES parking_slots(id),
+    ts REAL NOT NULL,
+    kind TEXT NOT NULL,                      -- occupied | vacated | intruder
+    plate TEXT,
+    notified INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_slot_activity ON slot_activity(slot_id, ts);
 """
 
 # columns added after first release — applied with ALTER TABLE on startup so
@@ -616,6 +639,78 @@ class Database:
                                      (time.time() if now is None else now,))
             self._conn.commit()
             return cur.rowcount
+
+    # -- parking slots -------------------------------------------------------
+    def add_slot(self, camera: str, label: str, polygon: list,
+                 plate: str | None = None, flat_number: str = "",
+                 actor: str = "system") -> int:
+        if not polygon or len(polygon) < 3:
+            raise ValueError("a slot needs at least three points")
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT OR REPLACE INTO parking_slots (camera, label,"
+                " polygon_json, plate, flat_number, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (camera, label, json.dumps(polygon), plate or None,
+                 flat_number or None, time.time()))
+            self._conn.commit()
+            sid = cur.lastrowid
+        self.append_audit(actor, "SLOT_CHANGE",
+                          {"op": "add", "camera": camera, "label": label,
+                           "plate": plate})
+        return sid
+
+    def list_slots(self, camera: str | None = None) -> list[dict]:
+        sql = ("SELECT s.*, v.owner_name FROM parking_slots s"
+               " LEFT JOIN vehicles v ON v.plate_number = s.plate")
+        args: list = []
+        if camera:
+            sql += " WHERE s.camera = ?"
+            args.append(camera)
+        sql += " ORDER BY s.camera, s.label"
+        with self._lock:
+            rows = self._conn.execute(sql, args).fetchall()
+        return [{**dict(r), "polygon": json.loads(r["polygon_json"])}
+                for r in rows]
+
+    def remove_slot(self, slot_id: int, actor: str = "system") -> bool:
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM parking_slots WHERE id = ?",
+                                     (slot_id,))
+            self._conn.commit()
+            gone = cur.rowcount > 0
+        if gone:
+            self.append_audit(actor, "SLOT_CHANGE", {"op": "remove",
+                                                     "slot_id": slot_id})
+        return gone
+
+    def record_slot_activity(self, slot_id: int, kind: str, plate: str | None,
+                             ts: float, notified: bool = False) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO slot_activity (slot_id, ts, kind, plate, notified)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (slot_id, ts, kind, plate, int(notified)))
+            self._conn.commit()
+            return cur.lastrowid
+
+    def slot_activity(self, limit: int = 200, slot_id: int | None = None,
+                      plate: str | None = None) -> list[dict]:
+        sql = ("SELECT a.*, s.label, s.camera, s.flat_number"
+               " FROM slot_activity a JOIN parking_slots s ON s.id = a.slot_id")
+        where, args = [], []
+        if slot_id:
+            where.append("a.slot_id = ?")
+            args.append(slot_id)
+        if plate:
+            where.append("a.plate = ?")
+            args.append(plate)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY a.id DESC LIMIT ?"
+        args.append(limit)
+        with self._lock:
+            return [dict(r) for r in self._conn.execute(sql, args).fetchall()]
 
     # -- notices (committee -> members) --------------------------------------
     def add_notice(self, title: str, body: str, author: str,
