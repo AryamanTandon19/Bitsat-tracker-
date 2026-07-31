@@ -1,11 +1,16 @@
 """The operator app — the phone-sized VisionGuard for guards and committee.
 
 Separate from the console on purpose. The console is for sitting down and
-reviewing footage; this is for someone standing at a gate at 2am holding a
-cheap Android in one hand. So: bottom navigation within thumb reach, tap
-targets you can hit without looking, a dark ground that does not blind at
-night, and three jobs only — triage an alert, check the gate register, tell
-residents something.
+reviewing footage; this is for someone standing at a gate holding a cheap
+Android in one hand. So: bottom navigation within thumb reach, tap targets you
+can hit without looking, and three jobs only — triage an alert, check the gate
+register, tell residents something.
+
+The look: a soft grey-white ground with the content sitting on it as physical
+slabs. Depth does the work colour usually does — a card is raised, a statistic
+is pressed into the surface, a button gives under the thumb. That leaves the
+three strong hues to mean one thing each (needs attention, watch, settled) so
+a guard can read the screen at arm's length without decoding a legend.
 
 Served as a PWA (installable, works from the home screen) rather than a native
 app: no app-store review between a fix and the guard having it.
@@ -15,158 +20,271 @@ from __future__ import annotations
 import io
 import json
 
-# Amber is the accent because that is what a gate barrier and a high-vis vest
-# already are — it reads as "security" on a screen without explanation.
 PAGE = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#12151a">
+<meta name="theme-color" content="#e8ebf0">
 <title>VisionGuard Operator</title>
 <link rel="manifest" href="/operator/manifest.webmanifest">
 <link rel="icon" href="/operator/icon-192.png">
 <link rel="apple-touch-icon" href="/operator/icon-192.png">
 <style>
 :root{
-  --ground:#12151a; --surface:#1b1f27; --raised:#232833; --line:#2f3542;
-  --text:#e9ecf1; --muted:#98a1b0;
-  --amber:#f2a33c; --red:#e5484d; --green:#30a46c;
-  --tap:56px;
+  /* A cool grey-white, not a cream: it stays neutral under the yellow light
+     of a gate lamp, where a warm ground goes muddy. */
+  --ground:#e8ebf0;
+  --slab-top:#fdfdfe; --slab-bottom:#eff1f5;
+  --ink:#171a20; --ink-soft:#3c424e; --muted:#767e8c;
+  --hairline:rgba(23,26,32,.09);
+
+  /* One hue per meaning. Nothing else in the app is coloured. */
+  --alert:#c8394a; --caution:#b8721c; --calm:#1f8a6d; --action:#3b4ba8;
+  --alert-wash:#fdf2f3; --caution-wash:#fdf7ee; --calm-wash:#eff8f4;
+
+  /* Light falls from above, so every raised thing has a white top edge and
+     drops a shadow; every recessed thing does the exact opposite. */
+  --raise:0 1px 1.5px rgba(20,25,40,.05), 0 10px 22px -14px rgba(20,25,40,.42),
+          inset 0 1px 0 rgba(255,255,255,.95);
+  --raise-lift:0 2px 3px rgba(20,25,40,.06), 0 18px 34px -16px rgba(20,25,40,.5),
+          inset 0 1px 0 rgba(255,255,255,.95);
+  --recess:inset 0 2px 5px rgba(20,25,40,.11), inset 0 -1px 0 rgba(255,255,255,.9);
+  --press:inset 0 3px 7px rgba(20,25,40,.16);
+
+  --r-card:22px; --r-field:15px; --tap:56px;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;padding:0}
 body{
-  background:var(--ground); color:var(--text);
-  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-  font-size:16px; line-height:1.5;
-  padding-bottom:calc(76px + env(safe-area-inset-bottom));
+  background:var(--ground); color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,
+              "Segoe UI",Roboto,sans-serif;
+  font-size:16px; line-height:1.55; letter-spacing:-.011em;
+  -webkit-font-smoothing:antialiased;
+  padding-bottom:calc(94px + env(safe-area-inset-bottom));
 }
+:focus-visible{outline:2px solid var(--action); outline-offset:2px; border-radius:8px}
+
+/* --- header: sits on the ground, no slab, so the content floats above it --- */
 header{
-  position:sticky; top:0; z-index:10; background:var(--ground);
-  border-bottom:1px solid var(--line);
-  padding:calc(14px + env(safe-area-inset-top)) 16px 12px;
-  display:flex; align-items:baseline; justify-content:space-between; gap:12px;
+  position:sticky; top:0; z-index:10;
+  background:linear-gradient(var(--ground) 68%, rgba(232,235,240,0));
+  padding:calc(20px + env(safe-area-inset-top)) 20px 14px;
+  display:flex; align-items:center; justify-content:space-between; gap:12px;
 }
-.wordmark{font-size:15px; font-weight:700; letter-spacing:.14em; text-transform:uppercase}
-.wordmark span{color:var(--amber)}
-.who{font-size:13px; color:var(--muted); text-decoration:underline; cursor:pointer;
-     background:none; border:0; font-family:inherit; padding:4px}
-main{padding:16px; max-width:640px; margin:0 auto}
-.view{display:none} .view.on{display:block}
-h2{font-size:13px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted);
-   margin:0 0 10px; font-weight:600}
-.hint{color:var(--muted); font-size:14px; margin:0 0 16px}
+.wordmark{font-size:15px; font-weight:680; letter-spacing:.02em; color:var(--ink)}
+.wordmark span{color:var(--muted); font-weight:500}
+.who{
+  font:inherit; font-size:13px; font-weight:560; color:var(--ink-soft);
+  background:linear-gradient(var(--slab-top),var(--slab-bottom));
+  border:1px solid var(--hairline); box-shadow:var(--raise);
+  border-radius:999px; padding:7px 15px; cursor:pointer;
+}
+.who:active{box-shadow:var(--press); background:var(--slab-bottom)}
 
-/* --- summary strip: the answer before the detail --- */
-.strip{display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:20px}
-.stat{background:var(--surface); border:1px solid var(--line); border-radius:12px;
-      padding:12px 10px; text-align:center}
-.stat b{display:block; font-size:26px; font-variant-numeric:tabular-nums; line-height:1.1}
-.stat small{color:var(--muted); font-size:11px; letter-spacing:.06em; text-transform:uppercase}
-.stat.warn b{color:var(--amber)} .stat.bad b{color:var(--red)}
+main{padding:4px 20px 20px; max-width:560px; margin:0 auto}
+.view{display:none} .view.on{display:block; animation:rise .3s cubic-bezier(.2,.7,.3,1)}
+@keyframes rise{from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:none}}
 
-/* --- cards --- */
-.card{background:var(--surface); border:1px solid var(--line); border-radius:14px;
-      padding:14px; margin-bottom:12px; position:relative; overflow:hidden}
-.card::before{content:""; position:absolute; left:0; top:0; bottom:0; width:4px;
-              background:var(--muted)}
-.card.sev-HIGH::before{background:var(--red)}
-.card.sev-MEDIUM::before{background:var(--amber)}
+h1{font-size:27px; font-weight:700; letter-spacing:-.028em; margin:8px 0 6px;
+   text-wrap:balance}
+.hint{color:var(--muted); font-size:14.5px; margin:0 0 22px; max-width:44ch}
+h2{font-size:11px; font-weight:700; letter-spacing:.11em; text-transform:uppercase;
+   color:var(--muted); margin:32px 0 12px}
+
+/* --- statistics are pressed INTO the ground; cards sit on top of it --- */
+.strip{display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:0 0 26px}
+.stat{
+  background:var(--ground); box-shadow:var(--recess);
+  border-radius:18px; padding:14px 8px 12px; text-align:center;
+}
+.stat b{display:block; font-size:30px; font-weight:680; line-height:1.05;
+        letter-spacing:-.03em; font-variant-numeric:tabular-nums; color:var(--ink)}
+.stat small{display:block; margin-top:3px; color:var(--muted); font-size:10.5px;
+            font-weight:640; letter-spacing:.07em; text-transform:uppercase}
+.stat.warn b{color:var(--caution)} .stat.bad b{color:var(--alert)}
+.stat.zero b{color:var(--muted)}
+
+/* --- cards: slabs, with a coloured tab clipped to the left edge --- */
+.card{
+  background:linear-gradient(var(--slab-top),var(--slab-bottom));
+  border:1px solid var(--hairline); border-radius:var(--r-card);
+  box-shadow:var(--raise); padding:17px 18px 18px 21px;
+  margin-bottom:13px; position:relative;
+}
+.card::before{
+  content:""; position:absolute; left:7px; top:16px; bottom:16px; width:4px;
+  border-radius:4px; background:var(--muted); opacity:.55;
+}
+.card.sev-HIGH::before{background:var(--alert); opacity:1}
+.card.sev-MEDIUM::before{background:var(--caution); opacity:1}
 .card.sev-LOW::before{background:var(--muted)}
-.card.done::before{background:var(--green)}
-.row{display:flex; justify-content:space-between; align-items:baseline; gap:10px}
-.kind{font-weight:650; letter-spacing:.02em}
-.when{color:var(--muted); font-size:13px; font-variant-numeric:tabular-nums;
-      white-space:nowrap}
-.desc{margin:6px 0 0; font-size:15px}
-.meta{margin-top:6px; color:var(--muted); font-size:13px}
-.pill{display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px;
-      font-weight:650; letter-spacing:.08em; text-transform:uppercase;
-      border:1px solid currentColor}
-.pill.high{color:var(--red)} .pill.medium{color:var(--amber)}
-.pill.low{color:var(--muted)} .pill.ok{color:var(--green)}
+.card.sev-HIGH{background:linear-gradient(#fff,var(--alert-wash))}
+.card.sev-MEDIUM{background:linear-gradient(#fff,var(--caution-wash))}
+/* handled: settles back into the page instead of competing for attention */
+.card.done{box-shadow:0 1px 1px rgba(20,25,40,.04), inset 0 1px 0 #fff;
+           background:linear-gradient(var(--slab-top),var(--slab-bottom))}
+.card.done::before{background:var(--calm); opacity:.85}
 
-/* --- actions: two targets, both reachable, impossible to confuse --- */
-.actions{display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:14px}
-button.act{min-height:var(--tap); border-radius:12px; border:1px solid var(--line);
-  background:var(--raised); color:var(--text); font:inherit; font-weight:650;
-  cursor:pointer}
-button.act.real{border-color:var(--red); color:#ff9a9d}
-button.act.false{border-color:var(--green); color:#7ee2b8}
-button.act:active{transform:translateY(1px)}
-button.act[disabled]{opacity:.5}
-.verdict{margin-top:12px; font-size:14px; color:var(--green); font-weight:600}
-.verdict.real{color:var(--red)}
-a.clip{display:inline-block; margin-top:10px; color:var(--amber); font-size:14px}
+.row{display:flex; justify-content:space-between; align-items:baseline; gap:12px}
+.kind{font-size:17px; font-weight:660; letter-spacing:-.02em}
+.kind.plate{letter-spacing:.05em; font-variant-numeric:tabular-nums;
+            text-transform:none}
+.when{color:var(--muted); font-size:13px; font-weight:520; white-space:nowrap;
+      font-variant-numeric:tabular-nums}
+.desc{margin:5px 0 0; font-size:15.5px; color:var(--ink-soft); line-height:1.5}
+.meta{margin:11px 0 0; color:var(--muted); font-size:13.5px;
+      display:flex; align-items:center; gap:9px; flex-wrap:wrap}
+.pill{
+  display:inline-block; padding:3px 11px; border-radius:999px;
+  font-size:10.5px; font-weight:720; letter-spacing:.07em; text-transform:uppercase;
+  background:var(--ground); box-shadow:var(--recess); color:var(--muted);
+}
+.pill.high{color:var(--alert); background:var(--alert-wash)}
+.pill.medium{color:var(--caution); background:var(--caution-wash)}
+.pill.ok{color:var(--calm); background:var(--calm-wash)}
 
-/* --- forms --- */
-label{display:block; font-size:13px; color:var(--muted); margin:14px 0 6px}
-input,textarea,select{width:100%; background:var(--raised); color:var(--text);
-  border:1px solid var(--line); border-radius:10px; padding:12px; font:inherit}
-textarea{min-height:110px; resize:vertical}
-button.primary{width:100%; min-height:var(--tap); margin-top:18px; border-radius:12px;
-  border:0; background:var(--amber); color:#17191d; font:inherit; font-weight:700;
-  letter-spacing:.02em; cursor:pointer}
-button.primary[disabled]{opacity:.6}
-.toast{position:fixed; left:16px; right:16px; bottom:calc(88px + env(safe-area-inset-bottom));
-  background:var(--raised); border:1px solid var(--line); border-left:4px solid var(--green);
-  border-radius:10px; padding:12px 14px; font-size:14px; z-index:30;
-  transform:translateY(140%); transition:transform .22s ease}
-.toast.on{transform:none}
-.toast.err{border-left-color:var(--red)}
-.empty{color:var(--muted); text-align:center; padding:40px 20px; font-size:15px}
+/* --- actions: two keys on a panel. They give when pressed. --- */
+.actions{display:grid; grid-template-columns:1fr 1fr; gap:11px; margin-top:16px}
+button.act{
+  min-height:var(--tap); border-radius:16px; cursor:pointer;
+  font:inherit; font-size:15.5px; font-weight:640; letter-spacing:-.01em;
+  background:linear-gradient(var(--slab-top),var(--slab-bottom));
+  border:1px solid var(--hairline); box-shadow:var(--raise); color:var(--ink-soft);
+  transition:box-shadow .12s ease, background .12s ease;
+}
+button.act.real{color:var(--alert)}
+button.act.false{color:var(--calm)}
+button.act:active{box-shadow:var(--press); background:var(--slab-bottom)}
+button.act[disabled]{opacity:.45; box-shadow:var(--press)}
+.verdict{margin:14px 0 0; font-size:14.5px; font-weight:600; color:var(--calm);
+         display:flex; align-items:center; gap:8px}
+.verdict.real{color:var(--alert)}
+.verdict::before{content:""; width:7px; height:7px; border-radius:50%;
+                 background:currentColor; flex:none}
+a.clip{display:inline-block; margin-top:13px; color:var(--action);
+       font-size:14.5px; font-weight:560; text-decoration:none;
+       border-bottom:1px solid rgba(59,75,168,.3); padding-bottom:1px}
 
-/* --- bottom nav: thumb territory --- */
-nav{position:fixed; left:0; right:0; bottom:0; z-index:20; display:grid;
-  grid-template-columns:repeat(3,1fr); background:var(--surface);
-  border-top:1px solid var(--line); padding-bottom:env(safe-area-inset-bottom)}
-nav button{background:none; border:0; color:var(--muted); font:inherit; font-size:12px;
-  letter-spacing:.06em; text-transform:uppercase; font-weight:650;
-  min-height:64px; cursor:pointer; position:relative}
-nav button.on{color:var(--amber)}
-nav button.on::after{content:""; position:absolute; top:0; left:22%; right:22%; height:2px;
-  background:var(--amber)}
-nav .badge{display:inline-block; min-width:18px; margin-left:5px; padding:0 5px;
-  border-radius:9px; background:var(--red); color:#fff; font-size:11px; line-height:18px}
-@media (prefers-reduced-motion:reduce){.toast{transition:none}}
+/* --- fields are recessed: they are holes you put things into --- */
+label{display:block; font-size:11px; font-weight:700; letter-spacing:.11em;
+      text-transform:uppercase; color:var(--muted); margin:22px 0 8px}
+input,textarea,select{
+  width:100%; font:inherit; color:var(--ink);
+  background:var(--ground); box-shadow:var(--recess);
+  border:1px solid transparent; border-radius:var(--r-field); padding:14px 16px;
+  appearance:none;
+}
+input::placeholder,textarea::placeholder{color:#a4abb8}
+textarea{min-height:118px; resize:vertical; line-height:1.5}
+select{background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),
+                       linear-gradient(135deg,var(--muted) 50%,transparent 50%);
+       background-position:calc(100% - 21px) 24px, calc(100% - 16px) 24px;
+       background-size:5px 5px, 5px 5px; background-repeat:no-repeat}
+#q{margin-bottom:18px}
+button.primary{
+  width:100%; min-height:var(--tap); margin-top:24px; cursor:pointer;
+  border-radius:17px; border:1px solid #33429a; font:inherit; font-size:16px;
+  font-weight:640; letter-spacing:-.01em; color:#fff;
+  background:linear-gradient(#5061c4,var(--action));
+  box-shadow:0 1px 1px rgba(20,25,40,.08), 0 12px 24px -14px rgba(59,75,168,.9),
+             inset 0 1px 0 rgba(255,255,255,.34);
+}
+button.primary:active{box-shadow:inset 0 3px 8px rgba(10,15,50,.4);
+                      background:var(--action)}
+button.primary[disabled]{opacity:.55}
+
+.toast{
+  position:fixed; left:20px; right:20px;
+  bottom:calc(104px + env(safe-area-inset-bottom));
+  max-width:520px; margin:0 auto; z-index:30;
+  background:linear-gradient(var(--slab-top),var(--slab-bottom));
+  border:1px solid var(--hairline); border-radius:16px; padding:14px 17px;
+  font-size:14.5px; font-weight:540; color:var(--ink-soft);
+  box-shadow:var(--raise-lift);
+  display:flex; align-items:center; gap:11px;
+  /* percentage transforms do not clear the screen on a one-line toast, so
+     hide it outright rather than relying on it sliding far enough */
+  opacity:0; visibility:hidden; transform:translateY(14px);
+  transition:opacity .22s ease, transform .34s cubic-bezier(.2,.8,.25,1),
+             visibility 0s linear .34s;
+}
+.toast::before{content:""; width:8px; height:8px; border-radius:50%; flex:none;
+               background:var(--calm)}
+.toast.err::before{background:var(--alert)}
+.toast.on{opacity:1; visibility:visible; transform:none; transition-delay:0s}
+.empty{color:var(--muted); text-align:center; padding:44px 20px; font-size:15px;
+       background:var(--ground); box-shadow:var(--recess); border-radius:var(--r-card)}
+
+/* --- bottom bar: frosted, so the list reads as sliding underneath it --- */
+nav{
+  position:fixed; left:0; right:0; bottom:0; z-index:20;
+  display:grid; grid-template-columns:repeat(3,1fr);
+  /* frosted, but opaque enough that a card scrolling under it does not stay
+     readable through the glass */
+  background:rgba(237,239,244,.93);
+  -webkit-backdrop-filter:saturate(180%) blur(20px);
+  backdrop-filter:saturate(180%) blur(20px);
+  border-top:1px solid rgba(23,26,32,.07);
+  padding:6px 8px calc(6px + env(safe-area-inset-bottom));
+}
+nav button{
+  background:none; border:0; cursor:pointer; min-height:60px; border-radius:16px;
+  font:inherit; font-size:12px; font-weight:640; letter-spacing:.02em;
+  color:var(--muted); transition:color .16s ease;
+  display:flex; align-items:center; justify-content:center; gap:7px;
+}
+nav button.on{
+  color:var(--action);
+  background:linear-gradient(var(--slab-top),var(--slab-bottom));
+  box-shadow:var(--raise);
+}
+nav .badge{
+  min-width:20px; height:20px; padding:0 6px; border-radius:999px; flex:none;
+  background:var(--alert); color:#fff; font-size:11px; font-weight:700;
+  line-height:20px; box-shadow:0 2px 6px rgba(200,57,74,.4);
+}
+@media (prefers-reduced-motion:reduce){
+  .toast{transition:none} .view.on{animation:none}
+}
 </style>
 </head>
 <body>
 <header>
-  <div class="wordmark">Vision<span>Guard</span> Operator</div>
+  <div class="wordmark">VisionGuard <span>Operator</span></div>
   <button class="who" id="who">set name</button>
 </header>
 
 <main>
   <section class="view on" id="v-alerts">
+    <h1>Detections</h1>
+    <p class="hint">Mark each one once you have looked. Your answer teaches the
+      system to stop raising the ones that were never anything.</p>
     <div class="strip">
       <div class="stat bad"><b id="s-untriaged">0</b><small>To check</small></div>
       <div class="stat"><b id="s-today">0</b><small>Today</small></div>
       <div class="stat"><b id="s-false">0</b><small>False</small></div>
     </div>
-    <h2>Detections</h2>
-    <p class="hint">Mark each one once you have looked. Your answer trains the
-      system to stop raising the ones that were never anything.</p>
     <div id="alerts"></div>
   </section>
 
   <section class="view" id="v-gate">
+    <h1>Gate register</h1>
+    <p class="hint">Written by the camera, not by hand. Every plate that passes
+      the gate opens a visit; the next pass closes it.</p>
     <div class="strip">
       <div class="stat"><b id="s-inside">0</b><small>Inside</small></div>
       <div class="stat warn"><b id="s-visitors">0</b><small>Visitors</small></div>
       <div class="stat bad"><b id="s-over">0</b><small>Overstay</small></div>
     </div>
-    <h2>Gate register</h2>
-    <p class="hint">Written by the camera, not by hand. Every plate that passes
-      the gate opens a visit; the next pass closes it.</p>
     <input id="q" placeholder="Search a plate" autocomplete="off"
            inputmode="latin" aria-label="Search a plate">
-    <div id="visits" style="margin-top:14px"></div>
+    <div id="visits"></div>
   </section>
 
   <section class="view" id="v-notices">
-    <h2>Tell the members</h2>
+    <h1>Tell the members</h1>
     <p class="hint">Goes to every resident who has connected Telegram. Anything
       you send is kept on record below.</p>
     <label for="n-title">Subject</label>
@@ -183,7 +301,7 @@ nav .badge{display:inline-block; min-width:18px; margin-left:5px; padding:0 5px;
       <input id="n-flat" placeholder="B-402">
     </div>
     <button class="primary" id="send">Send message</button>
-    <h2 style="margin-top:30px">Sent</h2>
+    <h2>Sent</h2>
     <div id="notices"></div>
   </section>
 </main>
@@ -231,6 +349,21 @@ function ago(ts){
 const clock = ts => new Date(ts*1000).toLocaleTimeString([],
   {hour:"2-digit", minute:"2-digit"});
 
+// UNAUTHORIZED_VEHICLE -> "Unauthorized vehicle". Done here rather than with
+// text-transform, which would also re-case anything a person typed.
+const sentence = s => {
+  const t = String(s || "").replace(/_/g, " ").toLowerCase();
+  return t.charAt(0).toUpperCase() + t.slice(1);
+};
+
+// A zero is good news on every one of these tiles, so it should not be the
+// colour that means "look at me".
+function stat(sel, n){
+  const el = $(sel);
+  el.textContent = n;
+  el.parentElement.classList.toggle("zero", !n);
+}
+
 /* ------------------------------------------------------------- alerts */
 async function loadAlerts(){
   let rows = [];
@@ -239,9 +372,9 @@ async function loadAlerts(){
             return; }
   const dayAgo = Date.now()/1000 - 86400;
   const untriaged = rows.filter(r => !r.verdict).length;
-  $("#s-untriaged").textContent = untriaged;
-  $("#s-today").textContent = rows.filter(r => r.ts > dayAgo).length;
-  $("#s-false").textContent = rows.filter(r => r.verdict === "false_alarm").length;
+  stat("#s-untriaged", untriaged);
+  stat("#s-today", rows.filter(r => r.ts > dayAgo).length);
+  stat("#s-false", rows.filter(r => r.verdict === "false_alarm").length);
   const badge = $("#nav-badge");
   badge.style.display = untriaged ? "inline-block" : "none";
   badge.textContent = untriaged;
@@ -271,7 +404,7 @@ async function loadAlerts(){
          </div>`;
     return `<article class="card sev-${sev} ${done ? "done" : ""}">
       <div class="row">
-        <span class="kind">${esc((r.event_type || "").replace(/_/g, " ").toLowerCase())}</span>
+        <span class="kind">${esc(sentence(r.event_type))}</span>
         <span class="when">${ago(r.ts)}</span>
       </div>
       <p class="desc">${esc(r.description || "")}</p>
@@ -310,9 +443,9 @@ async function loadGate(){
       api("/api/visits?limit=100" + (q ? "&plate=" + encodeURIComponent(q) : ""))]);
   } catch(e){ $("#visits").innerHTML = '<p class="empty">Cannot reach the server.</p>';
               return; }
-  $("#s-inside").textContent = open.length;
-  $("#s-visitors").textContent = open.filter(v => !v.registered).length;
-  $("#s-over").textContent = over.length;
+  stat("#s-inside", open.length);
+  stat("#s-visitors", open.filter(v => !v.registered).length);
+  stat("#s-over", over.length);
   const overIds = new Set(over.map(v => v.id));
 
   if(!rows.length){
@@ -328,13 +461,17 @@ async function loadGate(){
     const owner = v.owner_name
       ? esc(v.owner_name) + (v.flat_number ? " &middot; " + esc(v.flat_number) : "")
       : "not in the registry";
-    return `<article class="card ${late ? "sev-HIGH" : inside ? "sev-MEDIUM" : "done"}">
+    // Only what a guard might act on is tinted. A resident parked at home is
+    // inside all night and must not look like a warning.
+    const tone = late ? "sev-HIGH"
+      : !inside ? "done" : v.registered ? "sev-LOW" : "sev-MEDIUM";
+    return `<article class="card ${tone}">
       <div class="row">
-        <span class="kind" style="letter-spacing:.06em">${esc(v.plate)}</span>
+        <span class="kind plate">${esc(v.plate)}</span>
         <span class="when">${inside ? "in " + clock(v.entry_ts)
                                     : clock(v.entry_ts) + " – " + clock(v.exit_ts)}</span>
       </div>
-      <p class="meta">${tag}&nbsp; ${owner}</p>
+      <p class="meta">${tag} ${owner}</p>
       <p class="meta">${inside ? "Still inside, since " + ago(v.entry_ts)
                                : "Left " + ago(v.exit_ts)}</p>
     </article>`;
@@ -416,8 +553,8 @@ MANIFEST = {
     "scope": "/operator",
     "display": "standalone",
     "orientation": "portrait",
-    "background_color": "#12151a",
-    "theme_color": "#12151a",
+    "background_color": "#e8ebf0",
+    "theme_color": "#e8ebf0",
     "icons": [
         {"src": "/operator/icon-192.png", "sizes": "192x192", "type": "image/png",
          "purpose": "any"},
@@ -459,13 +596,22 @@ def icon_png(size: int) -> bytes:
     import cv2
     import numpy as np
 
-    img = np.full((size, size, 3), (26, 21, 18), dtype=np.uint8)   # BGR ground
-    c, r = size // 2, int(size * 0.34)
-    cv2.circle(img, (c, c), r, (60, 163, 242), max(2, size // 24))  # amber ring
-    # a shield-ish chevron inside the ring
-    d = int(r * 0.52)
-    pts = np.array([[c - d, c - d], [c, c + d], [c + d, c - d]], dtype=np.int32)
-    cv2.polylines(img, [pts], False, (60, 163, 242), max(2, size // 20),
+    # A home screen is a wall of bright squares, so the icon goes the other
+    # way: deep indigo ground, one pale mark. Vertical gradient because the
+    # app is lit from above everywhere else.
+    top, bottom = np.array([164, 97, 80]), np.array([122, 66, 51])   # BGR
+    ramp = np.linspace(0, 1, size)[:, None]
+    img = (top * (1 - ramp) + bottom * ramp)[:, None, :]
+    img = np.repeat(img, size, axis=1).astype(np.uint8)
+
+    c, r = size // 2, int(size * 0.32)
+    pale = (246, 244, 238)
+    cv2.circle(img, (c, c), r, pale, max(2, size // 26), lineType=cv2.LINE_AA)
+    # a chevron inside the ring — a watch mark, not a letter
+    d = int(r * 0.46)
+    pts = np.array([[c - d, c - int(d * 0.55)], [c, c + int(d * 0.75)],
+                    [c + d, c - int(d * 0.55)]], dtype=np.int32)
+    cv2.polylines(img, [pts], False, pale, max(2, size // 22),
                   lineType=cv2.LINE_AA)
     ok, buf = cv2.imencode(".png", img)
     if not ok:                                     # pragma: no cover
