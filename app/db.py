@@ -712,6 +712,72 @@ class Database:
         with self._lock:
             return [dict(r) for r in self._conn.execute(sql, args).fetchall()]
 
+    def now(self) -> float:
+        return time.time()
+
+    def slot_windows(self, plate: str | None = None, slot_id: int | None = None,
+                     since: float | None = None, until: float | None = None):
+        """Periods a vehicle was parked in a slot, newest first.
+
+        Built by pairing each `occupied` with the `vacated` that follows it. A
+        row still open (no departure yet) comes back with end=None rather than
+        being dropped — a car that has not moved since is exactly the case a
+        damage lookup cares about.
+        """
+        from .damage import Window
+        sql = ("SELECT a.*, s.label, s.camera FROM slot_activity a"
+               " JOIN parking_slots s ON s.id = a.slot_id"
+               " WHERE a.kind IN ('occupied', 'vacated')")
+        args: list = []
+        if plate:
+            sql += " AND a.plate = ?"
+            args.append(plate)
+        if slot_id:
+            sql += " AND a.slot_id = ?"
+            args.append(slot_id)
+        sql += " ORDER BY a.slot_id, a.ts ASC"
+        with self._lock:
+            rows = [dict(r) for r in self._conn.execute(sql, args).fetchall()]
+
+        windows, open_row = [], {}
+        for r in rows:
+            key = (r["slot_id"], r["plate"])
+            if r["kind"] == "occupied":
+                open_row[key] = r
+            elif key in open_row:
+                start = open_row.pop(key)
+                windows.append(Window(r["slot_id"], r["label"], r["camera"],
+                                      r["plate"], start["ts"], r["ts"]))
+        for r in open_row.values():          # still parked
+            windows.append(Window(r["slot_id"], r["label"], r["camera"],
+                                  r["plate"], r["ts"], None))
+
+        # keep any window that overlaps the requested period at all
+        def overlaps(w):
+            if since is not None and (w.end is not None and w.end < since):
+                return False
+            if until is not None and w.start > until:
+                return False
+            return True
+
+        windows = [w for w in windows if overlaps(w)]
+        windows.sort(key=lambda w: -w.start)
+        return windows
+
+    def events_between(self, camera: str, start: float, end: float,
+                       limit: int = 500) -> list[dict]:
+        """Events on one camera inside one period, with their clips."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT e.*, c.id AS clip_id, c.deleted AS clip_deleted,"
+                " (SELECT ar.summary FROM ai_reviews ar WHERE ar.event_id = e.id"
+                "  ORDER BY ar.tier DESC, ar.id DESC LIMIT 1) AS ai_summary"
+                " FROM events e LEFT JOIN clips c ON c.event_id = e.id"
+                " WHERE e.camera = ? AND e.ts BETWEEN ? AND ?"
+                " ORDER BY e.ts ASC LIMIT ?",
+                (camera, start, end, limit)).fetchall()
+            return [dict(r) for r in rows]
+
     # -- notices (committee -> members) --------------------------------------
     def add_notice(self, title: str, body: str, author: str,
                    audience: str = "all", flat_number: str = "") -> int:

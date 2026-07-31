@@ -27,6 +27,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from . import assistant as assistant_mod
 from . import auth
 from . import clips as clips_mod
+from . import damage as damage_mod
 from . import operator as operator_mod
 from .plates import normalize_plate
 
@@ -374,6 +375,20 @@ def create_app(ctx) -> FastAPI:
         """Arrivals and departures — the answer to 'when did my car leave?'"""
         return ctx.db.slot_activity(min(limit, 1000),
                                     plate=normalize_plate(plate) or None)
+
+    @app.get("/api/damage")
+    def damage_lookup(plate: str = "", slot_id: int = 0, since: float = 0,
+                      until: float = 0, user: dict = Depends(require("gate"))):
+        """What could have marked this vehicle while it was parked.
+
+        Narrowed to the periods the slot map says it was actually in its space,
+        on the camera that watches that space — which is the difference between
+        a searchable question and eleven hours of footage nobody will watch.
+        """
+        if not plate and not slot_id:
+            raise HTTPException(400, "give a plate or a slot_id")
+        return damage_mod.search(ctx.db, normalize_plate(plate) or None,
+                                 slot_id or None, since or None, until or None)
 
     # --------------------------------------------------- visitor log (gate)
     @app.get("/api/visits")
