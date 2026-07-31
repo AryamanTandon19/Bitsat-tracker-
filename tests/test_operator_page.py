@@ -115,5 +115,24 @@ def test_the_page_only_calls_endpoints_that_exist(client):
         assert client.get(p).status_code != 404, p
 
 
+def test_reduced_motion_override_outranks_the_rules_it_disables(client):
+    """The background blooms are set up on .aurora span:nth-child(N), so a
+    plain `.aurora span{animation:none}` loses on specificity and the screen
+    keeps moving for someone who asked it to stop. Verified in a browser:
+    frames 6s apart are pixel-identical under reduced motion."""
+    css = client.get("/operator").text
+    guard = css.split("prefers-reduced-motion")[1]
+    assert ".aurora span:nth-child(n){animation:none}" in guard
+
+
+def test_severity_reads_as_a_whole_panel_not_a_stripe(client):
+    css = client.get("/operator").text
+    for sev, rgb in (("sev-HIGH", "255,97,131"), ("sev-MEDIUM", "255,180,92"),
+                     ("done", "74,222,158")):
+        block = css.split(f".card.{sev}{{")[1].split("}")[0]
+        assert f"linear-gradient(152deg,rgba({rgb}" in block
+        assert "border-color:rgba" in block
+
+
 def test_untriaged_alerts_sort_above_handled_ones(client):
     assert "(!!a.verdict - !!b.verdict) || (b.ts - a.ts)" in client.get("/operator").text

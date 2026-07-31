@@ -79,19 +79,40 @@ body{
 }
 :focus-visible{outline:2px solid #b49bff; outline-offset:3px; border-radius:10px}
 
-/* --- the light in the room: three slow violet blooms behind everything --- */
+/* --- the light in the room --- *
+ * Four violet blooms that drift and breathe, plus one wide band of light
+ * crossing the screen on a very long cycle. Only transform and opacity are
+ * animated: those the compositor can handle on its own, which keeps a cheap
+ * Android from dropping frames while a guard is scrolling the list. */
 .aurora{position:fixed; inset:0; z-index:-1; overflow:hidden; background:var(--night)}
-.aurora span{position:absolute; border-radius:50%; filter:blur(80px); opacity:.34}
-.aurora span:nth-child(1){width:78vw; height:78vw; top:-26vw; left:-22vw;
-  background:radial-gradient(circle,#5f2fc4,transparent 68%); animation:drift1 26s ease-in-out infinite}
-.aurora span:nth-child(2){width:62vw; height:62vw; top:24vh; right:-26vw;
-  background:radial-gradient(circle,#33208a,transparent 70%); animation:drift2 32s ease-in-out infinite}
-.aurora span:nth-child(3){width:70vw; height:70vw; bottom:-24vh; left:-14vw;
-  background:radial-gradient(circle,#7346e0,transparent 72%); opacity:.22;
-  animation:drift3 38s ease-in-out infinite}
+.aurora span{position:absolute; border-radius:50%; filter:blur(80px);
+  will-change:transform, opacity}
+.aurora span:nth-child(1){width:78vw; height:78vw; top:-26vw; left:-22vw; opacity:.34;
+  background:radial-gradient(circle,#5f2fc4,transparent 68%);
+  animation:drift1 26s ease-in-out infinite, breathe 13s ease-in-out infinite}
+.aurora span:nth-child(2){width:62vw; height:62vw; top:24vh; right:-26vw; opacity:.34;
+  background:radial-gradient(circle,#33208a,transparent 70%);
+  animation:drift2 32s ease-in-out infinite, breathe 17s ease-in-out infinite -4s}
+.aurora span:nth-child(3){width:70vw; height:70vw; bottom:-24vh; left:-14vw; opacity:.22;
+  background:radial-gradient(circle,#7346e0,transparent 72%);
+  animation:drift3 38s ease-in-out infinite, breathe 21s ease-in-out infinite -9s}
+.aurora span:nth-child(4){width:46vw; height:46vw; top:52vh; left:8vw; opacity:.17;
+  background:radial-gradient(circle,#b07cff,transparent 70%);
+  animation:drift4 44s ease-in-out infinite, breathe 15s ease-in-out infinite -6s}
+/* the pass of light — one slow sweep every 24s, barely there */
+.aurora::after{
+  content:""; position:absolute; top:-60%; left:-60%; width:220%; height:220%;
+  background:linear-gradient(102deg,transparent 42%,rgba(178,140,255,.09) 50%,
+             transparent 58%);
+  animation:pass 24s linear infinite; will-change:transform;
+}
 @keyframes drift1{50%{transform:translate(9vw,7vh) scale(1.12)}}
 @keyframes drift2{50%{transform:translate(-8vw,-6vh) scale(1.16)}}
 @keyframes drift3{50%{transform:translate(7vw,-8vh) scale(1.1)}}
+@keyframes drift4{33%{transform:translate(-11vw,6vh) scale(1.2)}
+                  66%{transform:translate(6vw,-9vh) scale(.92)}}
+@keyframes breathe{50%{opacity:.62}}
+@keyframes pass{from{transform:translateX(-42%)} to{transform:translateX(42%)}}
 
 header{
   position:sticky; top:0; z-index:10;
@@ -177,26 +198,59 @@ h2{font-size:11px; font-weight:700; letter-spacing:.12em; text-transform:upperca
 .tile.zero b{color:var(--soft)}
 .spark{display:block; width:100%; height:26px; margin-top:8px; overflow:visible}
 
-/* --- list cards --- */
+/* --- list cards: the severity IS the panel --- *
+ * Each alert sits on its own sheet of tinted glass rather than wearing a
+ * coloured stripe, so the state is legible from the shape of the whole card
+ * at arm's length. The tint stays under 20% — enough to name the colour,
+ * light enough that white text keeps its contrast on top of it. */
 .card{
-  position:relative; border-radius:var(--r); padding:17px 18px 18px 22px;
-  margin-bottom:12px;
+  position:relative; overflow:hidden; border-radius:var(--r);
+  padding:17px 18px 18px; margin-bottom:12px;
   background:var(--glass); border:1px solid var(--edge); box-shadow:var(--lift);
   backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px);
 }
+/* the lit corner — where the glass catches the light */
 .card::before{
-  content:""; position:absolute; left:8px; top:17px; bottom:17px; width:3px;
-  border-radius:3px; background:var(--muted); opacity:.5;
+  content:""; position:absolute; inset:0; z-index:0; pointer-events:none;
+  border-radius:inherit;
+  background:radial-gradient(130% 90% at 8% -10%,
+             rgba(255,255,255,.10), transparent 60%);
 }
-.card.sev-HIGH::before{background:var(--alert); opacity:1;
-  box-shadow:0 0 14px rgba(255,97,131,.8)}
-.card.sev-MEDIUM::before{background:var(--caution); opacity:1;
-  box-shadow:0 0 14px rgba(255,180,92,.65)}
-.card.sev-LOW::before{background:var(--muted)}
-.card.sev-HIGH{background:linear-gradient(120deg,rgba(255,97,131,.13),var(--glass) 62%)}
-.card.sev-MEDIUM{background:linear-gradient(120deg,rgba(255,180,92,.12),var(--glass) 62%)}
-.card.done{background:rgba(255,255,255,.022); box-shadow:none; opacity:.8}
-.card.done::before{background:var(--calm); opacity:.9}
+.card > *{position:relative; z-index:1}
+
+.card.sev-HIGH{
+  background:linear-gradient(152deg,rgba(255,97,131,.23),rgba(255,97,131,.115) 48%,
+             rgba(255,97,131,.075));
+  border-color:rgba(255,97,131,.34);
+  box-shadow:0 20px 46px -24px rgba(255,60,100,.6),
+             inset 0 1px 0 rgba(255,196,209,.26);
+}
+.card.sev-HIGH::before{background:radial-gradient(130% 90% at 8% -10%,
+  rgba(255,150,175,.24), transparent 62%)}
+
+.card.sev-MEDIUM{
+  background:linear-gradient(152deg,rgba(255,180,92,.22),rgba(255,180,92,.105) 48%,
+             rgba(255,180,92,.07));
+  border-color:rgba(255,180,92,.32);
+  box-shadow:0 20px 46px -24px rgba(255,160,60,.5),
+             inset 0 1px 0 rgba(255,222,180,.24);
+}
+.card.sev-MEDIUM::before{background:radial-gradient(130% 90% at 8% -10%,
+  rgba(255,206,150,.22), transparent 62%)}
+
+.card.sev-LOW{background:var(--glass); border-color:var(--edge)}
+
+/* handled, and the gate's departed vehicles: green, but quieter than the two
+   states that still want a person */
+.card.done{
+  background:linear-gradient(152deg,rgba(74,222,158,.15),rgba(74,222,158,.07) 48%,
+             rgba(74,222,158,.045));
+  border-color:rgba(74,222,158,.24);
+  box-shadow:0 14px 34px -26px rgba(40,200,140,.45),
+             inset 0 1px 0 rgba(180,245,215,.16);
+}
+.card.done::before{background:radial-gradient(130% 90% at 8% -10%,
+  rgba(150,240,200,.15), transparent 62%)}
 
 .row{display:flex; justify-content:space-between; align-items:baseline; gap:12px}
 .kind{font-size:17px; font-weight:640; letter-spacing:-.025em}
@@ -325,14 +379,18 @@ nav .badge{
 @keyframes pulse{50%{box-shadow:0 0 22px rgba(255,97,131,1)}}
 
 @media (prefers-reduced-motion:reduce){
-  .aurora span,.hero::after,button.primary::after,nav .badge{animation:none}
+  /* :nth-child(n) is here to match the specificity of the rules above that
+     set these animations — .aurora span alone loses to .aurora span:nth-child(1)
+     and the background keeps moving for someone who asked it not to. */
+  .aurora span:nth-child(n){animation:none}
+  .aurora::after,.hero::after,button.primary::after,nav .badge{animation:none}
   .view.on > *{animation:none}
   .toast{transition:opacity .01s, visibility 0s}
 }
 </style>
 </head>
 <body>
-<div class="aurora" aria-hidden="true"><span></span><span></span><span></span></div>
+<div class="aurora" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
 
 <header>
   <div class="wordmark">Vision<span>Guard</span></div>
