@@ -6,11 +6,16 @@ Android in one hand. So: bottom navigation within thumb reach, tap targets you
 can hit without looking, and three jobs only — triage an alert, check the gate
 register, tell residents something.
 
-The look: a soft grey-white ground with the content sitting on it as physical
-slabs. Depth does the work colour usually does — a card is raised, a statistic
-is pressed into the surface, a button gives under the thumb. That leaves the
-three strong hues to mean one thing each (needs attention, watch, settled) so
-a guard can read the screen at arm's length without decoding a legend.
+The look: a deep violet night with slow aurora blooms behind it, glass cards
+floating on top, and one polished-metal slab per screen carrying the number
+that matters. The metal gradient runs light -> saturated -> deep -> light
+again, and a sheen travels across it, which is what separates it from a flat
+fade. Everything else stays quiet so the three signal hues — needs attention,
+watch, settled — still read at arm's length.
+
+Movement is kept to things that mean something: numbers count up when they
+change, sparklines are drawn from real timestamps, the unread badge breathes.
+All of it stands down under prefers-reduced-motion.
 
 Served as a PWA (installable, works from the home screen) rather than a native
 app: no app-store review between a fix and the guard having it.
@@ -25,282 +30,396 @@ PAGE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#e8ebf0">
+<meta name="theme-color" content="#150a2b">
 <title>VisionGuard Operator</title>
 <link rel="manifest" href="/operator/manifest.webmanifest">
 <link rel="icon" href="/operator/icon-192.png">
 <link rel="apple-touch-icon" href="/operator/icon-192.png">
 <style>
 :root{
-  /* A cool grey-white, not a cream: it stays neutral under the yellow light
-     of a gate lamp, where a warm ground goes muddy. */
-  --ground:#e8ebf0;
-  --slab-top:#fdfdfe; --slab-bottom:#eff1f5;
-  --ink:#171a20; --ink-soft:#3c424e; --muted:#767e8c;
-  --hairline:rgba(23,26,32,.09);
+  --night:#150a2b; --night-2:#1d0f3d;
+  --glass:rgba(255,255,255,.055); --glass-2:rgba(255,255,255,.085);
+  --edge:rgba(255,255,255,.10); --edge-lit:rgba(255,255,255,.20);
+  --text:#f4f1ff; --soft:#cdc4ee; --muted:#9a90c2;
 
-  /* One hue per meaning. Nothing else in the app is coloured. */
-  --alert:#c8394a; --caution:#b8721c; --calm:#1f8a6d; --action:#3b4ba8;
-  --alert-wash:#fdf2f3; --caution-wash:#fdf7ee; --calm-wash:#eff8f4;
+  /* The metallic: a violet run through light, saturated, deep and back to
+     light again. Six stops, not two — that turn from dark back to pale is
+     what makes it read as polished metal rather than a flat fade. */
+  --metal:linear-gradient(145deg,#dcd2ff 0%,#ab8dff 17%,#7f56f0 42%,
+                          #5a2fd0 64%,#8b63f5 86%,#c3aeff 100%);
+  --metal-soft:linear-gradient(150deg,#8f6bf2 0%,#5f34d4 55%,#7c53ee 100%);
+  --sheen:linear-gradient(104deg,transparent 34%,rgba(255,255,255,.42) 47%,
+                          transparent 60%);
 
-  /* Light falls from above, so every raised thing has a white top edge and
-     drops a shadow; every recessed thing does the exact opposite. */
-  --raise:0 1px 1.5px rgba(20,25,40,.05), 0 10px 22px -14px rgba(20,25,40,.42),
-          inset 0 1px 0 rgba(255,255,255,.95);
-  --raise-lift:0 2px 3px rgba(20,25,40,.06), 0 18px 34px -16px rgba(20,25,40,.5),
-          inset 0 1px 0 rgba(255,255,255,.95);
-  --recess:inset 0 2px 5px rgba(20,25,40,.11), inset 0 -1px 0 rgba(255,255,255,.9);
-  --press:inset 0 3px 7px rgba(20,25,40,.16);
+  --alert:#ff6183; --caution:#ffb45c; --calm:#4ade9e;
 
-  --r-card:22px; --r-field:15px; --tap:56px;
+  --lift:0 18px 44px -20px rgba(88,44,208,.95), inset 0 1px 0 var(--edge-lit);
+  --lift-2:0 26px 60px -22px rgba(88,44,208,1), inset 0 1px 0 rgba(255,255,255,.3);
+  --r:26px; --r-sm:18px; --tap:56px;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;padding:0}
 body{
-  background:var(--ground); color:var(--ink);
-  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,
+  background:var(--night); color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display",system-ui,
               "Segoe UI",Roboto,sans-serif;
-  font-size:16px; line-height:1.55; letter-spacing:-.011em;
+  font-size:16px; line-height:1.5; letter-spacing:-.012em;
   -webkit-font-smoothing:antialiased;
-  padding-bottom:calc(94px + env(safe-area-inset-bottom));
+  padding-bottom:calc(112px + env(safe-area-inset-bottom));
+  overflow-x:hidden;
 }
-:focus-visible{outline:2px solid var(--action); outline-offset:2px; border-radius:8px}
+:focus-visible{outline:2px solid #b49bff; outline-offset:3px; border-radius:10px}
 
-/* --- header: sits on the ground, no slab, so the content floats above it --- */
+/* --- the light in the room: three slow violet blooms behind everything --- */
+.aurora{position:fixed; inset:0; z-index:-1; overflow:hidden; background:var(--night)}
+.aurora span{position:absolute; border-radius:50%; filter:blur(72px); opacity:.62}
+.aurora span:nth-child(1){width:78vw; height:78vw; top:-26vw; left:-22vw;
+  background:radial-gradient(circle,#7b4ae8,transparent 68%); animation:drift1 26s ease-in-out infinite}
+.aurora span:nth-child(2){width:62vw; height:62vw; top:24vh; right:-26vw;
+  background:radial-gradient(circle,#4b2bb5,transparent 70%); animation:drift2 32s ease-in-out infinite}
+.aurora span:nth-child(3){width:70vw; height:70vw; bottom:-24vh; left:-14vw;
+  background:radial-gradient(circle,#9a6bff,transparent 72%); opacity:.4;
+  animation:drift3 38s ease-in-out infinite}
+@keyframes drift1{50%{transform:translate(9vw,7vh) scale(1.12)}}
+@keyframes drift2{50%{transform:translate(-8vw,-6vh) scale(1.16)}}
+@keyframes drift3{50%{transform:translate(7vw,-8vh) scale(1.1)}}
+
 header{
   position:sticky; top:0; z-index:10;
-  background:linear-gradient(var(--ground) 68%, rgba(232,235,240,0));
-  padding:calc(20px + env(safe-area-inset-top)) 20px 14px;
+  background:linear-gradient(var(--night) 55%,rgba(21,10,43,0));
+  padding:calc(18px + env(safe-area-inset-top)) 20px 14px;
   display:flex; align-items:center; justify-content:space-between; gap:12px;
 }
-.wordmark{font-size:15px; font-weight:680; letter-spacing:.02em; color:var(--ink)}
-.wordmark span{color:var(--muted); font-weight:500}
+.wordmark{font-size:15px; font-weight:640; letter-spacing:.01em}
+.wordmark span{
+  background:var(--metal); -webkit-background-clip:text; background-clip:text;
+  -webkit-text-fill-color:transparent; font-weight:700;
+}
 .who{
-  font:inherit; font-size:13px; font-weight:560; color:var(--ink-soft);
-  background:linear-gradient(var(--slab-top),var(--slab-bottom));
-  border:1px solid var(--hairline); box-shadow:var(--raise);
-  border-radius:999px; padding:7px 15px; cursor:pointer;
+  font:inherit; font-size:13px; font-weight:560; color:var(--soft);
+  background:var(--glass); border:1px solid var(--edge); border-radius:999px;
+  padding:8px 16px; cursor:pointer; backdrop-filter:blur(14px);
+  -webkit-backdrop-filter:blur(14px); transition:transform .16s, background .16s;
 }
-.who:active{box-shadow:var(--press); background:var(--slab-bottom)}
+.who:active{transform:scale(.96); background:var(--glass-2)}
 
-main{padding:4px 20px 20px; max-width:560px; margin:0 auto}
-.view{display:none} .view.on{display:block; animation:rise .3s cubic-bezier(.2,.7,.3,1)}
-@keyframes rise{from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:none}}
+main{padding:2px 20px 24px; max-width:560px; margin:0 auto}
+.view{display:none} .view.on{display:block}
+.view.on > *{animation:enter .5s cubic-bezier(.16,.8,.3,1) backwards}
+.view.on > *:nth-child(2){animation-delay:.05s}
+.view.on > *:nth-child(3){animation-delay:.1s}
+.view.on > *:nth-child(4){animation-delay:.15s}
+.view.on > *:nth-child(5){animation-delay:.2s}
+@keyframes enter{from{opacity:0; transform:translateY(16px)} to{opacity:1; transform:none}}
 
-h1{font-size:27px; font-weight:700; letter-spacing:-.028em; margin:8px 0 6px;
-   text-wrap:balance}
-.hint{color:var(--muted); font-size:14.5px; margin:0 0 22px; max-width:44ch}
-h2{font-size:11px; font-weight:700; letter-spacing:.11em; text-transform:uppercase;
-   color:var(--muted); margin:32px 0 12px}
-
-/* --- statistics are pressed INTO the ground; cards sit on top of it --- */
-.strip{display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:0 0 26px}
-.stat{
-  background:var(--ground); box-shadow:var(--recess);
-  border-radius:18px; padding:14px 8px 12px; text-align:center;
+.eyebrow{margin:6px 0 4px; font-size:12.5px; font-weight:600; color:var(--muted);
+         letter-spacing:.05em; text-transform:uppercase}
+h1{font-size:30px; line-height:1.16; font-weight:680; letter-spacing:-.035em;
+   margin:0 0 10px; text-wrap:balance}
+h1 em{
+  font-style:normal;
+  background:var(--metal); -webkit-background-clip:text; background-clip:text;
+  -webkit-text-fill-color:transparent;
 }
-.stat b{display:block; font-size:30px; font-weight:680; line-height:1.05;
-        letter-spacing:-.03em; font-variant-numeric:tabular-nums; color:var(--ink)}
-.stat small{display:block; margin-top:3px; color:var(--muted); font-size:10.5px;
-            font-weight:640; letter-spacing:.07em; text-transform:uppercase}
-.stat.warn b{color:var(--caution)} .stat.bad b{color:var(--alert)}
-.stat.zero b{color:var(--muted)}
+.hint{color:var(--muted); font-size:14.5px; margin:0 0 24px; max-width:44ch}
+h2{font-size:11px; font-weight:700; letter-spacing:.12em; text-transform:uppercase;
+   color:var(--muted); margin:30px 0 13px; display:flex;
+   justify-content:space-between; align-items:center}
 
-/* --- cards: slabs, with a coloured tab clipped to the left edge --- */
+/* --- the hero pair: one metal slab, two glass tiles --- */
+.heroes{display:grid; grid-template-columns:1.06fr 1fr; gap:12px; margin-bottom:6px}
+.hero{
+  position:relative; overflow:hidden; border-radius:var(--r);
+  background:var(--metal); border:1px solid var(--edge-lit); box-shadow:var(--lift-2);
+  padding:18px 18px 16px; min-height:196px;
+  display:flex; flex-direction:column; justify-content:space-between;
+}
+/* the sheen: one pass of light travelling across the metal */
+.hero::after{
+  content:""; position:absolute; inset:-40%; background:var(--sheen);
+  transform:translateX(-70%) rotate(6deg); animation:sweep 7s ease-in-out infinite;
+  pointer-events:none;
+}
+@keyframes sweep{0%,62%{transform:translateX(-75%) rotate(6deg)}
+                 88%,100%{transform:translateX(75%) rotate(6deg)}}
+.hero .cap{font-size:12px; font-weight:620; letter-spacing:.06em;
+           text-transform:uppercase; color:rgba(255,255,255,.82); position:relative; z-index:2}
+.hero .fig{position:relative; z-index:2}
+.hero .fig b{display:block; font-size:56px; font-weight:640; line-height:.92;
+             letter-spacing:-.045em; font-variant-numeric:tabular-nums;
+             text-shadow:0 4px 20px rgba(40,10,90,.45)}
+.hero .fig small{display:block; margin-top:4px; font-size:12.5px; font-weight:560;
+                 color:rgba(255,255,255,.8)}
+.hero .wave{position:absolute; left:0; right:0; bottom:0; height:96px; z-index:1;
+            opacity:.85}
+
+.tiles{display:grid; gap:12px}
+.tile{
+  border-radius:var(--r-sm); padding:14px 15px; position:relative; overflow:hidden;
+  background:var(--glass); border:1px solid var(--edge); box-shadow:var(--lift);
+  backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px);
+  display:flex; flex-direction:column; justify-content:space-between;
+}
+.tile .cap{font-size:10.5px; font-weight:640; letter-spacing:.08em;
+           text-transform:uppercase; color:var(--muted)}
+.tile b{display:block; margin-top:6px; font-size:30px; font-weight:640;
+        line-height:1; letter-spacing:-.035em; font-variant-numeric:tabular-nums}
+.tile.warn b{color:var(--caution)} .tile.bad b{color:var(--alert)}
+.tile.zero b{color:var(--soft)}
+.spark{display:block; width:100%; height:26px; margin-top:8px; overflow:visible}
+
+/* --- list cards --- */
 .card{
-  background:linear-gradient(var(--slab-top),var(--slab-bottom));
-  border:1px solid var(--hairline); border-radius:var(--r-card);
-  box-shadow:var(--raise); padding:17px 18px 18px 21px;
-  margin-bottom:13px; position:relative;
+  position:relative; border-radius:var(--r); padding:17px 18px 18px 22px;
+  margin-bottom:12px;
+  background:var(--glass); border:1px solid var(--edge); box-shadow:var(--lift);
+  backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px);
 }
 .card::before{
-  content:""; position:absolute; left:7px; top:16px; bottom:16px; width:4px;
-  border-radius:4px; background:var(--muted); opacity:.55;
+  content:""; position:absolute; left:8px; top:17px; bottom:17px; width:3px;
+  border-radius:3px; background:var(--muted); opacity:.5;
 }
-.card.sev-HIGH::before{background:var(--alert); opacity:1}
-.card.sev-MEDIUM::before{background:var(--caution); opacity:1}
+.card.sev-HIGH::before{background:var(--alert); opacity:1;
+  box-shadow:0 0 14px rgba(255,97,131,.8)}
+.card.sev-MEDIUM::before{background:var(--caution); opacity:1;
+  box-shadow:0 0 14px rgba(255,180,92,.65)}
 .card.sev-LOW::before{background:var(--muted)}
-.card.sev-HIGH{background:linear-gradient(#fff,var(--alert-wash))}
-.card.sev-MEDIUM{background:linear-gradient(#fff,var(--caution-wash))}
-/* handled: settles back into the page instead of competing for attention */
-.card.done{box-shadow:0 1px 1px rgba(20,25,40,.04), inset 0 1px 0 #fff;
-           background:linear-gradient(var(--slab-top),var(--slab-bottom))}
-.card.done::before{background:var(--calm); opacity:.85}
+.card.sev-HIGH{background:linear-gradient(120deg,rgba(255,97,131,.13),var(--glass) 62%)}
+.card.sev-MEDIUM{background:linear-gradient(120deg,rgba(255,180,92,.12),var(--glass) 62%)}
+.card.done{background:rgba(255,255,255,.03); box-shadow:none; opacity:.82}
+.card.done::before{background:var(--calm); opacity:.9}
 
 .row{display:flex; justify-content:space-between; align-items:baseline; gap:12px}
-.kind{font-size:17px; font-weight:660; letter-spacing:-.02em}
-.kind.plate{letter-spacing:.05em; font-variant-numeric:tabular-nums;
-            text-transform:none}
-.when{color:var(--muted); font-size:13px; font-weight:520; white-space:nowrap;
+.kind{font-size:17px; font-weight:640; letter-spacing:-.025em}
+.kind.plate{letter-spacing:.06em; font-variant-numeric:tabular-nums}
+.when{color:var(--muted); font-size:12.5px; font-weight:520; white-space:nowrap;
       font-variant-numeric:tabular-nums}
-.desc{margin:5px 0 0; font-size:15.5px; color:var(--ink-soft); line-height:1.5}
-.meta{margin:11px 0 0; color:var(--muted); font-size:13.5px;
+.desc{margin:6px 0 0; font-size:15px; color:var(--soft); line-height:1.48}
+.meta{margin:11px 0 0; color:var(--muted); font-size:13px;
       display:flex; align-items:center; gap:9px; flex-wrap:wrap}
 .pill{
-  display:inline-block; padding:3px 11px; border-radius:999px;
-  font-size:10.5px; font-weight:720; letter-spacing:.07em; text-transform:uppercase;
-  background:var(--ground); box-shadow:var(--recess); color:var(--muted);
+  display:inline-block; padding:4px 11px; border-radius:999px;
+  font-size:10px; font-weight:700; letter-spacing:.09em; text-transform:uppercase;
+  background:rgba(255,255,255,.07); border:1px solid var(--edge); color:var(--soft);
 }
-.pill.high{color:var(--alert); background:var(--alert-wash)}
-.pill.medium{color:var(--caution); background:var(--caution-wash)}
-.pill.ok{color:var(--calm); background:var(--calm-wash)}
+.pill.high{color:var(--alert); border-color:rgba(255,97,131,.42);
+           background:rgba(255,97,131,.13)}
+.pill.medium{color:var(--caution); border-color:rgba(255,180,92,.4);
+             background:rgba(255,180,92,.12)}
+.pill.ok{color:var(--calm); border-color:rgba(74,222,158,.36);
+         background:rgba(74,222,158,.11)}
 
-/* --- actions: two keys on a panel. They give when pressed. --- */
+/* --- actions --- */
 .actions{display:grid; grid-template-columns:1fr 1fr; gap:11px; margin-top:16px}
 button.act{
-  min-height:var(--tap); border-radius:16px; cursor:pointer;
-  font:inherit; font-size:15.5px; font-weight:640; letter-spacing:-.01em;
-  background:linear-gradient(var(--slab-top),var(--slab-bottom));
-  border:1px solid var(--hairline); box-shadow:var(--raise); color:var(--ink-soft);
-  transition:box-shadow .12s ease, background .12s ease;
+  min-height:var(--tap); border-radius:16px; cursor:pointer; font:inherit;
+  font-size:15px; font-weight:620; letter-spacing:-.01em; color:var(--text);
+  background:rgba(255,255,255,.07); border:1px solid var(--edge);
+  transition:transform .14s cubic-bezier(.3,1.4,.5,1), background .16s, box-shadow .16s;
 }
-button.act.real{color:var(--alert)}
-button.act.false{color:var(--calm)}
-button.act:active{box-shadow:var(--press); background:var(--slab-bottom)}
-button.act[disabled]{opacity:.45; box-shadow:var(--press)}
-.verdict{margin:14px 0 0; font-size:14.5px; font-weight:600; color:var(--calm);
-         display:flex; align-items:center; gap:8px}
+button.act.real{color:#ff8ba3; border-color:rgba(255,97,131,.36)}
+button.act.real:active{background:rgba(255,97,131,.2); box-shadow:0 0 22px -4px rgba(255,97,131,.6)}
+button.act.false{color:#7ceab8; border-color:rgba(74,222,158,.32)}
+button.act.false:active{background:rgba(74,222,158,.18); box-shadow:0 0 22px -4px rgba(74,222,158,.55)}
+button.act:active{transform:scale(.955)}
+button.act[disabled]{opacity:.4}
+.verdict{margin:14px 0 0; font-size:14px; font-weight:600; color:var(--calm);
+         display:flex; align-items:center; gap:9px}
 .verdict.real{color:var(--alert)}
-.verdict::before{content:""; width:7px; height:7px; border-radius:50%;
-                 background:currentColor; flex:none}
-a.clip{display:inline-block; margin-top:13px; color:var(--action);
-       font-size:14.5px; font-weight:560; text-decoration:none;
-       border-bottom:1px solid rgba(59,75,168,.3); padding-bottom:1px}
+.verdict::before{content:""; width:7px; height:7px; border-radius:50%; flex:none;
+  background:currentColor; box-shadow:0 0 12px currentColor}
+a.clip{display:inline-block; margin-top:13px; font-size:14px; font-weight:560;
+       color:#c3aeff; text-decoration:none;
+       border-bottom:1px solid rgba(195,174,255,.35); padding-bottom:1px}
 
-/* --- fields are recessed: they are holes you put things into --- */
-label{display:block; font-size:11px; font-weight:700; letter-spacing:.11em;
-      text-transform:uppercase; color:var(--muted); margin:22px 0 8px}
+/* --- fields --- */
+label{display:block; font-size:10.5px; font-weight:700; letter-spacing:.12em;
+      text-transform:uppercase; color:var(--muted); margin:22px 0 9px}
 input,textarea,select{
-  width:100%; font:inherit; color:var(--ink);
-  background:var(--ground); box-shadow:var(--recess);
-  border:1px solid transparent; border-radius:var(--r-field); padding:14px 16px;
-  appearance:none;
+  width:100%; font:inherit; color:var(--text); appearance:none;
+  background:rgba(255,255,255,.05); border:1px solid var(--edge);
+  border-radius:var(--r-sm); padding:15px 17px;
+  backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+  transition:border-color .18s, box-shadow .18s;
 }
-input::placeholder,textarea::placeholder{color:#a4abb8}
+input:focus,textarea:focus,select:focus{
+  outline:none; border-color:rgba(171,141,255,.75);
+  box-shadow:0 0 0 4px rgba(140,99,245,.18)}
+input::placeholder,textarea::placeholder{color:#7f76a3}
 textarea{min-height:118px; resize:vertical; line-height:1.5}
-select{background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),
-                       linear-gradient(135deg,var(--muted) 50%,transparent 50%);
-       background-position:calc(100% - 21px) 24px, calc(100% - 16px) 24px;
-       background-size:5px 5px, 5px 5px; background-repeat:no-repeat}
-#q{margin-bottom:18px}
+select{background-image:linear-gradient(45deg,transparent 50%,var(--soft) 50%),
+                       linear-gradient(135deg,var(--soft) 50%,transparent 50%);
+       background-position:calc(100% - 22px) 25px,calc(100% - 17px) 25px;
+       background-size:5px 5px,5px 5px; background-repeat:no-repeat}
+#q{margin-bottom:20px}
 button.primary{
-  width:100%; min-height:var(--tap); margin-top:24px; cursor:pointer;
-  border-radius:17px; border:1px solid #33429a; font:inherit; font-size:16px;
-  font-weight:640; letter-spacing:-.01em; color:#fff;
-  background:linear-gradient(#5061c4,var(--action));
-  box-shadow:0 1px 1px rgba(20,25,40,.08), 0 12px 24px -14px rgba(59,75,168,.9),
-             inset 0 1px 0 rgba(255,255,255,.34);
+  position:relative; overflow:hidden; width:100%; min-height:var(--tap);
+  margin-top:26px; cursor:pointer; border-radius:var(--r-sm);
+  border:1px solid var(--edge-lit); font:inherit; font-size:16px; font-weight:640;
+  color:#fff; background:var(--metal); box-shadow:var(--lift-2);
+  transition:transform .14s cubic-bezier(.3,1.4,.5,1);
 }
-button.primary:active{box-shadow:inset 0 3px 8px rgba(10,15,50,.4);
-                      background:var(--action)}
+button.primary::after{
+  content:""; position:absolute; inset:-40%; background:var(--sheen);
+  transform:translateX(-70%) rotate(8deg); animation:sweep 6s ease-in-out infinite;
+}
+button.primary:active{transform:scale(.985)}
 button.primary[disabled]{opacity:.55}
 
 .toast{
   position:fixed; left:20px; right:20px;
-  bottom:calc(104px + env(safe-area-inset-bottom));
+  bottom:calc(122px + env(safe-area-inset-bottom));
   max-width:520px; margin:0 auto; z-index:30;
-  background:linear-gradient(var(--slab-top),var(--slab-bottom));
-  border:1px solid var(--hairline); border-radius:16px; padding:14px 17px;
-  font-size:14.5px; font-weight:540; color:var(--ink-soft);
-  box-shadow:var(--raise-lift);
-  display:flex; align-items:center; gap:11px;
-  /* percentage transforms do not clear the screen on a one-line toast, so
-     hide it outright rather than relying on it sliding far enough */
-  opacity:0; visibility:hidden; transform:translateY(14px);
-  transition:opacity .22s ease, transform .34s cubic-bezier(.2,.8,.25,1),
-             visibility 0s linear .34s;
+  background:rgba(40,22,78,.9); border:1px solid var(--edge-lit);
+  border-radius:var(--r-sm); padding:15px 18px; font-size:14.5px; font-weight:540;
+  color:var(--text); box-shadow:var(--lift-2);
+  backdrop-filter:blur(22px); -webkit-backdrop-filter:blur(22px);
+  display:flex; align-items:center; gap:12px;
+  opacity:0; visibility:hidden; transform:translateY(16px) scale(.97);
+  transition:opacity .22s ease, transform .38s cubic-bezier(.16,.9,.3,1),
+             visibility 0s linear .38s;
 }
 .toast::before{content:""; width:8px; height:8px; border-radius:50%; flex:none;
-               background:var(--calm)}
-.toast.err::before{background:var(--alert)}
+  background:var(--calm); box-shadow:0 0 14px var(--calm)}
+.toast.err::before{background:var(--alert); box-shadow:0 0 14px var(--alert)}
 .toast.on{opacity:1; visibility:visible; transform:none; transition-delay:0s}
 .empty{color:var(--muted); text-align:center; padding:44px 20px; font-size:15px;
-       background:var(--ground); box-shadow:var(--recess); border-radius:var(--r-card)}
+  background:rgba(255,255,255,.035); border:1px solid var(--edge);
+  border-radius:var(--r)}
 
-/* --- bottom bar: frosted, so the list reads as sliding underneath it --- */
+/* --- floating nav bar --- */
 nav{
-  position:fixed; left:0; right:0; bottom:0; z-index:20;
-  display:grid; grid-template-columns:repeat(3,1fr);
-  /* frosted, but opaque enough that a card scrolling under it does not stay
-     readable through the glass */
-  background:rgba(237,239,244,.93);
-  -webkit-backdrop-filter:saturate(180%) blur(20px);
-  backdrop-filter:saturate(180%) blur(20px);
-  border-top:1px solid rgba(23,26,32,.07);
-  padding:6px 8px calc(6px + env(safe-area-inset-bottom));
+  position:fixed; left:16px; right:16px; z-index:20; max-width:520px;
+  margin:0 auto; bottom:calc(16px + env(safe-area-inset-bottom));
+  display:grid; grid-template-columns:repeat(3,1fr); gap:4px; padding:6px;
+  border-radius:24px; background:rgba(28,15,58,.9); border:1px solid var(--edge);
+  box-shadow:0 20px 46px -16px rgba(0,0,0,.7);
+  backdrop-filter:saturate(160%) blur(26px);
+  -webkit-backdrop-filter:saturate(160%) blur(26px);
 }
 nav button{
-  background:none; border:0; cursor:pointer; min-height:60px; border-radius:16px;
-  font:inherit; font-size:12px; font-weight:640; letter-spacing:.02em;
-  color:var(--muted); transition:color .16s ease;
+  position:relative; overflow:hidden; background:none; border:0; cursor:pointer;
+  min-height:52px; border-radius:19px; font:inherit; font-size:12.5px;
+  font-weight:620; color:var(--muted);
   display:flex; align-items:center; justify-content:center; gap:7px;
+  transition:color .18s ease;
 }
-nav button.on{
-  color:var(--action);
-  background:linear-gradient(var(--slab-top),var(--slab-bottom));
-  box-shadow:var(--raise);
-}
+nav button.on{color:#fff; background:var(--metal-soft);
+              box-shadow:0 10px 22px -10px rgba(120,70,240,.95),
+                         inset 0 1px 0 var(--edge-lit)}
 nav .badge{
   min-width:20px; height:20px; padding:0 6px; border-radius:999px; flex:none;
-  background:var(--alert); color:#fff; font-size:11px; font-weight:700;
-  line-height:20px; box-shadow:0 2px 6px rgba(200,57,74,.4);
+  background:var(--alert); color:#2a0a16; font-size:11px; font-weight:750;
+  line-height:20px; box-shadow:0 0 14px rgba(255,97,131,.7);
+  animation:pulse 2.4s ease-in-out infinite;
 }
+@keyframes pulse{50%{box-shadow:0 0 22px rgba(255,97,131,1)}}
+
 @media (prefers-reduced-motion:reduce){
-  .toast{transition:none} .view.on{animation:none}
+  .aurora span,.hero::after,button.primary::after,nav .badge{animation:none}
+  .view.on > *{animation:none}
+  .toast{transition:opacity .01s, visibility 0s}
 }
 </style>
 </head>
 <body>
+<div class="aurora" aria-hidden="true"><span></span><span></span><span></span></div>
+
 <header>
-  <div class="wordmark">VisionGuard <span>Operator</span></div>
+  <div class="wordmark">Vision<span>Guard</span></div>
   <button class="who" id="who">set name</button>
 </header>
 
 <main>
   <section class="view on" id="v-alerts">
-    <h1>Detections</h1>
+    <p class="eyebrow" id="greeting">Good morning</p>
+    <h1 id="h-alerts">Checking the <em>cameras</em></h1>
+    <div class="heroes">
+      <article class="hero">
+        <span class="cap">To check</span>
+        <svg class="wave" viewBox="0 0 200 88" preserveAspectRatio="none"
+             aria-hidden="true">
+          <path d="M0 58 C34 30 56 74 92 50 C126 28 152 62 200 38 L200 88 L0 88 Z"
+                fill="rgba(255,255,255,.22)"/>
+          <path d="M0 58 C34 30 56 74 92 50 C126 28 152 62 200 38"
+                fill="none" stroke="rgba(255,255,255,.7)" stroke-width="2"/>
+        </svg>
+        <span class="fig"><b id="s-untriaged">0</b><small>need a look</small></span>
+      </article>
+      <div class="tiles">
+        <article class="tile">
+          <span class="cap">Last 24 hours</span>
+          <b id="s-today">0</b>
+          <svg class="spark" id="spark-alerts" viewBox="0 0 100 26"
+               preserveAspectRatio="none" aria-hidden="true"></svg>
+        </article>
+        <article class="tile">
+          <span class="cap">False alarms</span>
+          <b id="s-false">0</b>
+        </article>
+      </div>
+    </div>
+    <h2>Detections</h2>
     <p class="hint">Mark each one once you have looked. Your answer teaches the
       system to stop raising the ones that were never anything.</p>
-    <div class="strip">
-      <div class="stat bad"><b id="s-untriaged">0</b><small>To check</small></div>
-      <div class="stat"><b id="s-today">0</b><small>Today</small></div>
-      <div class="stat"><b id="s-false">0</b><small>False</small></div>
-    </div>
     <div id="alerts"></div>
   </section>
 
   <section class="view" id="v-gate">
-    <h1>Gate register</h1>
-    <p class="hint">Written by the camera, not by hand. Every plate that passes
-      the gate opens a visit; the next pass closes it.</p>
-    <div class="strip">
-      <div class="stat"><b id="s-inside">0</b><small>Inside</small></div>
-      <div class="stat warn"><b id="s-visitors">0</b><small>Visitors</small></div>
-      <div class="stat bad"><b id="s-over">0</b><small>Overstay</small></div>
+    <p class="eyebrow">Automatic register</p>
+    <h1 id="h-gate">Who is <em>inside</em></h1>
+    <div class="heroes">
+      <article class="hero">
+        <span class="cap">Inside now</span>
+        <svg class="wave" viewBox="0 0 200 88" preserveAspectRatio="none"
+             aria-hidden="true">
+          <path d="M0 46 C40 66 64 26 100 44 C138 62 164 32 200 52 L200 88 L0 88 Z"
+                fill="rgba(255,255,255,.22)"/>
+          <path d="M0 46 C40 66 64 26 100 44 C138 62 164 32 200 52"
+                fill="none" stroke="rgba(255,255,255,.7)" stroke-width="2"/>
+        </svg>
+        <span class="fig"><b id="s-inside">0</b><small>vehicles</small></span>
+      </article>
+      <div class="tiles">
+        <article class="tile warn">
+          <span class="cap">Visitors</span>
+          <b id="s-visitors">0</b>
+          <svg class="spark" id="spark-gate" viewBox="0 0 100 26"
+               preserveAspectRatio="none" aria-hidden="true"></svg>
+        </article>
+        <article class="tile bad">
+          <span class="cap">Overstaying</span>
+          <b id="s-over">0</b>
+        </article>
+      </div>
     </div>
+    <h2>Gate register</h2>
     <input id="q" placeholder="Search a plate" autocomplete="off"
            inputmode="latin" aria-label="Search a plate">
     <div id="visits"></div>
   </section>
 
   <section class="view" id="v-notices">
-    <h1>Tell the members</h1>
+    <p class="eyebrow">Announcements</p>
+    <h1>Tell the <em>members</em></h1>
     <p class="hint">Goes to every resident who has connected Telegram. Anything
       you send is kept on record below.</p>
-    <label for="n-title">Subject</label>
-    <input id="n-title" maxlength="80" placeholder="Water supply cut">
-    <label for="n-body">Message</label>
-    <textarea id="n-body" maxlength="900" placeholder="Tomorrow, 10am to 1pm."></textarea>
-    <label for="n-aud">Send to</label>
-    <select id="n-aud">
-      <option value="all">Everyone</option>
-      <option value="flat">One flat</option>
-    </select>
-    <div id="flat-wrap" style="display:none">
-      <label for="n-flat">Flat number</label>
-      <input id="n-flat" placeholder="B-402">
+    <div>
+      <label for="n-title">Subject</label>
+      <input id="n-title" maxlength="80" placeholder="Water supply cut">
+      <label for="n-body">Message</label>
+      <textarea id="n-body" maxlength="900" placeholder="Tomorrow, 10am to 1pm."></textarea>
+      <label for="n-aud">Send to</label>
+      <select id="n-aud">
+        <option value="all">Everyone</option>
+        <option value="flat">One flat</option>
+      </select>
+      <div id="flat-wrap" style="display:none">
+        <label for="n-flat">Flat number</label>
+        <input id="n-flat" placeholder="B-402">
+      </div>
+      <button class="primary" id="send">Send message</button>
     </div>
-    <button class="primary" id="send">Send message</button>
     <h2>Sent</h2>
     <div id="notices"></div>
   </section>
@@ -357,11 +476,49 @@ const sentence = s => {
 };
 
 // A zero is good news on every one of these tiles, so it should not be the
-// colour that means "look at me".
+// colour that means "look at me". Numbers count up rather than snapping, so a
+// refresh that changes something is visible from across a desk.
 function stat(sel, n){
   const el = $(sel);
-  el.textContent = n;
   el.parentElement.classList.toggle("zero", !n);
+  const from = parseInt(el.textContent, 10) || 0;
+  if(from === n || REDUCED){ el.textContent = n; return; }
+  const t0 = performance.now(), ms = 520;
+  (function step(t){
+    const k = Math.min(1, (t - t0) / ms);
+    el.textContent = Math.round(from + (n - from) * (1 - Math.pow(1 - k, 3)));
+    if(k < 1) requestAnimationFrame(step);
+  })(t0);
+}
+
+const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// Activity over the last 24 hours, drawn from the timestamps we already have
+// rather than a second request. Decoration that happens to be true.
+function sparkline(sel, times){
+  const el = $(sel);
+  if(!el) return;
+  const now = Date.now() / 1000, buckets = new Array(24).fill(0);
+  for(const t of times){
+    const h = Math.floor((now - t) / 3600);
+    if(h >= 0 && h < 24) buckets[23 - h]++;
+  }
+  const peak = Math.max(1, ...buckets);
+  const pts = buckets.map((v, i) =>
+    [i * (100 / 23), 24 - (v / peak) * 21]);
+  const line = pts.map(([x, y], i) =>
+    (i ? "L" : "M") + x.toFixed(1) + " " + y.toFixed(1)).join(" ");
+  const last = pts[pts.length - 1];
+  el.innerHTML = `
+    <defs><linearGradient id="${sel.slice(1)}-g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c3aeff" stop-opacity=".55"/>
+      <stop offset="1" stop-color="#c3aeff" stop-opacity="0"/>
+    </linearGradient></defs>
+    <path d="${line} L100 26 L0 26 Z" fill="url(#${sel.slice(1)}-g)"/>
+    <path d="${line}" fill="none" stroke="#d3c4ff" stroke-width="1.4"
+          stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+    <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.2"
+            fill="#fff"/>`;
 }
 
 /* ------------------------------------------------------------- alerts */
@@ -375,6 +532,11 @@ async function loadAlerts(){
   stat("#s-untriaged", untriaged);
   stat("#s-today", rows.filter(r => r.ts > dayAgo).length);
   stat("#s-false", rows.filter(r => r.verdict === "false_alarm").length);
+  sparkline("#spark-alerts", rows.map(r => r.ts));
+  $("#h-alerts").innerHTML = untriaged
+    ? `${untriaged} ${untriaged === 1 ? "detection needs" : "detections need"}
+       <em>your eye</em>`
+    : "Everything here is <em>settled</em>";
   const badge = $("#nav-badge");
   badge.style.display = untriaged ? "inline-block" : "none";
   badge.textContent = untriaged;
@@ -446,6 +608,13 @@ async function loadGate(){
   stat("#s-inside", open.length);
   stat("#s-visitors", open.filter(v => !v.registered).length);
   stat("#s-over", over.length);
+  sparkline("#spark-gate", rows.filter(v => !v.registered).map(v => v.entry_ts));
+  $("#h-gate").innerHTML = over.length
+    ? `${over.length} ${over.length === 1 ? "vehicle has" : "vehicles have"}
+       <em>overstayed</em>`
+    : open.length ? `${open.length} ${open.length === 1 ? "vehicle" : "vehicles"}
+       <em>inside</em> now`
+    : "The society is <em>empty</em>";
   const overIds = new Set(over.map(v => v.id));
 
   if(!rows.length){
@@ -529,6 +698,10 @@ document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
   loaders[current]();
 });
 
+const hour = new Date().getHours();
+$("#greeting").textContent = "Good " +
+  (hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening");
+
 loadAlerts(); loadNotices();
 // A guard leaves this open on a desk. Refresh the view they are looking at,
 // but only while the phone is awake and showing it.
@@ -553,8 +726,8 @@ MANIFEST = {
     "scope": "/operator",
     "display": "standalone",
     "orientation": "portrait",
-    "background_color": "#e8ebf0",
-    "theme_color": "#e8ebf0",
+    "background_color": "#150a2b",
+    "theme_color": "#150a2b",
     "icons": [
         {"src": "/operator/icon-192.png", "sizes": "192x192", "type": "image/png",
          "purpose": "any"},
@@ -596,16 +769,22 @@ def icon_png(size: int) -> bytes:
     import cv2
     import numpy as np
 
-    # A home screen is a wall of bright squares, so the icon goes the other
-    # way: deep indigo ground, one pale mark. Vertical gradient because the
-    # app is lit from above everywhere else.
-    top, bottom = np.array([164, 97, 80]), np.array([122, 66, 51])   # BGR
-    ramp = np.linspace(0, 1, size)[:, None]
-    img = (top * (1 - ramp) + bottom * ramp)[:, None, :]
-    img = np.repeat(img, size, axis=1).astype(np.uint8)
+    # The same metal as the app, on the diagonal: pale, saturated, deep, pale.
+    # A straight two-stop fade looks like plastic at icon size.
+    stops = [(0.00, (255, 210, 220)), (0.30, (240, 141, 171)),
+             (0.58, (208, 47, 90)), (0.82, (245, 99, 139)),
+             (1.00, (255, 174, 195))]                                  # BGR
+    d = (np.add.outer(np.arange(size), np.arange(size)) /
+         (2 * (size - 1)))                                             # 0..1
+    img = np.zeros((size, size, 3))
+    for (p0, c0), (p1, c1) in zip(stops, stops[1:]):
+        m = (d >= p0) & (d <= p1)
+        k = ((d - p0) / (p1 - p0))[m][:, None]
+        img[m] = np.array(c0) * (1 - k) + np.array(c1) * k
+    img = img.astype(np.uint8)
 
     c, r = size // 2, int(size * 0.32)
-    pale = (246, 244, 238)
+    pale = (255, 252, 248)
     cv2.circle(img, (c, c), r, pale, max(2, size // 26), lineType=cv2.LINE_AA)
     # a chevron inside the ring — a watch mark, not a letter
     d = int(r * 0.46)
