@@ -25,6 +25,7 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from . import assistant as assistant_mod
+from . import auth
 from . import clips as clips_mod
 from . import operator as operator_mod
 from .plates import normalize_plate
@@ -78,9 +79,79 @@ def create_app(ctx) -> FastAPI:
     def console():
         return HTMLResponse(_console_html(), headers=_NO_CACHE)
 
+    # ---------------------------------------------- operator identity
+    # Everything the operator app can change is attributable: a verdict is the
+    # label the detection layer gets tuned against, and a notice reaches every
+    # resident. Both need a real account behind them, not a typed-in name.
+    def current_user(request: Request) -> dict | None:
+        token = request.cookies.get(auth.SESSION_COOKIE)
+        if not token:
+            return None
+        th = auth.token_hash(token)
+        user = ctx.db.session_user(th)
+        if user is None:
+            return None
+        # slide the expiry so a working shift is not interrupted mid-way
+        ctx.db.touch_session(th, auth.session_expiry())
+        return user
+
+    def require(permission: str):
+        def dep(request: Request) -> dict:
+            user = current_user(request)
+            if user is None:
+                raise HTTPException(401, "sign in to continue")
+            if not auth.can(user["role"], permission):
+                raise HTTPException(
+                    403, f"a {user['role']} account cannot do this")
+            return user
+        return dep
+
+    @app.post("/api/login")
+    def login(request: Request, response: Response,
+              username: str = Form(...), password: str = Form(...)):
+        user = ctx.db.authenticate(username, password)
+        if user is None:
+            # one message for both wrong-user and wrong-password: saying which
+            # was wrong confirms whether an account exists
+            raise HTTPException(401, "wrong username or password")
+        token, th = auth.new_token()
+        ctx.db.create_session(user["id"], th, auth.session_expiry(),
+                              request.headers.get("user-agent", ""))
+        ctx.db.purge_expired_sessions()
+        response.set_cookie(
+            auth.SESSION_COOKIE, token, httponly=True, samesite="lax",
+            max_age=auth.SESSION_TTL_S,
+            # only send the cookie over TLS once the app is actually on TLS;
+            # forcing it on plain http would silently break a LAN install
+            secure=request.url.scheme == "https", path="/")
+        ctx.db.append_audit(user["username"], "LOGIN", {"role": user["role"]})
+        return {"ok": True, **_me(user)}
+
+    @app.post("/api/logout")
+    def logout(request: Request, response: Response):
+        token = request.cookies.get(auth.SESSION_COOKIE)
+        if token:
+            ctx.db.drop_session(auth.token_hash(token))
+        response.delete_cookie(auth.SESSION_COOKIE, path="/")
+        return {"ok": True}
+
+    def _me(user: dict) -> dict:
+        return {"username": user["username"], "name": user["display_name"],
+                "role": user["role"],
+                "can": sorted(auth.PERMISSIONS.get(user["role"], ()))}
+
+    @app.get("/api/me")
+    def me(request: Request):
+        user = current_user(request)
+        if user is None:
+            raise HTTPException(401, "not signed in")
+        return _me(user)
+
     # ------------------------------------------- operator app (guards' PWA)
     @app.get("/operator", response_class=HTMLResponse)
     def operator():
+        # the page itself is the login screen, so it is always served; every
+        # endpoint behind it checks the session
         return HTMLResponse(operator_mod.PAGE, headers=_NO_CACHE)
 
     @app.get("/operator/manifest.webmanifest")
@@ -187,25 +258,26 @@ def create_app(ctx) -> FastAPI:
 
     @app.post("/api/events/{event_id}/feedback")
     def event_feedback(event_id: int, verdict: str = Form(...),
-                       user_name: str = Form("")):
+                       user: dict = Depends(require("triage"))):
         """A guard marking an alert real or a false alarm. This is the label
-        the detection layer is tuned against, so it is worth one tap."""
+        the detection layer is tuned against, so it is worth one tap — and it
+        is signed by whoever is holding the phone."""
         if verdict not in ("real", "false_alarm"):
             raise HTTPException(400, "verdict must be 'real' or 'false_alarm'")
         if ctx.db.get_event(event_id) is None:
             raise HTTPException(404, "event not found")
-        ctx.db.insert_feedback(event_id, verdict, user_name.strip() or "operator")
+        ctx.db.insert_feedback(event_id, verdict, user["display_name"])
         return {"ok": True, "event_id": event_id, "verdict": verdict}
 
     # ------------------------------------------- notices (to residents)
     @app.get("/api/notices")
-    def notices(limit: int = 50):
+    def notices(limit: int = 50, user: dict = Depends(require("notices"))):
         return ctx.db.recent_notices(min(limit, 200))
 
     @app.post("/api/notices")
     def notice_add(title: str = Form(...), body: str = Form(...),
-                   author: str = Form(""), audience: str = Form("all"),
-                   flat_number: str = Form("")):
+                   audience: str = Form("all"), flat_number: str = Form(""),
+                   user: dict = Depends(require("notices"))):
         if not title.strip() or not body.strip():
             raise HTTPException(400, "title and body are required")
         if audience not in ("all", "flat"):
@@ -213,7 +285,7 @@ def create_app(ctx) -> FastAPI:
         if audience == "flat" and not flat_number.strip():
             raise HTTPException(400, "flat_number is required for audience=flat")
         nid = ctx.db.add_notice(title.strip(), body.strip(),
-                                author.strip() or "committee", audience,
+                                user["display_name"], audience,
                                 flat_number.strip())
         sent = 0
         notifier = getattr(ctx, "notifier", None)
@@ -258,7 +330,8 @@ def create_app(ctx) -> FastAPI:
 
     # --------------------------------------------------- visitor log (gate)
     @app.get("/api/visits")
-    def visits(limit: int = 200, plate: str = "", registered: str = ""):
+    def visits(limit: int = 200, plate: str = "", registered: str = "",
+               user: dict = Depends(require("gate"))):
         """The gate register, newest first. `registered` filters residents
         (1/true) from visitors (0/false); blank returns both."""
         reg = None
@@ -268,12 +341,13 @@ def create_app(ctx) -> FastAPI:
                                     normalize_plate(plate) or None, reg)
 
     @app.get("/api/visits/open")
-    def visits_open():
+    def visits_open(user: dict = Depends(require("gate"))):
         """Vehicles currently inside — 'who is in the society right now'."""
         return ctx.db.open_visits()
 
     @app.get("/api/visits/overstays")
-    def visits_overstays(hours: float = 0):
+    def visits_overstays(hours: float = 0,
+                         user: dict = Depends(require("gate"))):
         """Unregistered vehicles still inside past the overstay threshold."""
         cfg = ctx.config.get("visitor_log") or {}
         return ctx.db.overstaying_visits(

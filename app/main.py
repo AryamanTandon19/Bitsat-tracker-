@@ -26,6 +26,7 @@ from .hybrid import HybridSecurityMonitor, build_evidence, route_from_reasons
 from .notify import TelegramNotifier
 from .plates import PlateReader, fuzzy_match
 from .rules import SUSPICIOUS_ACTIVITY, Event, RulesEngine
+from . import users as users_mod
 from . import analyze as analyze_mod
 from .trigger import AT_VEHICLE as TRIG_AT_VEHICLE
 from .trigger import BREAK_IN as TRIG_BREAK_IN
@@ -288,6 +289,18 @@ class AppContext:
         seeded = self.db.seed_registry_from_csv(config["storage"]["registry_csv"])
         if seeded:
             log.info("registry: imported %d plates from CSV", seeded)
+        # Without an account nobody can sign in to the operator app at all, so
+        # a fresh install makes one. The password is generated and shown once
+        # rather than shipped as a default, which would be a published
+        # credential on every deployment of this software.
+        first = users_mod.bootstrap_admin(self.db)
+        if first:
+            log.warning("=" * 62)
+            log.warning("  operator app: first-run account created")
+            log.warning("      username: %s", first[0])
+            log.warning("      password: %s", first[1])
+            log.warning("  Shown once. Change it: python -m app.users passwd admin")
+            log.warning("=" * 62)
         self.plate_reader = PlateReader(config.get("plates", {}))
         self.notifier = TelegramNotifier(
             config.get("telegram", {}), self.db,

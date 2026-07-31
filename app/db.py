@@ -127,6 +127,29 @@ CREATE TABLE IF NOT EXISTS notices (
     sent_ts REAL,                           -- NULL = not delivered yet
     recipients INTEGER NOT NULL DEFAULT 0
 );
+-- Operator accounts. Guards and committee members sign in to the operator app;
+-- their identity is what gets written against a verdict or an announcement, so
+-- it has to come from a session and not from a name someone typed.
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    role TEXT NOT NULL,                      -- guard | committee | admin
+    pw_hash TEXT NOT NULL,                   -- scrypt, salt embedded
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at REAL NOT NULL,
+    last_login REAL
+);
+-- Server-side sessions. Only the hash of the token is stored, so a copy of
+-- this database does not hand anyone a live session.
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    user_agent TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 """
 
 # columns added after first release — applied with ALTER TABLE on startup so
@@ -425,6 +448,141 @@ class Database:
                 event_ids).fetchall()
         # ascending, so the last write for an event wins
         return {r["event_id"]: dict(r) for r in rows}
+
+    # -- operator accounts & sessions ----------------------------------------
+    def add_user(self, username: str, display_name: str, role: str,
+                 password: str, actor: str = "system") -> int:
+        from .auth import ROLES, hash_password
+        username = username.strip().lower()
+        if not username:
+            raise ValueError("username must not be empty")
+        if role not in ROLES:
+            raise ValueError(f"role must be one of {', '.join(ROLES)}")
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO users (username, display_name, role, pw_hash,"
+                " active, created_at) VALUES (?, ?, ?, ?, 1, ?)",
+                (username, display_name.strip() or username, role,
+                 hash_password(password), time.time()))
+            self._conn.commit()
+            uid = cur.lastrowid
+        # the password never reaches the audit log
+        self.append_audit(actor, "USER_ADD",
+                          {"username": username, "role": role})
+        return uid
+
+    def get_user(self, username: str) -> dict | None:
+        with self._lock:
+            r = self._conn.execute("SELECT * FROM users WHERE username = ?",
+                                   (username.strip().lower(),)).fetchone()
+            return dict(r) if r else None
+
+    def list_users(self) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, username, display_name, role, active, created_at,"
+                " last_login FROM users ORDER BY username").fetchall()
+            return [dict(r) for r in rows]
+
+    def set_user_password(self, username: str, password: str,
+                          actor: str = "system") -> bool:
+        from .auth import hash_password
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE users SET pw_hash = ? WHERE username = ?",
+                (hash_password(password), username.strip().lower()))
+            self._conn.commit()
+            changed = cur.rowcount > 0
+        if changed:
+            # every existing session for that account dies with the password
+            self.drop_sessions_for(username)
+            self.append_audit(actor, "USER_PASSWORD", {"username": username})
+        return changed
+
+    def set_user_active(self, username: str, active: bool,
+                        actor: str = "system") -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE users SET active = ? WHERE username = ?",
+                (int(active), username.strip().lower()))
+            self._conn.commit()
+            changed = cur.rowcount > 0
+        if changed:
+            if not active:
+                self.drop_sessions_for(username)
+            self.append_audit(actor, "USER_ACTIVE",
+                              {"username": username, "active": bool(active)})
+        return changed
+
+    def authenticate(self, username: str, password: str) -> dict | None:
+        """Return the user on a correct password for an active account."""
+        from .auth import verify_password
+        user = self.get_user(username)
+        if user is None:
+            # spend the time anyway: returning instantly for an unknown user
+            # tells an attacker which usernames exist
+            verify_password(password, "scrypt$32768$8$1$" + "00" * 16 +
+                            "$" + "00" * 32)
+            return None
+        if not verify_password(password, user["pw_hash"]) or not user["active"]:
+            return None
+        with self._lock:
+            self._conn.execute("UPDATE users SET last_login = ? WHERE id = ?",
+                               (time.time(), user["id"]))
+            self._conn.commit()
+        return user
+
+    def create_session(self, user_id: int, token_hash: str, expires_at: float,
+                       user_agent: str = "") -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO sessions (token_hash, user_id, created_at,"
+                " expires_at, user_agent) VALUES (?, ?, ?, ?, ?)",
+                (token_hash, user_id, time.time(), expires_at, user_agent[:200]))
+            self._conn.commit()
+
+    def session_user(self, token_hash: str, now: float | None = None) -> dict | None:
+        """The account behind a session token, or None if it is unknown,
+        expired, or the account has since been deactivated."""
+        now = time.time() if now is None else now
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT u.*, s.expires_at FROM sessions s JOIN users u"
+                " ON u.id = s.user_id WHERE s.token_hash = ?",
+                (token_hash,)).fetchone()
+        if r is None or r["expires_at"] <= now or not r["active"]:
+            return None
+        return dict(r)
+
+    def touch_session(self, token_hash: str, expires_at: float) -> None:
+        """Slide the expiry forward so an active shift is not interrupted."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE sessions SET expires_at = ? WHERE token_hash = ?",
+                (expires_at, token_hash))
+            self._conn.commit()
+
+    def drop_session(self, token_hash: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM sessions WHERE token_hash = ?",
+                               (token_hash,))
+            self._conn.commit()
+
+    def drop_sessions_for(self, username: str) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM sessions WHERE user_id IN"
+                " (SELECT id FROM users WHERE username = ?)",
+                (username.strip().lower(),))
+            self._conn.commit()
+            return cur.rowcount
+
+    def purge_expired_sessions(self, now: float | None = None) -> int:
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM sessions WHERE expires_at <= ?",
+                                     (time.time() if now is None else now,))
+            self._conn.commit()
+            return cur.rowcount
 
     # -- notices (committee -> members) --------------------------------------
     def add_notice(self, title: str, body: str, author: str,

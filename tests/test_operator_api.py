@@ -14,6 +14,8 @@ from app import dashboard
 from app.db import Database
 from app.main import load_config
 
+from .conftest import signin
+
 
 @pytest.fixture()
 def ctx(tmp_path):
@@ -31,6 +33,15 @@ def ctx(tmp_path):
 
 @pytest.fixture()
 def client(ctx):
+    """Signed in as an admin — the role that may do everything, so a test
+    only fails on authorisation when it is testing authorisation."""
+    cl = TestClient(dashboard.create_app(ctx))
+    signin(cl, ctx.db, "admin", name="A. Admin")
+    return cl
+
+
+@pytest.fixture()
+def anon(ctx):
     return TestClient(dashboard.create_app(ctx))
 
 
@@ -47,12 +58,12 @@ def test_untriaged_event_has_no_verdict(client, ctx):
 
 def test_marking_a_false_alarm_sticks(client, ctx):
     eid = _event(ctx.db)
-    r = client.post(f"/api/events/{eid}/feedback",
-                    data={"verdict": "false_alarm", "user_name": "Guard 1"})
+    r = client.post(f"/api/events/{eid}/feedback", data={"verdict": "false_alarm"})
     assert r.status_code == 200
     row = client.get("/api/events").json()[0]
     assert row["verdict"] == "false_alarm"
-    assert row["verdict_by"] == "Guard 1"
+    # attributed to the signed-in account, not to a name the client supplied
+    assert row["verdict_by"] == "A. Admin"
 
 
 def test_a_later_verdict_overrides_an_earlier_one(client, ctx):
@@ -81,8 +92,7 @@ def test_verdict_lookup_is_one_query_for_many_events(client, ctx):
 # ---------------------------------------------------------------- notices
 def test_posting_a_notice_records_it(client, ctx):
     r = client.post("/api/notices", data={"title": "Water cut",
-                                          "body": "Tomorrow 10am-1pm",
-                                          "author": "Committee"})
+                                          "body": "Tomorrow 10am-1pm"})
     assert r.status_code == 200
     # Telegram is off in the test config, so nothing is delivered — but the
     # notice must still be on record.

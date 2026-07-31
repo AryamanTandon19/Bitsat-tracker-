@@ -126,6 +126,8 @@ def client(db, tmp_path):
     from app import dashboard
     from app.main import load_config
 
+    from .conftest import signin
+
     class Ctx:
         pass
     c = Ctx()
@@ -134,7 +136,9 @@ def client(db, tmp_path):
     c.config_path = str(tmp_path / "config.yaml")
     c.db = db
     c.workers, c.pipelines, c.analyzer, c.assistant = {}, {}, None, None
-    return TestClient(dashboard.create_app(c))
+    cl = TestClient(dashboard.create_app(c))
+    signin(cl, db, "guard")      # the register is personal data; it needs one
+    return cl
 
 
 def _seed(db):

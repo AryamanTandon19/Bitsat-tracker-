@@ -343,9 +343,12 @@ society's DVR (this conversation *is* your first pilot conversation) and
 UCF-Crime — the harness already parses its annotation format.
 **Effect:** turns every claim below from a hypothesis into a number.
 
-### Priority 3 — Visitor log
-Auto-log entry/exit/duration for unregistered plates; overstay flag; searchable
-and exportable; tamper-evident via the existing audit chain.
+### ~~Priority 3 — Visitor log~~ ✅ SHIPPED
+`vehicle_visits` table; a plate crossing a gate camera opens a visit, the next
+pass closes it. Crossings are deduplicated per tracked vehicle *and* by time.
+Residents carry owner/flat through from the registry; unregistered vehicles
+still inside past `visitor_log.overstay_hours` are surfaced separately.
+API: `/api/visits`, `/api/visits/open`, `/api/visits/overstays`.
 **Effect:** the wedge feature. Sells without needing anyone to believe in AI.
 
 ### Priority 4 — Slot map + departure notification
@@ -353,19 +356,33 @@ Extend `zones.py` to labelled slots with plate/flat metadata. Add slot-occupancy
 tracking and the "your car left its spot" push.
 **Effect:** the highest-value security feature at near-zero AI cost.
 
-### Priority 5 — Track-level scoring layer
+### Priority 5 — Track-level scoring layer  ⬅ NEXT
 Replace the static severity table with a 0–1 score from dwell, proximity, pose,
 trajectory, vehicle motion, hour and registry match. Thresholds in `config.yaml`:
 `<0.3` dismiss · `0.3–0.6` WATCH · `>0.6` AI review.
 **Effect:** fixes "everything is MEDIUM" **and** cuts AI spend — one change,
 both problems. Target: ~100% recall on incidents, fire-rate as low as possible.
 
-### Priority 6 — Security hardening ⛔ before any pilot
-See §8. Non-negotiable before real footage of real residents.
+### Priority 6 — Security hardening ⛔ before any pilot — PART DONE
+**Done:** operator accounts and server-side sessions. scrypt password hashing
+(stdlib, memory-hard); only the SHA-256 of a session token is stored, so a
+copy of the database grants nobody a session; httpOnly + SameSite=Lax cookie;
+12-hour expiry that slides while a shift is active; sessions die when an
+account is disabled or its password changes. Three roles — guard (triage,
+gate), committee (+ notices), admin (+ registry, accounts) — enforced
+server-side, with the UI hiding what an account may not use. First run
+generates one admin password rather than shipping a default. Every sign-in and
+account change lands in the tamper-evident audit chain; no password ever does.
+Accounts are managed with `python -m app.users`.
+**Still to do:** HTTPS/Tailscale for the camera LAN, secrets out of
+`config.yaml`, rate-limiting on `/api/login`, retention policy. See §8.
 
-### Priority 7 — Feedback loop
-Telegram alert → one tap *real / false alarm* → labelled example for that site.
-**Effect:** the compounding moat. Every pilot becomes a data asset.
+### Priority 7 — Feedback loop — PART DONE
+**Done:** `POST /api/events/{id}/feedback` and the one-tap real / false-alarm
+control in the operator app, attributed to the signed-in account. `/api/events`
+carries the latest verdict so two guards do not work the same alert.
+**Still to do:** the same tap on the Telegram alert itself, and feeding the
+collected labels into Priority 5's scoring thresholds.
 
 ### Priority 8 — Learned Normalcy
 Occupancy maps, trajectory prototypes, familiarity signatures, unsupervised role

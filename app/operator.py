@@ -367,6 +367,9 @@ nav button{
   display:flex; align-items:center; justify-content:center; gap:7px;
   transition:color .18s ease;
 }
+/* `hidden` is display:none in the UA sheet, which an author display:flex
+   silently beats — a tab a guard may not use would still take its slot. */
+nav button[hidden],.who[hidden]{display:none}
 nav button.on{color:#fff; background:var(--metal-soft);
               box-shadow:0 10px 22px -10px rgba(120,70,240,.95),
                          inset 0 1px 0 var(--edge-lit)}
@@ -378,13 +381,33 @@ nav .badge{
 }
 @keyframes pulse{50%{box-shadow:0 0 22px rgba(255,97,131,1)}}
 
+/* --- sign-in --- */
+.gate-screen{
+  position:fixed; inset:0; z-index:40; display:none;
+  align-items:center; justify-content:center; padding:24px;
+  background:rgba(8,5,15,.72);
+  backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px);
+}
+.gate-screen.on{display:flex}
+.signin-card{
+  width:100%; max-width:380px; border-radius:var(--r); padding:28px 24px 26px;
+  background:linear-gradient(160deg,rgba(255,255,255,.075),rgba(255,255,255,.03));
+  border:1px solid var(--edge-lit); box-shadow:var(--lift-2);
+  animation:enter .45s cubic-bezier(.16,.8,.3,1);
+}
+.signin-card h1{font-size:28px; margin:0 0 8px}
+.signin-card .hint{margin-bottom:6px}
+.signin-err{min-height:20px; margin:12px 0 0; font-size:14px; font-weight:560;
+            color:var(--alert); text-align:center}
+body.locked{overflow:hidden}
+
 @media (prefers-reduced-motion:reduce){
   /* :nth-child(n) is here to match the specificity of the rules above that
      set these animations — .aurora span alone loses to .aurora span:nth-child(1)
      and the background keeps moving for someone who asked it not to. */
   .aurora span:nth-child(n){animation:none}
   .aurora::after,.hero::after,button.primary::after,nav .badge{animation:none}
-  .view.on > *{animation:none}
+  .view.on > *,.signin-card{animation:none}
   .toast{transition:opacity .01s, visibility 0s}
 }
 </style>
@@ -394,8 +417,23 @@ nav .badge{
 
 <header>
   <div class="wordmark">Vision<span>Guard</span></div>
-  <button class="who" id="who">set name</button>
+  <button class="who" id="who" hidden>sign out</button>
 </header>
+
+<div class="gate-screen" id="signin">
+  <form class="signin-card" id="signin-form">
+    <p class="eyebrow">VisionGuard</p>
+    <h1>Sign <em>in</em></h1>
+    <p class="hint">What you mark and what you send is recorded against your
+      account, so it has to be yours.</p>
+    <label for="u">Username</label>
+    <input id="u" autocomplete="username" autocapitalize="none" required>
+    <label for="pw">Password</label>
+    <input id="pw" type="password" autocomplete="current-password" required>
+    <button class="primary" id="signin-go" type="submit">Sign in</button>
+    <p class="signin-err" id="signin-err" role="alert"></p>
+  </form>
+</div>
 
 <main>
   <section class="view on" id="v-alerts">
@@ -502,18 +540,77 @@ nav .badge{
 
 <script>
 const $ = s => document.querySelector(s);
-const api = p => fetch(p, {cache:"no-store"}).then(r => r.json());
+const api = p => fetch(p, {cache:"no-store"}).then(r => {
+  if(r.status === 401){ onUnauthorized(); throw new Error("unauthorized"); }
+  return r.json();
+});
 const form = (p, d) => fetch(p, {method:"POST", body:new URLSearchParams(d)})
-  .then(async r => { if(!r.ok) throw new Error((await r.json()).detail || r.status);
-                     return r.json(); });
+  .then(async r => {
+    if(!r.ok){
+      if(r.status === 401 && p !== "/api/login") onUnauthorized();
+      throw new Error((await r.json().catch(() => ({}))).detail || "Request failed");
+    }
+    return r.json();
+  });
 
-let who = localStorage.getItem("vg_operator") || "";
-function renderWho(){ $("#who").textContent = who || "set name"; }
-$("#who").onclick = () => {
-  const n = prompt("Your name — it is recorded against what you mark.", who);
-  if(n !== null){ who = n.trim(); localStorage.setItem("vg_operator", who); renderWho(); }
+// Who is holding the phone comes from the session, never from the device.
+// A name in localStorage is a claim; this is the account the server verified.
+let me = null;
+
+function applyIdentity(){
+  const signedIn = !!me;
+  $("#signin").classList.toggle("on", !signedIn);
+  document.body.classList.toggle("locked", !signedIn);
+  $("#who").hidden = !signedIn;
+  if(signedIn) $("#who").textContent = me.name;
+  // a guard has no business messaging every resident, so that tab is not
+  // merely disabled — it is not there
+  const may = p => signedIn && me.can.includes(p);
+  document.querySelector('nav button[data-view="notices"]').hidden = !may("notices");
+  document.querySelector('nav button[data-view="gate"]').hidden = !may("gate");
+  document.querySelector("nav").style.gridTemplateColumns =
+    `repeat(${[...document.querySelectorAll("nav button")]
+       .filter(b => !b.hidden).length}, 1fr)`;
+}
+
+async function whoAmI(){
+  try {
+    const r = await fetch("/api/me", {cache:"no-store"});
+    me = r.ok ? await r.json() : null;
+  } catch(e){ me = null; }
+  applyIdentity();
+  return me;
+}
+
+$("#signin-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const go = $("#signin-go");
+  go.disabled = true; $("#signin-err").textContent = "";
+  try {
+    me = await form("/api/login",
+                    {username:$("#u").value.trim(), password:$("#pw").value});
+    $("#pw").value = "";
+    applyIdentity();
+    refreshAll();
+    toast(`Signed in as ${me.name}.`);
+  } catch(err){
+    $("#signin-err").textContent = err.message || "Could not sign in.";
+  }
+  go.disabled = false;
+});
+
+$("#who").onclick = async () => {
+  if(!confirm("Sign out of VisionGuard?")) return;
+  await fetch("/api/logout", {method:"POST"});
+  me = null; applyIdentity();
 };
-renderWho();
+
+// Any request can come back 401 if the shift ran past the session; when that
+// happens, put the sign-in screen up rather than silently showing stale data.
+function onUnauthorized(){
+  if(me){ me = null; applyIdentity(); toast("Session expired — sign in again.", true); }
+  else applyIdentity();
+}
 
 let toastTimer;
 function toast(msg, bad){
@@ -652,7 +749,7 @@ $("#alerts").addEventListener("click", async e => {
   card.querySelectorAll("button.act").forEach(x => x.disabled = true);
   try {
     await form(`/api/events/${b.dataset.id}/feedback`,
-               {verdict:b.dataset.v, user_name:who});
+               {verdict:b.dataset.v});
     toast(b.dataset.v === "real" ? "Marked real. Thank you."
                                  : "Marked a false alarm. Thank you.");
     loadAlerts();
@@ -730,7 +827,7 @@ $("#send").onclick = async () => {
   $("#send").disabled = true;
   try {
     const r = await form("/api/notices",
-      {title, body, author:who || "committee", audience:aud, flat_number:flat});
+      {title, body, audience:aud, flat_number:flat});
     toast(r.recipients
       ? `Sent to ${r.recipients} ${r.recipients === 1 ? "resident" : "residents"}.`
       : "Saved. No resident has connected Telegram yet, so nothing was delivered.");
@@ -769,12 +866,18 @@ const hour = new Date().getHours();
 $("#greeting").textContent = "Good " +
   (hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening");
 
-loadAlerts(); loadNotices();
+function refreshAll(){
+  if(!me) return;
+  loadAlerts();
+  if(me.can.includes("notices")) loadNotices();
+}
+
+whoAmI().then(refreshAll);
 // A guard leaves this open on a desk. Refresh the view they are looking at,
 // but only while the phone is awake and showing it.
-setInterval(() => { if(!document.hidden) loaders[current](); }, 15000);
+setInterval(() => { if(!document.hidden && me) loaders[current](); }, 15000);
 document.addEventListener("visibilitychange", () => {
-  if(!document.hidden) loaders[current]();
+  if(!document.hidden && me) loaders[current]();
 });
 
 if("serviceWorker" in navigator){
