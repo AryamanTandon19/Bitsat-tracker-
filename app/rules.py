@@ -195,7 +195,7 @@ class RulesEngine:
 
     def _score_context(self, etype: str, track_ids: list[int],
                        ts: float, registered: bool | None,
-                       plate: str | None) -> dict:
+                       plate: str | None, at_vehicle: bool | None = None) -> dict:
         """Everything the scoring layer is allowed to know about this firing.
         Read off state the engine already keeps — no new tracking."""
         dwell = 0.0
@@ -209,7 +209,11 @@ class RulesEngine:
             "registered": registered,
             "plate_known": None if registered is not None else bool(plate),
             "dwell_s": dwell,
-            "at_vehicle": etype in (VEHICLE_CONTACT, LOITERING),
+            # Only when we actually saw a vehicle there. Asserting it for
+            # every loitering event made it a constant pretending to be a
+            # signal, and put a claim in the explanation we could not back.
+            "at_vehicle": (etype == VEHICLE_CONTACT if at_vehicle is None
+                           else at_vehicle),
             "restricted": etype == RESTRICTED_ZONE,
             "false_alarm_rate": rates.get("false_alarm_rate", 0.0),
             "confirmed_rate": rates.get("confirmed_rate", 0.0),
@@ -218,7 +222,7 @@ class RulesEngine:
     def _emit(self, events: list, ts: float, etype: str, description: str,
               track_ids: list[int], plate: str | None = None,
               confidence: float = 0.0, debounce_key=None,
-              registered: bool | None = None):
+              registered: bool | None = None, at_vehicle: bool | None = None):
         key = debounce_key or (tuple(sorted(track_ids)) or self.camera, etype)
         if self._debounced(key, ts):
             return
@@ -226,7 +230,8 @@ class RulesEngine:
         severity, score, why = SEVERITY[etype], 0.0, ""
         if self.scoring_on:
             from .scoring import score_event
-            ctx = self._score_context(etype, track_ids, ts, registered, plate)
+            ctx = self._score_context(etype, track_ids, ts, registered, plate,
+                                      at_vehicle)
             s = score_event(etype, ctx, self.scoring_cfg)
             severity, score, why = s.severity, s.value, s.explain()
             if s.dismissed:
@@ -367,7 +372,8 @@ class RulesEngine:
                        f"{dwell:.0f}s (moved {st.max_parking_displacement:.0f}px)",
                        [d.track_id], confidence=0.7,
                        debounce_key=(d.track_id, LOITERING),
-                       registered=self._nearby_vehicle_registered(d.xyxy, cfg))
+                       registered=self._nearby_vehicle_registered(d.xyxy, cfg),
+                       at_vehicle=self._near_any_vehicle(d.xyxy, cfg))
 
     def _nearby_vehicle_registered(self, person_xyxy, cfg) -> bool | None:
         """Is the vehicle this person is standing at one the society knows?
