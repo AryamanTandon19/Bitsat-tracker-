@@ -68,6 +68,19 @@ slots:
                                # drops a parked car for a few frames routinely.
   notify_owner: true           # "your car left its spot", to that owner only
 
+# Object Tagging workbench (/train). The segmentation model here is separate
+# from the live detector on purpose: the cameras keep running `detection.model`
+# and this loads only when someone opens the workbench and asks for outlines.
+train:
+  segmenter: yolo              # yolo | mock  (mock = deterministic stand-in
+                               # shapes, for working on the UI with no model)
+  seg_model: "yolo11n-seg.pt"  # ~6MB, downloads on first use, CPU is fine
+  seg_confidence: 0.35
+  seg_imgsz: 640
+  seg_device: "auto"           # auto | cpu | cuda:0
+  max_objects: 40              # per frame, so one busy frame cannot flood the UI
+  cache_frames: 64             # segmented frames held in memory; disposable
+
 # Threat scoring — replaces the old fixed severity table. Every rule still
 # fires; what changes is that a firing is scored 0..1 from the situation and
 # only becomes an alert above `dismiss`. Turn `enabled` off to go back to the

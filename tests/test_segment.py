@@ -207,8 +207,8 @@ def test_the_factory_defaults_to_the_mock():
 
 def test_an_unknown_segmenter_fails_loudly():
     """Silently returning outlines nobody should trust would be worse."""
-    with pytest.raises(ValueError, match="step C"):
-        build_segmenter({"segmenter": "yolo-seg"})
+    with pytest.raises(ValueError, match="use 'yolo' or 'mock'"):
+        build_segmenter({"segmenter": "detectron"})
 
 
 # ------------------------------------------------------------- the API
@@ -412,3 +412,165 @@ def test_the_page_draws_masks_not_only_boxes(client):
 def test_the_classes_offered_cover_the_tagging_vocabulary():
     for c in ("person", "car", "bag", "package", "door", "unknown"):
         assert c in CLASSES
+
+
+# =====================================================================
+# Step C — the real segmenter. No test here downloads a model: the
+# ultralytics result is faked, because what needs proving is the
+# conversion and the failure handling, not that YOLO can see a car.
+# =====================================================================
+from app.segment import YoloSegmenter
+
+
+class FakeBox:
+    def __init__(self, xyxy, cls, conf, tid=None):
+        self.xyxy = [xyxy]
+        self.cls = [cls]
+        self.conf = [conf]
+        self.id = [tid] if tid is not None else None
+
+
+class FakeBoxes:
+    def __init__(self, boxes):
+        self._b = boxes
+    def __len__(self):
+        return len(self._b)
+    def __getitem__(self, i):
+        return self._b[i]
+
+
+class FakeMasks:
+    def __init__(self, polys):
+        self.xy = polys
+
+
+class FakeResult:
+    def __init__(self, boxes, polys=None, names=None):
+        self.boxes = FakeBoxes(boxes)
+        self.masks = FakeMasks(polys) if polys is not None else None
+        self.names = names or {0: "person", 2: "car"}
+
+
+class FakeModel:
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+    def predict(self, frame, **kw):
+        self.calls.append(kw)
+        return [self.result]
+
+
+def _seg_with(result, **kw):
+    s = YoloSegmenter(**kw)
+    s._model = FakeModel(result)
+    return s
+
+
+def test_the_real_segmenter_is_not_loaded_until_it_is_used():
+    """Opening the app must not cost a model load."""
+    s = YoloSegmenter()
+    assert s._model is None
+    assert s.name == "yolo11n-seg.pt"
+
+
+def test_the_factory_builds_it_from_config():
+    s = build_segmenter({"segmenter": "yolo", "seg_model": "yolo11n-seg.pt",
+                         "seg_confidence": 0.5})
+    assert isinstance(s, YoloSegmenter)
+    assert s.conf == 0.5 and s._model is None
+
+
+def test_ultralytics_output_becomes_our_objects():
+    r = FakeResult([FakeBox([100.0, 200.0, 300.0, 400.0], 2, 0.91)],
+                   [[(110, 210), (290, 205), (295, 390), (105, 395)]])
+    objs = _seg_with(r).segment(None, 126)
+    assert len(objs) == 1
+    o = objs[0]
+    assert o.class_name == "car" and o.class_id == 2
+    assert o.confidence == pytest.approx(0.91)
+    assert o.bbox == (100.0, 200.0, 300.0, 400.0)
+    assert len(o.polygon) == 4
+    assert o.temporary_object_id == "frame126-object0"
+
+
+def test_mask_coordinates_are_taken_as_original_pixels():
+    """Ultralytics .xy has already undone its own letterboxing. Re-scaling it
+    here would be silently wrong in a way nothing downstream could detect."""
+    poly = [(110.5, 210.5), (290, 205), (295, 390), (105, 395)]
+    r = FakeResult([FakeBox([100.0, 200.0, 300.0, 400.0], 2, 0.9)], [poly])
+    o = _seg_with(r).segment(None, 1)[0]
+    assert o.polygon == [(110.5, 210.5), (290.0, 205.0), (295.0, 390.0),
+                         (105.0, 395.0)]
+
+
+def test_a_result_with_no_masks_still_gives_boxes():
+    """A detection-only result must degrade to a box, not vanish."""
+    r = FakeResult([FakeBox([10.0, 10.0, 50.0, 50.0], 0, 0.8)], polys=None)
+    o = _seg_with(r).segment(None, 1)[0]
+    assert o.bbox == (10.0, 10.0, 50.0, 50.0) and o.polygons == []
+
+
+def test_a_degenerate_contour_falls_back_to_the_box():
+    """A mask that collapses to a line would make the object unclickable."""
+    r = FakeResult([FakeBox([10.0, 10.0, 50.0, 50.0], 0, 0.8)],
+                   [[(10, 10), (20, 20), (30, 30)]])       # collinear
+    o = _seg_with(r).segment(None, 1)[0]
+    assert o.polygons == []
+
+
+def test_an_empty_frame_returns_nothing_rather_than_failing():
+    assert _seg_with(FakeResult([])).segment(None, 1) == []
+
+
+def test_a_track_id_is_carried_through_when_present():
+    r = FakeResult([FakeBox([1.0, 1.0, 9.0, 9.0], 0, 0.7, tid=7)],
+                   [[(1, 1), (9, 1), (9, 9)]])
+    assert _seg_with(r).segment(None, 1)[0].track_id == 7
+
+
+def test_one_busy_frame_cannot_flood_the_interface():
+    boxes = [FakeBox([float(i), 1.0, float(i + 5), 9.0], 0, 0.5)
+             for i in range(200)]
+    objs = _seg_with(FakeResult(boxes), max_objects=40).segment(None, 1)
+    assert len(objs) == 40
+
+
+def test_confidence_and_size_reach_the_model():
+    r = FakeResult([FakeBox([1.0, 1.0, 9.0, 9.0], 0, 0.7)])
+    s = _seg_with(r, conf=0.42, imgsz=960, device="cpu")
+    s.segment(None, 1)
+    assert s._model.calls[0]["conf"] == 0.42
+    assert s._model.calls[0]["imgsz"] == 960
+    assert s._model.calls[0]["device"] == "cpu"
+
+
+def test_the_device_falls_back_to_cpu():
+    assert YoloSegmenter(device="cpu")._pick_device() == "cpu"
+    assert YoloSegmenter(device="auto")._pick_device() in ("cpu", "cuda:0")
+
+
+def test_a_model_that_cannot_load_says_why_and_how_to_fix_it():
+    """'No objects found' would be a lie if the weights never loaded."""
+    s = YoloSegmenter(weights="/nonexistent/nope-seg.pt")
+    with pytest.raises(RuntimeError) as e:
+        s.load()
+    msg = str(e.value)
+    assert "nope-seg.pt" in msg and ("network" in msg or "beside config" in msg)
+
+
+def test_loading_twice_returns_the_same_model():
+    """Per-request loading would make every click pay for it."""
+    s = YoloSegmenter()
+    sentinel = object()
+    s._model = sentinel
+    assert s.load() is sentinel and s.load() is sentinel
+
+
+def test_the_output_is_selectable_by_the_geometry_layer():
+    """The two halves meet here: a real-shaped result must click correctly."""
+    r = FakeResult([FakeBox([100.0, 100.0, 300.0, 300.0], 2, 0.9)],
+                   [[(100, 100), (300, 100), (300, 300), (100, 300)]])
+    objs = _seg_with(r).segment(None, 1)
+    from app.tagging import select
+    assert select(objs, 200, 200)["method"] == "mask_hit"
+    assert select(objs, 500, 500)["method"] == "manual_box"

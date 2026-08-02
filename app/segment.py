@@ -146,6 +146,120 @@ class MockSegmenter(Segmenter):
         return out
 
 
+class YoloSegmenter(Segmenter):
+    """Real instance segmentation, one frame at a time.
+
+    Deliberately separate from the live detector. `app/detector.py` keeps
+    running yolo11n on the cameras; this loads yolo11n-seg only when someone
+    opens the tagging workbench and asks for outlines. Two models in one
+    process is a few extra MB of RAM, and the alternative — swapping the
+    production detector for a segmentation one — would change what every
+    camera reports on the strength of a labelling feature nobody has used yet.
+
+    Loaded once, on first use, and kept. Loading per request would make every
+    click pay a second of import and weight-loading.
+    """
+
+    def __init__(self, weights: str = "yolo11n-seg.pt", conf: float = 0.35,
+                 imgsz: int = 640, device: str = "auto",
+                 classes: list | None = None, max_objects: int = 40):
+        self.weights = weights
+        self.conf = float(conf)
+        self.imgsz = int(imgsz)
+        self.device = device
+        self.classes = classes
+        self.max_objects = int(max_objects)
+        self._model = None
+        self._lock = threading.Lock()
+
+    @property
+    def name(self) -> str:
+        return self.weights
+
+    def _pick_device(self) -> str:
+        if self.device and self.device != "auto":
+            return self.device
+        try:
+            import torch
+            if torch.cuda.is_available():
+                return "cuda:0"
+        except Exception:
+            pass
+        return "cpu"
+
+    def load(self):
+        """Idempotent, thread-safe, and loud when it fails.
+
+        A model that cannot load must say why: the workbench sits behind this
+        and 'no objects found' would be a lie.
+        """
+        if self._model is not None:
+            return self._model
+        with self._lock:
+            if self._model is not None:
+                return self._model
+            try:
+                from ultralytics import YOLO
+            except ImportError as e:
+                raise RuntimeError(
+                    "ultralytics is not installed, so outlines cannot be "
+                    f"produced ({e})") from e
+            try:
+                self._model = YOLO(self.weights)
+            except Exception as e:
+                raise RuntimeError(
+                    f"could not load {self.weights}: {e}. It downloads on "
+                    "first use — check the machine has network access, or "
+                    "place the file beside config.yaml") from e
+            return self._model
+
+    def segment(self, frame, frame_index: int) -> list:
+        model = self.load()
+        kw = {"verbose": False, "conf": self.conf, "imgsz": self.imgsz,
+              "device": self._pick_device()}
+        if self.classes:
+            kw["classes"] = self.classes
+        result = model.predict(frame, **kw)[0]
+        try:
+            return self._to_objects(result, frame_index)
+        finally:
+            # the result holds GPU/CPU tensors for the whole frame; on a small
+            # machine, holding one per cached entry adds up fast
+            del result
+
+    def _to_objects(self, result, frame_index: int) -> list:
+        masks = getattr(result, "masks", None)
+        boxes = getattr(result, "boxes", None)
+        if boxes is None or len(boxes) == 0:
+            return []
+        names = getattr(result, "names", {}) or {}
+        # .xy is already in original-frame pixels — the one thing we must not
+        # re-scale ourselves, because Ultralytics has already undone its own
+        # letterboxing and doing it twice is silently wrong
+        polys = list(masks.xy) if masks is not None else []
+
+        out = []
+        for i in range(min(len(boxes), self.max_objects)):
+            b = boxes[i]
+            x1, y1, x2, y2 = _floats(b.xyxy[0])
+            cls_id = int(b.cls[0]) if b.cls is not None else -1
+            poly = []
+            if i < len(polys):
+                poly = [(float(px), float(py)) for px, py in polys[i]]
+                if polygon_area(poly) <= 0:
+                    poly = []          # degenerate contour: fall back to box
+            out.append(SegmentedObject(
+                temporary_object_id=f"frame{frame_index}-object{i}",
+                class_name=str(names.get(cls_id, cls_id)),
+                confidence=float(b.conf[0]) if b.conf is not None else 0.0,
+                bbox=(x1, y1, x2, y2),
+                polygons=[poly] if len(poly) >= 3 else [],
+                class_id=cls_id,
+                track_id=int(b.id[0]) if getattr(b, "id", None) is not None
+                else None))
+        return out
+
+
 class SegmentationCache:
     """(clip, frame) -> result, with a hard cap.
 
@@ -187,6 +301,15 @@ class SegmentationCache:
 
     def __len__(self):
         return len(self._data)
+
+
+def _floats(v) -> list:
+    """Ultralytics hands back tensors; read them without importing torch.
+    Anything sequence-like works, which also lets the tests fake a result
+    without a 700MB dependency."""
+    if hasattr(v, "tolist"):
+        v = v.tolist()
+    return [float(n) for n in v]
 
 
 def frame_index_for(timestamp_ms: float, fps: float) -> int:
@@ -240,6 +363,13 @@ def build_segmenter(cfg: dict | None = None) -> Segmenter:
     kind = str(cfg.get("segmenter", "mock")).lower()
     if kind == "mock":
         return MockSegmenter(int(cfg.get("mock_objects", 3)))
+    if kind in ("yolo", "yolo-seg", "yolo11-seg"):
+        return YoloSegmenter(
+            weights=cfg.get("seg_model", "yolo11n-seg.pt"),
+            conf=float(cfg.get("seg_confidence", 0.35)),
+            imgsz=int(cfg.get("seg_imgsz", 640)),
+            device=cfg.get("seg_device", "auto"),
+            classes=cfg.get("seg_classes"),
+            max_objects=int(cfg.get("max_objects", 40)))
     raise ValueError(
-        f"unknown segmenter {kind!r} — 'mock' is the only one built so far; "
-        "the YOLO11-seg service arrives in step C")
+        f"unknown segmenter {kind!r} — use 'yolo' or 'mock'")
