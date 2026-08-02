@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import secrets
 import tempfile
 from pathlib import Path
@@ -28,6 +29,7 @@ from . import assistant as assistant_mod
 from . import auth
 from . import clips as clips_mod
 from . import damage as damage_mod
+from . import train as train_mod
 from . import operator as operator_mod
 from .plates import normalize_plate
 
@@ -328,6 +330,143 @@ def create_app(ctx) -> FastAPI:
         if not ctx.db.remove_vehicle(normalize_plate(plate), actor="dashboard"):
             raise HTTPException(404, "plate not found")
         return {"ok": True}
+
+    # ------------------------------------------------------------ training
+    # The labelling workbench. Every threshold in this system is tuned against
+    # human judgement, and this is where that judgement is entered.
+    TRAIN_DIR = Path((ctx.config.get("storage") or {}).get(
+        "training_dir", "testset/clips"))
+
+    @app.get("/train", response_class=HTMLResponse)
+    def train_page():
+        return HTMLResponse(train_mod.PAGE, headers=_NO_CACHE)
+
+    @app.get("/api/train/clips")
+    def train_clips(user: dict = Depends(require("registry"))):
+        return ctx.db.list_training_clips()
+
+    @app.post("/api/train/clips")
+    async def train_upload(file: UploadFile = File(...), source: str = Form(""),
+                           user: dict = Depends(require("registry"))):
+        suffix = Path(file.filename or "clip.mp4").suffix.lower() or ".mp4"
+        if suffix not in ALLOWED_VIDEO_EXT:
+            raise HTTPException(400, f"unsupported video type {suffix}")
+        TRAIN_DIR.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", Path(file.filename or "clip").name)
+        dest = TRAIN_DIR / safe
+        n = 1
+        while dest.exists():                       # never silently overwrite
+            dest = TRAIN_DIR / f"{Path(safe).stem}_{n}{suffix}"
+            n += 1
+        size = 0
+        with dest.open("wb") as out:
+            while chunk := await file.read(1 << 20):
+                size += len(chunk)
+                out.write(chunk)
+        if not size:
+            dest.unlink(missing_ok=True)
+            raise HTTPException(400, "empty file")
+
+        duration = 0.0
+        try:
+            import cv2
+            cap = cv2.VideoCapture(str(dest))
+            fps = cap.get(cv2.CAP_PROP_FPS) or 0
+            frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+            cap.release()
+            duration = frames / fps if fps else 0.0
+        except Exception:
+            log.exception("could not read duration of %s", dest)
+
+        cid = ctx.db.add_training_clip(dest.name, str(dest), duration,
+                                       user["username"], source.strip())
+        return {"ok": True, "id": cid, "filename": dest.name,
+                "duration_s": round(duration, 2)}
+
+    @app.get("/api/train/clips/{clip_id}/video")
+    def train_video(clip_id: int, user: dict = Depends(require("registry"))):
+        clip = ctx.db.get_training_clip(clip_id)
+        if not clip or not Path(clip["path"]).exists():
+            raise HTTPException(404, "clip not available")
+        return FileResponse(clip["path"], media_type="video/mp4")
+
+    @app.delete("/api/train/clips/{clip_id}")
+    def train_clip_delete(clip_id: int,
+                          user: dict = Depends(require("registry"))):
+        clip = ctx.db.get_training_clip(clip_id)
+        if not ctx.db.delete_training_clip(clip_id, user["username"]):
+            raise HTTPException(404, "no such clip")
+        # the file stays on disk: labels are cheap to redo, footage is not
+        return {"ok": True, "file_kept": clip["path"] if clip else None}
+
+    @app.get("/api/train/marks")
+    def train_marks(clip_id: int = 0,
+                    user: dict = Depends(require("registry"))):
+        return ctx.db.training_marks(clip_id or None)
+
+    @app.post("/api/train/marks")
+    def train_mark_add(clip_id: int = Form(...), start_s: float = Form(...),
+                       end_s: float = Form(...), label: str = Form(...),
+                       verdict: str = Form(...), note: str = Form(""),
+                       user: dict = Depends(require("registry"))):
+        if ctx.db.get_training_clip(clip_id) is None:
+            raise HTTPException(404, "no such clip")
+        try:
+            mid = ctx.db.add_training_mark(clip_id, start_s, end_s,
+                                           label.strip(), verdict, note.strip(),
+                                           user["display_name"])
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True, "id": mid}
+
+    @app.delete("/api/train/marks/{mark_id}")
+    def train_mark_delete(mark_id: int,
+                          user: dict = Depends(require("registry"))):
+        if not ctx.db.delete_training_mark(mark_id):
+            raise HTTPException(404, "no such mark")
+        return {"ok": True}
+
+    @app.get("/api/train/boxes")
+    def train_boxes(clip_id: int = 0,
+                    user: dict = Depends(require("registry"))):
+        return ctx.db.training_boxes(clip_id or None)
+
+    @app.post("/api/train/boxes")
+    def train_box_add(clip_id: int = Form(...), t_s: float = Form(...),
+                      cls: str = Form(...), x1: float = Form(...),
+                      y1: float = Form(...), x2: float = Form(...),
+                      y2: float = Form(...),
+                      user: dict = Depends(require("registry"))):
+        if ctx.db.get_training_clip(clip_id) is None:
+            raise HTTPException(404, "no such clip")
+        if cls not in train_mod.CLASSES:
+            raise HTTPException(400,
+                                f"class must be one of {', '.join(train_mod.CLASSES)}")
+        try:
+            bid = ctx.db.add_training_box(clip_id, t_s, cls, (x1, y1, x2, y2),
+                                          user["display_name"])
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True, "id": bid}
+
+    @app.delete("/api/train/boxes/{box_id}")
+    def train_box_delete(box_id: int,
+                         user: dict = Depends(require("registry"))):
+        if not ctx.db.delete_training_box(box_id):
+            raise HTTPException(404, "no such box")
+        return {"ok": True}
+
+    @app.get("/api/train/export")
+    def train_export(user: dict = Depends(require("registry"))):
+        """Hand the labels to the harnesses in the format they already read.
+
+        This is the whole point of the page: what someone marks here becomes
+        `labels.csv`, which is what validate_triggers.py and evaluate_alerts.py
+        measure against.
+        """
+        rows = train_mod.to_labels_csv(ctx.db)
+        return Response(rows, media_type="text/csv", headers={
+            "Content-Disposition": 'attachment; filename="labels.csv"'})
 
     # ------------------------------------------------------- parking slots
     @app.get("/api/slots")

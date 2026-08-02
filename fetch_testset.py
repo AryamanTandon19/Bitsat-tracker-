@@ -133,10 +133,16 @@ def fetch(camera: str, n_clips: int, out_dir: Path, seg_s: int,
             if dest.exists():
                 made.append((dest.name, f"MEVA {camera}"))
                 continue
+            # +faststart moves the moov atom to the front. Without it a
+            # browser cannot read the duration or seek until the whole file
+            # has downloaded — the Train page showed a black player and no
+            # timeline, which looked like a broken upload rather than a
+            # muxing default.
             r = _run([ff, "-y", "-loglevel", "error",
                       "-ss", str(s * seg_s), "-t", str(seg_s),
                       "-i", str(raw), "-c:v", "libx264", "-preset", "veryfast",
-                      "-crf", "26", "-an", str(dest)])
+                      "-crf", "26", "-an", "-movflags", "+faststart",
+                      str(dest)])
             if dest.exists() and dest.stat().st_size > 10_000:
                 made.append((dest.name, f"MEVA {camera}"))
             else:

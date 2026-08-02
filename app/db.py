@@ -173,6 +173,43 @@ CREATE TABLE IF NOT EXISTS slot_activity (
     notified INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_slot_activity ON slot_activity(slot_id, ts);
+-- Training set. Clips someone uploaded and marked up by hand: this is where
+-- the labels come from that every threshold in the system is tuned against.
+CREATE TABLE IF NOT EXISTS training_clips (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT NOT NULL,
+    path TEXT NOT NULL,
+    duration_s REAL,
+    added_by TEXT,
+    added_at REAL NOT NULL,
+    source TEXT                              -- where it came from, in words
+);
+-- One human judgement about one stretch of one clip.
+CREATE TABLE IF NOT EXISTS training_marks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    clip_id INTEGER NOT NULL REFERENCES training_clips(id),
+    start_s REAL NOT NULL,
+    end_s REAL NOT NULL,
+    label TEXT NOT NULL,                     -- what is happening, in words
+    verdict TEXT NOT NULL,                   -- incident | normal
+    note TEXT,
+    marked_by TEXT,
+    ts REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_marks_clip ON training_marks(clip_id, start_s);
+-- A box drawn on one paused frame. Not for teaching the detector shapes —
+-- it already knows what a car is. This measures whether it sees them on THIS
+-- camera, at this height, in this light.
+CREATE TABLE IF NOT EXISTS training_boxes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    clip_id INTEGER NOT NULL REFERENCES training_clips(id),
+    t_s REAL NOT NULL,
+    cls TEXT NOT NULL,                       -- person | car | motorcycle | other
+    x1 REAL NOT NULL, y1 REAL NOT NULL, x2 REAL NOT NULL, y2 REAL NOT NULL,
+    marked_by TEXT,
+    ts REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_boxes_clip ON training_boxes(clip_id, t_s);
 """
 
 # columns added after first release — applied with ALTER TABLE on startup so
@@ -777,6 +814,114 @@ class Database:
                 " ORDER BY e.ts ASC LIMIT ?",
                 (camera, start, end, limit)).fetchall()
             return [dict(r) for r in rows]
+
+    # -- training set --------------------------------------------------------
+    def add_training_clip(self, filename: str, path: str, duration_s: float,
+                          added_by: str = "", source: str = "") -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO training_clips (filename, path, duration_s,"
+                " added_by, added_at, source) VALUES (?, ?, ?, ?, ?, ?)",
+                (filename, path, duration_s, added_by, time.time(), source))
+            self._conn.commit()
+            return cur.lastrowid
+
+    def list_training_clips(self) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT c.*,"
+                " (SELECT COUNT(*) FROM training_marks m WHERE m.clip_id = c.id)"
+                "   AS marks,"
+                " (SELECT COUNT(*) FROM training_marks m WHERE m.clip_id = c.id"
+                "   AND m.verdict = 'incident') AS incidents,"
+                " (SELECT COUNT(*) FROM training_boxes b WHERE b.clip_id = c.id)"
+                "   AS boxes"
+                " FROM training_clips c ORDER BY c.id DESC").fetchall()
+            return [dict(r) for r in rows]
+
+    def get_training_clip(self, clip_id: int) -> dict | None:
+        with self._lock:
+            r = self._conn.execute("SELECT * FROM training_clips WHERE id = ?",
+                                   (clip_id,)).fetchone()
+            return dict(r) if r else None
+
+    def delete_training_clip(self, clip_id: int, actor: str = "") -> bool:
+        with self._lock:
+            self._conn.execute("DELETE FROM training_marks WHERE clip_id = ?",
+                               (clip_id,))
+            self._conn.execute("DELETE FROM training_boxes WHERE clip_id = ?",
+                               (clip_id,))
+            cur = self._conn.execute("DELETE FROM training_clips WHERE id = ?",
+                                     (clip_id,))
+            self._conn.commit()
+            gone = cur.rowcount > 0
+        if gone:
+            self.append_audit(actor or "system", "TRAINING_CHANGE",
+                              {"op": "delete_clip", "clip_id": clip_id})
+        return gone
+
+    def add_training_mark(self, clip_id: int, start_s: float, end_s: float,
+                          label: str, verdict: str, note: str = "",
+                          marked_by: str = "") -> int:
+        if verdict not in ("incident", "normal"):
+            raise ValueError("verdict must be 'incident' or 'normal'")
+        if end_s <= start_s:
+            raise ValueError("a mark must end after it starts")
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO training_marks (clip_id, start_s, end_s, label,"
+                " verdict, note, marked_by, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (clip_id, start_s, end_s, label, verdict, note, marked_by,
+                 time.time()))
+            self._conn.commit()
+            return cur.lastrowid
+
+    def training_marks(self, clip_id: int | None = None) -> list[dict]:
+        sql = "SELECT * FROM training_marks"
+        args: list = []
+        if clip_id:
+            sql += " WHERE clip_id = ?"
+            args.append(clip_id)
+        sql += " ORDER BY clip_id, start_s"
+        with self._lock:
+            return [dict(r) for r in self._conn.execute(sql, args).fetchall()]
+
+    def delete_training_mark(self, mark_id: int) -> bool:
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM training_marks WHERE id = ?",
+                                     (mark_id,))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def add_training_box(self, clip_id: int, t_s: float, cls: str,
+                         xyxy: tuple, marked_by: str = "") -> int:
+        x1, y1, x2, y2 = [float(v) for v in xyxy]
+        if x2 <= x1 or y2 <= y1:
+            raise ValueError("a box needs a positive width and height")
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO training_boxes (clip_id, t_s, cls, x1, y1, x2, y2,"
+                " marked_by, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (clip_id, t_s, cls, x1, y1, x2, y2, marked_by, time.time()))
+            self._conn.commit()
+            return cur.lastrowid
+
+    def training_boxes(self, clip_id: int | None = None) -> list[dict]:
+        sql = "SELECT * FROM training_boxes"
+        args: list = []
+        if clip_id:
+            sql += " WHERE clip_id = ?"
+            args.append(clip_id)
+        sql += " ORDER BY clip_id, t_s"
+        with self._lock:
+            return [dict(r) for r in self._conn.execute(sql, args).fetchall()]
+
+    def delete_training_box(self, box_id: int) -> bool:
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM training_boxes WHERE id = ?",
+                                     (box_id,))
+            self._conn.commit()
+            return cur.rowcount > 0
 
     # -- notices (committee -> members) --------------------------------------
     def add_notice(self, title: str, body: str, author: str,
