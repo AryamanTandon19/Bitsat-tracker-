@@ -357,15 +357,29 @@ def validate_box(x1: float, y1: float, x2: float, y2: float,
 
 
 def _rect(b) -> Rect:
-    """Accept a Rect, a detector Detection, a 4-tuple or a dict."""
+    """Accept a Rect, a detector Detection, a SegmentedObject, a 4-tuple or a
+    dict.
+
+    The detector calls its box `xyxy` and the segmenter calls it `bbox`. Both
+    are read here rather than making one of them rename, because the mask path
+    worked without this and only the box-fallback path crashed — a bug that
+    hides until someone clicks a gap between two objects.
+    """
     if isinstance(b, Rect):
         return b
-    xyxy = getattr(b, "xyxy", None)
-    if xyxy is not None:
-        return Rect(*[float(v) for v in xyxy])
+    for attr in ("xyxy", "bbox"):
+        v = getattr(b, attr, None)
+        if v is not None:
+            return Rect(*[float(n) for n in v])
     if isinstance(b, dict):
         if "xyxy" in b:
             return Rect(*[float(v) for v in b["xyxy"]])
+        box = b.get("bbox")
+        if isinstance(box, dict):
+            return Rect(float(box["x_min"]), float(box["y_min"]),
+                        float(box["x_max"]), float(box["y_max"]))
+        if box is not None:
+            return Rect(*[float(v) for v in box])
         return Rect(float(b["x1"]), float(b["y1"]),
                     float(b["x2"]), float(b["y2"]))
     return Rect(*[float(v) for v in b])

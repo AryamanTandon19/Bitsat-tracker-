@@ -186,6 +186,17 @@ button.ghost{background:none}
 .mark .t{color:var(--muted);font-variant-numeric:tabular-nums;font-size:12.5px}
 .mark button{padding:4px 9px;font-size:12px}
 .empty{color:var(--muted);text-align:center;padding:26px;font-size:14px}
+.tick{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;
+  letter-spacing:0;text-transform:none;color:var(--soft);margin:0;
+  background:rgba(255,255,255,.05);border:1px solid var(--edge);
+  border-radius:12px;padding:10px 13px;cursor:pointer}
+/* the global input rule sets appearance:none for the text fields, which also
+   erases the tick — these were rendering as invisible dots */
+.tick input{width:auto;padding:0;margin:0;appearance:auto;-webkit-appearance:auto;
+  accent-color:#8b63f5;border:0;background:none;border-radius:0}
+button.on{border-color:rgba(139,99,245,.7);color:#c3aeff;
+  background:rgba(139,99,245,.16)}
+.stage.selecting canvas.overlay{cursor:pointer}
 .hint{color:var(--muted);font-size:13px;margin:10px 0 0}
 .warn{background:linear-gradient(150deg,rgba(255,180,92,.14),rgba(255,180,92,.04));
   border:1px solid rgba(255,180,92,.3);border-radius:14px;padding:13px 15px;
@@ -271,6 +282,17 @@ button.ghost{background:none}
         <b>this</b> camera, which is how you find out a site needs a bigger
         model or better lighting.</p>
       <div class="row">
+        <button class="primary" id="seg">Find objects on this frame</button>
+        <button id="selmode" class="ghost">Select Object: off</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label class="tick"><input type="checkbox" id="t-mask" checked> Masks</label>
+        <label class="tick"><input type="checkbox" id="t-box"> Boxes</label>
+        <label class="tick"><input type="checkbox" id="t-label" checked> Labels</label>
+        <button id="clearsel" class="ghost">Clear selection</button>
+      </div>
+      <p class="hint" id="segstat"></p>
+      <div class="row" style="margin-top:12px">
         <select id="cls"></select>
         <button id="boxes-clear" class="ghost">Clear boxes on this frame</button>
       </div>
@@ -467,7 +489,8 @@ $("#vid").addEventListener("timeupdate", () => {
 $("#vid").addEventListener("loadedmetadata", () => { drawTimeline(); sizeCanvas(); });
 
 /* --------------------------------------------------------------- boxes */
-$("#cls").innerHTML = __CLASSES__.map(c => `<option>${c}</option>`).join("");
+const CLASSES = __CLASSES__;
+$("#cls").innerHTML = CLASSES.map(c => `<option>${c}</option>`).join("");
 $("#suggested").innerHTML = __SUGGESTED__.map(s => `<option value="${s}">`).join("");
 
 function sizeCanvas(){
@@ -490,6 +513,7 @@ function nearFrame(){
 function drawBoxes(){
   const c = $("#ov"), g = c.getContext("2d");
   g.clearRect(0, 0, c.width, c.height);
+  drawMasks(g, c);                       // AI outlines under the hand-drawn boxes
   g.lineWidth = 2; g.font = "600 12px Manrope, sans-serif";
   for(const b of nearFrame()){
     g.strokeStyle = "#8b63f5"; g.fillStyle = "rgba(139,99,245,.15)";
@@ -527,13 +551,173 @@ $("#boxes-clear").onclick = async () => {
   await loadBoxes(); loadClips(); toast("Boxes cleared.");
 };
 
+/* ------------------------------------------------- segmentation overlay */
+let seg = null;            // last FrameSegmentation for this clip
+let segFrame = null;       // which frame it belongs to
+let picked = null;         // temporary_object_id of the selected object
+let hovered = null;
+let selMode = false;
+
+const CLASS_HUE = {person:"#4ade9e", car:"#8b63f5", bag:"#ffb45c",
+                   motorcycle:"#63d2ff", bicycle:"#63d2ff", bus:"#c3aeff",
+                   truck:"#c3aeff"};
+const hueFor = c => CLASS_HUE[c] || "#c8bfe8";
+
+$("#selmode").onclick = () => {
+  selMode = !selMode;
+  $("#selmode").classList.toggle("on", selMode);
+  $("#selmode").textContent = "Select Object: " + (selMode ? "on" : "off");
+  document.querySelector(".stage").classList.toggle("selecting", selMode);
+  if(selMode && !seg) runSegment();
+};
+$("#clearsel").onclick = () => { picked = null; drawBoxes(); };
+for(const id of ["t-mask","t-box","t-label"]) $("#"+id).onchange = drawBoxes;
+
+async function runSegment(force){
+  if(!current) return;
+  const t = $("#vid").currentTime || 0;
+  $("#segstat").textContent = "looking at this frame...";
+  try {
+    seg = await form(`/api/train/clips/${current.id}/segment-frame`,
+                     {timestamp_ms: Math.round(t * 1000),
+                      force_refresh: force ? "true" : "false"});
+    segFrame = seg.frame_index;
+    picked = null;
+    $("#segstat").textContent = seg.objects.length
+      ? `${seg.objects.length} object${seg.objects.length===1?"":"s"} outlined `
+        + `on frame ${seg.frame_index} (${esc(seg.model)})`
+      : `nothing found on frame ${seg.frame_index} (${esc(seg.model)})`;
+    drawBoxes();
+  } catch(e){ $("#segstat").textContent = "could not segment: " + e.message; }
+}
+$("#seg").onclick = () => runSegment(true);
+
+// The video moved, so the outlines belong to a different picture. Drop them
+// rather than draw last frame's shapes over this frame's objects.
+$("#vid").addEventListener("seeked", () => {
+  if(seg){ seg = null; picked = null; $("#segstat").textContent = ""; drawBoxes(); }
+  if(selMode) runSegment();
+});
+
+function objAt(x, y){          // x,y in canvas pixels -> object under them
+  if(!seg) return null;
+  const c = $("#ov");
+  const fx = x / c.width * seg.frame_width, fy = y / c.height * seg.frame_height;
+  let best = null, bestArea = Infinity;
+  for(const o of seg.objects){
+    for(const poly of (o.polygons || [])){
+      if(pointInPoly(fx, fy, poly)){
+        const a = polyArea(poly);
+        if(a < bestArea){ best = o; bestArea = a; }
+      }
+    }
+  }
+  return best;
+}
+function pointInPoly(x, y, poly){
+  let inside = false;
+  for(let i = 0, j = poly.length - 1; i < poly.length; j = i++){
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if((yi > y) !== (yj > y) &&
+       x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-12) + xi) inside = !inside;
+  }
+  return inside;
+}
+function polyArea(poly){
+  let t = 0;
+  for(let i = 0; i < poly.length; i++){
+    const [x1, y1] = poly[i], [x2, y2] = poly[(i + 1) % poly.length];
+    t += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(t) / 2;
+}
+
+function drawMasks(g, c){
+  if(!seg || !$("#t-mask").checked) return;
+  const sx = c.width / seg.frame_width, sy = c.height / seg.frame_height;
+  for(const o of seg.objects){
+    const isPicked = o.temporary_object_id === picked;
+    const isHover = o.temporary_object_id === hovered;
+    const hue = hueFor(o.class_name);
+    g.lineWidth = isPicked ? 3 : 2;
+    g.strokeStyle = hue;
+    g.fillStyle = hue + (isPicked ? "55" : isHover ? "3a" : "1f");
+    for(const poly of (o.polygons || [])){
+      if(poly.length < 3) continue;
+      g.beginPath();
+      g.moveTo(poly[0][0] * sx, poly[0][1] * sy);
+      for(let i = 1; i < poly.length; i++) g.lineTo(poly[i][0] * sx, poly[i][1] * sy);
+      g.closePath(); g.fill(); g.stroke();
+    }
+    if($("#t-box").checked){
+      g.setLineDash([4, 3]); g.strokeStyle = hue + "99";
+      g.strokeRect(o.bbox.x_min * sx, o.bbox.y_min * sy,
+                   (o.bbox.x_max - o.bbox.x_min) * sx,
+                   (o.bbox.y_max - o.bbox.y_min) * sy);
+      g.setLineDash([]);
+    }
+    if($("#t-label").checked && (isPicked || isHover || !picked)){
+      const text = `${o.class_name} ${Math.round(o.confidence * 100)}%`;
+      g.font = "600 12px Manrope, sans-serif";
+      const w = g.measureText(text).width + 10;
+      const bx = o.bbox.x_min * sx, by = o.bbox.y_min * sy;
+      g.fillStyle = "rgba(8,5,15,.8)";
+      g.fillRect(bx, Math.max(0, by - 18), w, 17);
+      g.fillStyle = hue;
+      g.fillText(text, bx + 5, Math.max(11, by - 5));
+    }
+  }
+}
+
 let draw = null;
 function canvasPt(ev){
   const r = $("#ov").getBoundingClientRect();
   return [Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)),
           Math.max(0, Math.min(1, (ev.clientY - r.top) / r.height))];
 }
-$("#ov").addEventListener("pointerdown", ev => {
+$("#ov").addEventListener("pointermove", ev => {
+  if(!selMode || draw) return;
+  const r = $("#ov").getBoundingClientRect();
+  const o = objAt((ev.clientX - r.left) / r.width * $("#ov").width,
+                  (ev.clientY - r.top) / r.height * $("#ov").height);
+  const id = o && o.temporary_object_id;
+  if(id !== hovered){ hovered = id; drawBoxes(); }
+});
+
+$("#ov").addEventListener("pointerdown", async ev => {
+  if(selMode){
+    // Clicking an object is a selection, not the start of a box.
+    ev.preventDefault();
+    const v = $("#vid");
+    if(!v.paused) v.pause();
+    const r = $("#ov").getBoundingClientRect();
+    try {
+      const out = await form(`/api/train/clips/${current.id}/select-object`, {
+        timestamp_ms: Math.round(v.currentTime * 1000),
+        display_x: ev.clientX - r.left, display_y: ev.clientY - r.top,
+        display_width: r.width, display_height: r.height});
+      seg = {frame_index: out.frame_index, frame_width: out.recommended
+               ? seg.frame_width : (seg && seg.frame_width),
+             frame_height: seg && seg.frame_height,
+             model: out.model, objects: out.objects};
+      picked = out.recommended_object_id;
+      if(picked){
+        const o = out.recommended;
+        $("#cls").value = CLASSES.includes(o.class_name) ? o.class_name : "other";
+        $("#segstat").textContent =
+          `${o.class_name} · ${Math.round(o.confidence * 100)}% · `
+          + `${out.selection_method.replace("_", " ")}`
+          + (out.overlapping_candidates.length > 1
+             ? ` · ${out.overlapping_candidates.length - 1} other candidate(s)` : "");
+      } else {
+        $("#segstat").textContent = out.clicked_on_video
+          ? "nothing there — draw a box instead"
+          : "that was outside the picture";
+      }
+      drawBoxes();
+    } catch(e){ $("#segstat").textContent = "selection failed: " + e.message; }
+    return;
+  }
   if(!$("#vid").paused){ toast("Pause the video first."); return; }
   const [x, y] = canvasPt(ev);
   draw = {x1:x, y1:y, x2:x, y2:y};

@@ -31,6 +31,8 @@ from . import clips as clips_mod
 from . import damage as damage_mod
 from . import train as train_mod
 from . import operator as operator_mod
+from . import segment as segment_mod
+from . import tagging
 from .plates import normalize_plate
 
 log = logging.getLogger(__name__)
@@ -454,6 +456,108 @@ def create_app(ctx) -> FastAPI:
                          user: dict = Depends(require("registry"))):
         if not ctx.db.delete_training_box(box_id):
             raise HTTPException(404, "no such box")
+        return {"ok": True}
+
+    # ---- segmentation: outlines for one frame, and clicking one -----------
+    _seg_cache = segment_mod.SegmentationCache(
+        int((ctx.config.get("train") or {}).get("cache_frames", 64)))
+    _seg_holder: dict = {}
+
+    def _segmenter():
+        """Built once, on first use. Loading a model per request would make
+        every click pay for it."""
+        if "s" not in _seg_holder:
+            _seg_holder["s"] = segment_mod.build_segmenter(
+                ctx.config.get("train") or {})
+        return _seg_holder["s"]
+
+    def _segment_frame(clip_id: int, timestamp_ms: float, force: bool = False):
+        clip = ctx.db.get_training_clip(clip_id)
+        if clip is None or not Path(clip["path"]).exists():
+            raise HTTPException(404, "clip not available")
+        if timestamp_ms < 0:
+            raise HTTPException(400, "timestamp cannot be negative")
+        try:
+            frame, idx, fps, w, h = segment_mod.read_frame(clip["path"],
+                                                           timestamp_ms)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+        key = (clip_id, idx)
+        if not force:
+            cached = _seg_cache.get(key)
+            if cached is not None:
+                return cached
+        seg = _segmenter()
+        try:
+            objects = seg.segment(frame, idx)
+        except Exception as e:
+            log.exception("segmentation failed on clip %s frame %s", clip_id, idx)
+            raise HTTPException(503, f"segmentation is unavailable: {e}")
+        result = segment_mod.FrameSegmentation(
+            clip_id=clip_id, frame_index=idx,
+            timestamp_ms=int(round(timestamp_ms)),
+            frame_width=w, frame_height=h, model=seg.name, objects=objects)
+        _seg_cache.put(key, result)
+        return result
+
+    @app.post("/api/train/clips/{clip_id}/segment-frame")
+    def train_segment_frame(clip_id: int, timestamp_ms: float = Form(...),
+                            force_refresh: bool = Form(False),
+                            user: dict = Depends(require("registry"))):
+        """Outline every object on one frame. Cached per (clip, frame)."""
+        return _segment_frame(clip_id, timestamp_ms, force_refresh).public()
+
+    @app.post("/api/train/clips/{clip_id}/select-object")
+    def train_select_object(clip_id: int, timestamp_ms: float = Form(...),
+                            display_x: float = Form(...),
+                            display_y: float = Form(...),
+                            display_width: float = Form(...),
+                            display_height: float = Form(...),
+                            radius: float = Form(60.0),
+                            user: dict = Depends(require("registry"))):
+        """What did they click?
+
+        The conversion happens here rather than in the browser so there is one
+        implementation of it, and it is the tested one.
+        """
+        result = _segment_frame(clip_id, timestamp_ms)
+        if min(display_width, display_height) <= 0:
+            raise HTTPException(400, "display size must be positive")
+        fx, fy = tagging.to_frame_coords(display_x, display_y,
+                                         display_width, display_height,
+                                         result.frame_width, result.frame_height)
+        on_picture = tagging.in_letterbox(display_x, display_y,
+                                          display_width, display_height,
+                                          result.frame_width, result.frame_height)
+        # objects carry .polygons, so select() prefers outlines over boxes
+        out = tagging.select(result.objects, fx, fy, radius)
+        chosen = out["selected"]
+        return {
+            "clip_id": clip_id, "frame_index": result.frame_index,
+            "frame_point": {"x": round(fx, 1), "y": round(fy, 1)},
+            "clicked_on_video": on_picture,
+            "selection_method": out["method"],
+            "recommended_object_id":
+                chosen.temporary_object_id if chosen else None,
+            "recommended": chosen.public() if chosen else None,
+            "overlapping_candidates":
+                ([chosen.temporary_object_id] if chosen else [])
+                + [o.temporary_object_id for o in out["alternatives"]],
+            "objects": [o.public() for o in result.objects],
+            "model": result.model,
+        }
+
+    @app.get("/api/train/segment-cache")
+    def train_segment_cache(user: dict = Depends(require("registry"))):
+        return {"entries": len(_seg_cache), "hits": _seg_cache.hits,
+                "misses": _seg_cache.misses, "max": _seg_cache.max_entries}
+
+    @app.delete("/api/train/segment-cache")
+    def train_segment_cache_clear(user: dict = Depends(require("registry"))):
+        """Cached AI results only. Saved annotations are in the database and
+        are not touched by this."""
+        _seg_cache.clear()
         return {"ok": True}
 
     @app.get("/api/train/export")

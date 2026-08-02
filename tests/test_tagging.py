@@ -408,3 +408,25 @@ def test_letterboxed_click_then_mask_hit_end_to_end():
     x, y = to_frame_coords(540, 500, 1080, 1080, *HD)
     assert (round(x), round(y)) == (960, 469)      # inside the car outline
     assert select([car], x, y)["method"] == "mask_hit"
+
+
+def test_a_segmented_object_works_on_the_box_path_too():
+    """The detector calls its box `xyxy`; the segmenter calls it `bbox`. The
+    mask path reads neither, so a mismatch here hides until someone clicks a
+    gap between two objects and the box fallback runs."""
+    from app.segment import SegmentedObject
+    o = SegmentedObject("x", "car", 0.9, (100, 100, 300, 250),
+                        [[(100, 100), (300, 100), (300, 250)]])
+    assert hit_test([o], 290, 240) == [o]          # box path
+    assert nearby([o], 340, 175, radius=60) == [o]  # nearby path
+    assert select([o], 120, 110)["method"] == "mask_hit"
+
+
+def test_the_api_response_shape_is_selectable_as_it_comes_back():
+    """A caller can feed /segment-frame's own JSON straight back in."""
+    from app.segment import MockSegmenter
+    objs = [o.public() for o in MockSegmenter().segment(None, 42)]
+    assert all(has_mask(o) for o in objs)
+    inside = objs[0]["polygon"][0]
+    out = select(objs, inside[0], inside[1])
+    assert out["method"] == "mask_hit"
