@@ -242,3 +242,24 @@ def test_the_page_says_what_boxes_do_and_do_not_do(client):
     reasonably expect accuracy to improve because they drew boxes."""
     html = client.get("/train").text
     assert "does <b>not</b> teach the detector" in html
+
+
+def test_the_tagging_vocabulary_reaches_the_page(client):
+    """The category list is the segmenter's, not the coverage-box one — a
+    person tagging footage cares about bags and packages the alerting layer
+    has no rule for yet."""
+    html = client.get("/train").text
+    for word in ("bag", "package", "animal", "custom"):
+        assert f"'{word}'" in html
+
+
+def test_the_page_promises_the_model_s_own_outline_is_kept(client):
+    flat = re.sub(r"\s+", " ", client.get("/train").text)
+    assert "kept exactly as it drew it" in flat
+
+
+def test_the_toast_cannot_swallow_a_click(client):
+    """It floats over the bottom of the page, which is exactly where the
+    tagging panel's buttons are. Without this it eats the next click on
+    whatever it happens to cover, and nothing about that looks like a bug."""
+    assert "pointer-events:none" in client.get("/train").text

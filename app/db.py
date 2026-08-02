@@ -210,6 +210,40 @@ CREATE TABLE IF NOT EXISTS training_boxes (
     ts REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_boxes_clip ON training_boxes(clip_id, t_s);
+-- A tagged object: an outline plus somebody's judgement about it. Both
+-- polygons are kept — `original_polygon` is exactly what the model produced
+-- and is never rewritten, `corrected_polygon` is what a person ended up with
+-- and stays NULL until they move a point. The gap between the two is the only
+-- honest measure of how good the model is on this camera.
+CREATE TABLE IF NOT EXISTS object_annotations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    clip_id INTEGER NOT NULL REFERENCES training_clips(id),
+    frame_index INTEGER NOT NULL,
+    timestamp_ms INTEGER NOT NULL,
+    category TEXT NOT NULL,
+    custom_label TEXT,
+    source TEXT NOT NULL,                    -- how the outline came to exist
+    detection_confidence REAL,               -- the model's, if a model drew it
+    user_confidence REAL,                    -- the person's, if they said
+    x1 REAL NOT NULL, y1 REAL NOT NULL, x2 REAL NOT NULL, y2 REAL NOT NULL,
+    frame_width INTEGER NOT NULL,            -- so an export can normalise
+    frame_height INTEGER NOT NULL,           -- without opening the video
+    original_polygon TEXT,                   -- JSON list of rings, as detected
+    corrected_polygon TEXT,                  -- JSON list of rings, as corrected
+    tags TEXT,                               -- JSON list
+    notes TEXT,
+    model TEXT,                              -- which model, so results are
+    track_id INTEGER,                        -- attributable after an upgrade
+    temporary_object_id TEXT,
+    review_status TEXT NOT NULL DEFAULT 'draft',
+    reviewed_by TEXT, reviewed_at REAL,
+    created_by TEXT, created_at REAL NOT NULL,
+    updated_by TEXT, updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_annotations_clip
+    ON object_annotations(clip_id, frame_index);
+CREATE INDEX IF NOT EXISTS idx_annotations_status
+    ON object_annotations(review_status);
 """
 
 # columns added after first release — applied with ALTER TABLE on startup so
@@ -835,7 +869,9 @@ class Database:
                 " (SELECT COUNT(*) FROM training_marks m WHERE m.clip_id = c.id"
                 "   AND m.verdict = 'incident') AS incidents,"
                 " (SELECT COUNT(*) FROM training_boxes b WHERE b.clip_id = c.id)"
-                "   AS boxes"
+                "   AS boxes,"
+                " (SELECT COUNT(*) FROM object_annotations a"
+                "   WHERE a.clip_id = c.id) AS annotations"
                 " FROM training_clips c ORDER BY c.id DESC").fetchall()
             return [dict(r) for r in rows]
 
@@ -850,6 +886,8 @@ class Database:
             self._conn.execute("DELETE FROM training_marks WHERE clip_id = ?",
                                (clip_id,))
             self._conn.execute("DELETE FROM training_boxes WHERE clip_id = ?",
+                               (clip_id,))
+            self._conn.execute("DELETE FROM object_annotations WHERE clip_id = ?",
                                (clip_id,))
             cur = self._conn.execute("DELETE FROM training_clips WHERE id = ?",
                                      (clip_id,))
@@ -920,6 +958,92 @@ class Database:
         with self._lock:
             cur = self._conn.execute("DELETE FROM training_boxes WHERE id = ?",
                                      (box_id,))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    # -- tagged objects ------------------------------------------------------
+    _ANN_COLS = (
+        "clip_id", "frame_index", "timestamp_ms", "category", "custom_label",
+        "source", "detection_confidence", "user_confidence",
+        "x1", "y1", "x2", "y2", "frame_width", "frame_height",
+        "original_polygon", "corrected_polygon", "tags", "notes", "model",
+        "track_id", "temporary_object_id", "review_status",
+        "reviewed_by", "reviewed_at", "created_by", "created_at",
+        "updated_by", "updated_at")
+
+    def add_object_annotation(self, row: dict) -> int:
+        """`row` comes from annotations.Annotation.row(), already validated.
+
+        The validation lives in annotations.py rather than here so it can be
+        tested without a database, and so there is exactly one copy of it.
+        """
+        cols = self._ANN_COLS
+        sql = (f"INSERT INTO object_annotations ({', '.join(cols)}) "
+               f"VALUES ({', '.join('?' * len(cols))})")
+        with self._lock:
+            cur = self._conn.execute(sql, [row.get(c) for c in cols])
+            self._conn.commit()
+            return cur.lastrowid
+
+    def object_annotations(self, clip_id: int | None = None,
+                           frame_index: int | None = None,
+                           review_status: str = "") -> list[dict]:
+        sql = "SELECT * FROM object_annotations"
+        where, args = [], []
+        if clip_id:
+            where.append("clip_id = ?")
+            args.append(clip_id)
+        if frame_index is not None:
+            where.append("frame_index = ?")
+            args.append(frame_index)
+        if review_status:
+            where.append("review_status = ?")
+            args.append(review_status)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY clip_id, frame_index, id"
+        with self._lock:
+            return [dict(r) for r in self._conn.execute(sql, args).fetchall()]
+
+    def get_object_annotation(self, ann_id: int) -> dict | None:
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT * FROM object_annotations WHERE id = ?",
+                (ann_id,)).fetchone()
+            return dict(r) if r else None
+
+    def update_object_annotation(self, ann_id: int, row: dict) -> bool:
+        """Writes only the fields a person can edit.
+
+        `original_polygon` is not in this list, and that is the point: the
+        model's answer is written once, when the annotation is created, and is
+        never reachable by an update.
+        """
+        editable = ("category", "custom_label", "corrected_polygon", "tags",
+                    "notes", "user_confidence", "x1", "y1", "x2", "y2",
+                    "updated_by", "updated_at")
+        sets = ", ".join(f"{c} = ?" for c in editable)
+        with self._lock:
+            cur = self._conn.execute(
+                f"UPDATE object_annotations SET {sets} WHERE id = ?",
+                [row.get(c) for c in editable] + [ann_id])
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def set_annotation_status(self, ann_id: int, status: str,
+                              actor: str = "") -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE object_annotations SET review_status = ?,"
+                " reviewed_by = ?, reviewed_at = ? WHERE id = ?",
+                (status, actor, time.time(), ann_id))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def delete_object_annotation(self, ann_id: int) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM object_annotations WHERE id = ?", (ann_id,))
             self._conn.commit()
             return cur.rowcount > 0
 

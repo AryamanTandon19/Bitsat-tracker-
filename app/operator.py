@@ -344,6 +344,9 @@ button.primary[disabled]{opacity:.55}
   color:var(--text); box-shadow:var(--lift-2);
   backdrop-filter:blur(22px); -webkit-backdrop-filter:blur(22px);
   display:flex; align-items:center; gap:12px;
+  /* it floats just above the nav bar; without this it quietly eats the next
+     tap on whatever it happens to be covering */
+  pointer-events:none;
   opacity:0; visibility:hidden; transform:translateY(16px) scale(.97);
   transition:opacity .22s ease, transform .38s cubic-bezier(.16,.9,.3,1),
              visibility 0s linear .38s;

@@ -25,6 +25,7 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                Response, StreamingResponse)
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
+from . import annotations as ann_mod
 from . import assistant as assistant_mod
 from . import auth
 from . import clips as clips_mod
@@ -559,6 +560,133 @@ def create_app(ctx) -> FastAPI:
         are not touched by this."""
         _seg_cache.clear()
         return {"ok": True}
+
+    # ---- tagged objects: the outline plus somebody's judgement ------------
+    @app.get("/api/train/annotations")
+    def train_annotations(clip_id: int = 0, frame_index: int = -1,
+                          review_status: str = "",
+                          user: dict = Depends(require("registry"))):
+        rows = ctx.db.object_annotations(
+            clip_id or None, frame_index if frame_index >= 0 else None,
+            review_status)
+        return [ann_mod.Annotation.from_row(r).public() for r in rows]
+
+    @app.post("/api/train/annotations")
+    def train_annotation_add(
+            clip_id: int = Form(...), frame_index: int = Form(...),
+            timestamp_ms: float = Form(...), category: str = Form(...),
+            source: str = Form(...), frame_width: int = Form(...),
+            frame_height: int = Form(...),
+            original_polygon: str = Form(""), corrected_polygon: str = Form(""),
+            x1: float = Form(None), y1: float = Form(None),
+            x2: float = Form(None), y2: float = Form(None),
+            custom_label: str = Form(""), tags: str = Form(""),
+            notes: str = Form(""), detection_confidence: str = Form(""),
+            user_confidence: str = Form(""), model: str = Form(""),
+            track_id: str = Form(""), temporary_object_id: str = Form(""),
+            user: dict = Depends(require("registry"))):
+        """Save one tagged object.
+
+        Everything arrives as a form because that is what the workbench sends
+        and it keeps the page free of a JSON body builder. Validation happens
+        in annotations.build(), which raises sentences rather than codes.
+        """
+        if ctx.db.get_training_clip(clip_id) is None:
+            raise HTTPException(404, "no such clip")
+        payload = {
+            "clip_id": clip_id, "frame_index": frame_index,
+            "timestamp_ms": timestamp_ms, "category": category,
+            "source": source, "frame_width": frame_width,
+            "frame_height": frame_height,
+            "original_polygon": original_polygon,
+            "corrected_polygon": corrected_polygon,
+            "custom_label": custom_label, "tags": tags, "notes": notes,
+            "detection_confidence": detection_confidence,
+            "user_confidence": user_confidence, "model": model,
+            "track_id": track_id, "temporary_object_id": temporary_object_id,
+        }
+        if None not in (x1, y1, x2, y2):
+            payload["bbox"] = (x1, y1, x2, y2)
+        try:
+            ann = ann_mod.build(payload, user["username"])
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        ann.id = ctx.db.add_object_annotation(ann.row())
+        return ann.public()
+
+    @app.patch("/api/train/annotations/{ann_id}")
+    async def train_annotation_edit(ann_id: int, request: Request,
+                                    user: dict = Depends(require("registry"))):
+        """Edit what a person said, and where they moved the outline to.
+
+        Only the fields actually present in the request are touched, so the
+        page can save a dragged polygon without resending the tags, and the
+        model's own polygon is unreachable from here by construction.
+        """
+        row = ctx.db.get_object_annotation(ann_id)
+        if row is None:
+            raise HTTPException(404, "no such annotation")
+        form = await request.form()
+        payload = {k: form[k] for k in
+                   ("category", "custom_label", "corrected_polygon", "tags",
+                    "notes", "user_confidence") if k in form}
+        if not payload:
+            raise HTTPException(400, "nothing to change")
+        ann = ann_mod.Annotation.from_row(row)
+        try:
+            ann_mod.apply_edit(ann, payload, user["username"])
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        ctx.db.update_object_annotation(ann_id, ann.row())
+        return ann.public()
+
+    @app.post("/api/train/annotations/{ann_id}/review")
+    def train_annotation_review(ann_id: int, review_status: str = Form(...),
+                                user: dict = Depends(require("registry"))):
+        """draft -> submitted -> approved | rejected, and back to draft.
+
+        Approving and rejecting need the account permission that also governs
+        user management: signing off on a label is saying the system may be
+        tuned against it, which is a different act from writing one.
+        """
+        row = ctx.db.get_object_annotation(ann_id)
+        if row is None:
+            raise HTTPException(404, "no such annotation")
+        if review_status in ("approved", "rejected") and \
+                not auth.can(user["role"], "users"):
+            raise HTTPException(403, "only an admin can approve or reject a label")
+        if not ann_mod.can_transition(row["review_status"], review_status):
+            raise HTTPException(
+                400, f"cannot go from {row['review_status']} to {review_status}")
+        ctx.db.set_annotation_status(ann_id, review_status, user["username"])
+        return ann_mod.Annotation.from_row(
+            ctx.db.get_object_annotation(ann_id)).public()
+
+    @app.delete("/api/train/annotations/{ann_id}")
+    def train_annotation_delete(ann_id: int,
+                                user: dict = Depends(require("registry"))):
+        if not ctx.db.delete_object_annotation(ann_id):
+            raise HTTPException(404, "no such annotation")
+        ctx.db.append_audit(user["username"], "TRAINING_CHANGE",
+                            {"op": "delete_annotation", "id": ann_id})
+        return {"ok": True}
+
+    @app.get("/api/train/annotations/stats")
+    def train_annotation_stats(clip_id: int = 0,
+                               user: dict = Depends(require("registry"))):
+        return ann_mod.summarise(ctx.db.object_annotations(clip_id or None))
+
+    @app.get("/api/train/annotations/export")
+    def train_annotation_export(user: dict = Depends(require("registry"))):
+        """COCO instance segmentation — the format training pipelines read.
+
+        Rejected labels are left out; everything else carries its review
+        status so a consumer can decide how much unfinished work to trust.
+        """
+        clips = {c["id"]: c for c in ctx.db.list_training_clips()}
+        doc = ann_mod.to_coco(ctx.db.object_annotations(), clips)
+        return JSONResponse(doc, headers={
+            "Content-Disposition": 'attachment; filename="annotations.json"'})
 
     @app.get("/api/train/export")
     def train_export(user: dict = Depends(require("registry"))):
