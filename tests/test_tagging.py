@@ -173,3 +173,238 @@ def test_a_real_detection_object_works_unchanged():
                   xyxy=(100.0, 100.0, 300.0, 250.0))
     out = select([d], 200, 175)
     assert out["selected"] is d and out["method"] == "ai_detection"
+
+
+# =====================================================================
+# Step A — polygons: selecting by an object's actual outline, not its box
+# =====================================================================
+from app.tagging import (has_mask, is_simple, mask_area, mask_hit_test,
+                         point_in_mask, point_in_polygon, polygon_area,
+                         polygon_bbox, validate_polygon)
+
+SQUARE = [[100, 100], [300, 100], [300, 300], [100, 300]]
+TRIANGLE = [[0, 0], [100, 0], [0, 100]]
+
+
+class Seg:
+    """A segmented object: box plus outline, as the API will return it."""
+    def __init__(self, xyxy, polygon=None, polygons=None, cls_name="car"):
+        self.xyxy, self.cls_name = xyxy, cls_name
+        if polygon is not None:
+            self.polygon = polygon
+        if polygons is not None:
+            self.polygons = polygons
+
+
+# ------------------------------------------------------------ area
+def test_polygon_area_is_the_shoelace_area():
+    assert polygon_area(SQUARE) == 40000
+    assert polygon_area(TRIANGLE) == 5000
+
+
+def test_winding_direction_does_not_change_the_area():
+    """Ultralytics does not guarantee consistent winding."""
+    assert polygon_area(list(reversed(SQUARE))) == polygon_area(SQUARE)
+
+
+def test_a_degenerate_polygon_has_no_area():
+    assert polygon_area([[0, 0], [10, 10]]) == 0.0
+    assert polygon_area([]) == 0.0
+    assert polygon_area([[0, 0], [10, 0], [20, 0]]) == 0.0   # collinear
+
+
+def test_polygon_bbox_wraps_the_outline():
+    r = polygon_bbox([[50, 80], [200, 10], [140, 300]])
+    assert (r.x1, r.y1, r.x2, r.y2) == (50, 10, 200, 300)
+    with pytest.raises(ValueError):
+        polygon_bbox([])
+
+
+# -------------------------------------------------- point in polygon
+def test_a_point_inside_the_outline_is_inside():
+    assert point_in_polygon(200, 200, SQUARE)
+
+
+def test_a_point_outside_the_outline_is_outside():
+    assert not point_in_polygon(50, 50, SQUARE)
+    assert not point_in_polygon(400, 200, SQUARE)
+
+
+def test_the_boundary_counts_as_inside():
+    """Clicking the edge of a bag strap or a bicycle frame is aiming at it."""
+    assert point_in_polygon(100, 200, SQUARE)      # on an edge
+    assert point_in_polygon(100, 100, SQUARE)      # on a vertex
+    assert point_in_polygon(300, 300, SQUARE)
+
+
+def test_a_concave_outline_excludes_its_notch():
+    """An L-shape: the corner cut out of it is not part of the object."""
+    L = [[0, 0], [200, 0], [200, 80], [80, 80], [80, 200], [0, 200]]
+    assert point_in_polygon(40, 40, L)             # in the arm
+    assert not point_in_polygon(150, 150, L)       # in the notch
+
+
+def test_a_polygon_with_too_few_points_contains_nothing():
+    assert not point_in_polygon(5, 5, [[0, 0], [10, 10]])
+
+
+# ---------------------------------------------------- validation
+def test_a_valid_outline_survives_validation():
+    assert validate_polygon(SQUARE, 1920, 1080) == [
+        (100.0, 100.0), (300.0, 100.0), (300.0, 300.0), (100.0, 300.0)]
+
+
+def test_an_outline_is_clipped_into_the_frame():
+    out = validate_polygon([[-50, -50], [5000, -50], [5000, 5000], [-50, 5000]],
+                           1920, 1080)
+    assert all(0 <= x <= 1920 and 0 <= y <= 1080 for x, y in out)
+
+
+def test_too_few_points_is_refused_with_a_usable_message():
+    with pytest.raises(ValueError, match="at least 3 points"):
+        validate_polygon([[0, 0], [10, 10]], 1920, 1080)
+
+
+def test_an_outline_with_no_area_is_refused():
+    with pytest.raises(ValueError, match="too small"):
+        validate_polygon([[10, 10], [12, 10], [12, 12], [10, 12]], 1920, 1080)
+
+
+def test_an_outline_clipped_to_a_line_is_refused():
+    """Entirely off the left edge: everything clamps to x=0."""
+    with pytest.raises(ValueError):
+        validate_polygon([[-90, 100], [-50, 200], [-70, 300]], 1920, 1080)
+
+
+def test_a_closing_duplicate_point_is_dropped():
+    out = validate_polygon(SQUARE + [[100, 100]], 1920, 1080)
+    assert len(out) == 4
+
+
+def test_self_intersection_is_flagged_but_not_refused():
+    """A crossed outline still renders and is still selectable; refusing a
+    correction over a mathematical nicety would be worse."""
+    star = [[50, 0], [20, 90], [95, 35], [5, 35], [80, 90]]   # pentagram
+    assert not is_simple(star)
+    assert is_simple(SQUARE)
+    assert validate_polygon(star, 1920, 1080)      # accepted anyway
+
+
+def test_a_bow_tie_is_caught_by_the_area_check_not_the_crossing_check():
+    """A four-point bow tie's two lobes wind opposite ways, so the shoelace
+    area cancels to exactly zero. It is rejected for having no area — which is
+    right, it encloses nothing — and not for crossing itself."""
+    bow = [[0, 0], [100, 100], [100, 0], [0, 100]]
+    assert not is_simple(bow)
+    assert polygon_area(bow) == 0.0
+    with pytest.raises(ValueError, match="too small"):
+        validate_polygon(bow, 1920, 1080)
+
+
+# ------------------------------------------------------ mask hits
+def test_an_object_with_an_outline_reports_one():
+    assert has_mask(Seg((100, 100, 300, 300), polygon=SQUARE))
+    assert not has_mask(Det((100, 100, 300, 300)))
+
+
+def test_a_click_inside_the_outline_hits_the_mask():
+    car = Seg((100, 100, 300, 300), polygon=SQUARE)
+    assert point_in_mask(car, 200, 200)
+    assert not point_in_mask(car, 110, 400)
+
+
+def test_a_click_in_the_box_but_outside_the_outline_misses():
+    """The whole reason masks beat boxes. A triangular object's box has three
+    corners that are not the object."""
+    wedge = Seg((0, 0, 100, 100), polygon=TRIANGLE)
+    assert Rect(0, 0, 100, 100).contains(90, 90)   # inside the box
+    assert not point_in_mask(wedge, 90, 90)        # outside the shape
+
+
+def test_two_cars_that_overlap_as_boxes_but_not_as_shapes():
+    """Parked at an angle: the rectangles intersect, the outlines do not.
+    Clicking one must not offer the other."""
+    a = Seg((0, 0, 200, 200), polygon=[[0, 0], [200, 0], [0, 200]], cls_name="car A")
+    b = Seg((0, 0, 200, 200), polygon=[[200, 0], [200, 200], [20, 200]],
+            cls_name="car B")
+    out = select([a, b], 20, 20)
+    assert out["selected"] is a and out["alternatives"] == []
+    out = select([a, b], 180, 180)
+    assert out["selected"] is b and out["alternatives"] == []
+
+
+def test_the_smallest_containing_outline_wins():
+    bus = Seg((0, 0, 800, 600), polygon=[[0, 0], [800, 0], [800, 600], [0, 600]],
+              cls_name="bus")
+    person = Seg((300, 200, 380, 450),
+                 polygon=[[300, 200], [380, 200], [380, 450], [300, 450]],
+                 cls_name="person")
+    hits = mask_hit_test([bus, person], 340, 300)
+    assert [h.cls_name for h in hits] == ["person", "bus"]
+
+
+def test_overlapping_masks_all_come_back_as_candidates():
+    a = Seg((0, 0, 400, 400), polygon=[[0, 0], [400, 0], [400, 400], [0, 400]])
+    b = Seg((100, 100, 300, 300), polygon=[[100, 100], [300, 100], [300, 300],
+                                           [100, 300]])
+    out = select([a, b], 200, 200)
+    assert out["method"] == "mask_hit"
+    assert out["selected"] is b and out["alternatives"] == [a]
+
+
+def test_an_object_split_into_two_pieces_is_clickable_in_both():
+    """A car with a pole in front of it comes back as two polygons. Dropping
+    the smaller piece would make part of the car unselectable."""
+    split = Seg((0, 0, 400, 100),
+                polygons=[[[0, 0], [100, 0], [100, 100], [0, 100]],
+                          [[300, 0], [400, 0], [400, 100], [300, 100]]])
+    assert point_in_mask(split, 50, 50)
+    assert point_in_mask(split, 350, 50)
+    assert not point_in_mask(split, 200, 50)       # the pole between them
+    assert mask_area(split) == 20000
+
+
+# ---------------------------------------------------- selection order
+def test_a_mask_outranks_a_box():
+    boxed = Det((0, 0, 500, 500), "big box")
+    masked = Seg((100, 100, 300, 300), polygon=SQUARE, cls_name="segmented")
+    out = select([boxed, masked], 200, 200)
+    assert out["method"] == "mask_hit" and out["selected"] is masked
+
+
+def test_a_box_still_works_when_nothing_has_a_mask():
+    """The plain detector must keep working unchanged."""
+    out = select([Det((100, 100, 300, 250))], 200, 175)
+    assert out["method"] == "ai_detection"
+
+
+def test_a_click_missing_every_outline_falls_back_to_the_box():
+    """Inside the wedge's box but outside its shape: better to offer the box
+    than nothing at all."""
+    wedge = Seg((0, 0, 100, 100), polygon=TRIANGLE)
+    out = select([wedge], 90, 90)
+    assert out["method"] == "ai_detection" and out["selected"] is wedge
+
+
+def test_a_click_far_from_everything_falls_through_to_drawing():
+    out = select([Seg((0, 0, 100, 100), polygon=TRIANGLE)], 1500, 900)
+    assert out["method"] == "manual_box" and out["selected"] is None
+
+
+def test_masks_arrive_in_any_of_the_shapes_the_api_uses():
+    for obj in ({"xyxy": [100, 100, 300, 300], "polygon": SQUARE},
+                {"x1": 100, "y1": 100, "x2": 300, "y2": 300, "points": SQUARE},
+                {"xyxy": [100, 100, 300, 300], "polygons": [SQUARE]},
+                Seg((100, 100, 300, 300), polygon=SQUARE)):
+        assert has_mask(obj) and point_in_mask(obj, 200, 200)
+
+
+def test_letterboxed_click_then_mask_hit_end_to_end():
+    """The two halves together: a click in a letterboxed player lands inside
+    the right outline."""
+    car = Seg((900, 400, 1100, 700),
+              polygon=[[900, 400], [1100, 400], [1100, 700], [900, 700]])
+    # 1080-square player, 16:9 footage: 236.25px bars top and bottom
+    x, y = to_frame_coords(540, 500, 1080, 1080, *HD)
+    assert (round(x), round(y)) == (960, 469)      # inside the car outline
+    assert select([car], x, y)["method"] == "mask_hit"
