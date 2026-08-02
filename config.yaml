@@ -75,7 +75,13 @@ train:
   segmenter: yolo              # yolo | mock  (mock = deterministic stand-in
                                # shapes, for working on the UI with no model)
   seg_model: "yolo11n-seg.pt"  # ~6MB, downloads on first use, CPU is fine
-  seg_confidence: 0.35
+  seg_confidence: 0.25         # lower than the live detector's on purpose.
+                               # This is a labelling tool: a wrong outline is
+                               # dismissed with one click, but an object that
+                               # was never offered cannot be tagged at all. On
+                               # MEVA's car park at 0.35, two of four people
+                               # were dropped — they are 16-27px wide where a
+                               # car is 200.
   seg_imgsz: 640
   seg_device: "auto"           # auto | cpu | cuda:0
   max_objects: 40              # per frame, so one busy frame cannot flood the UI

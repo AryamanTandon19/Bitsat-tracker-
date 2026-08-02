@@ -574,3 +574,24 @@ def test_the_output_is_selectable_by_the_geometry_layer():
     from app.tagging import select
     assert select(objs, 200, 200)["method"] == "mask_hit"
     assert select(objs, 500, 500)["method"] == "manual_box"
+
+
+def test_people_go_through_exactly_the_same_path_as_vehicles():
+    """No separate people mode. Measured on MEVA: a person 27x56px comes back
+    with a 9-point outline that click-selects like any car."""
+    r = FakeResult([FakeBox([100.0, 100.0, 127.0, 156.0], 0, 0.67)],
+                   [[(112, 102), (120, 104), (124, 130), (118, 154),
+                     (108, 152), (104, 128)]],
+                   names={0: "person", 2: "car"})
+    o = _seg_with(r).segment(None, 900)[0]
+    assert o.class_name == "person" and o.class_id == 0
+    from app.tagging import select
+    assert select([o], 114, 128)["method"] == "mask_hit"
+
+
+def test_the_workbench_floor_is_lower_than_the_live_detector_s():
+    """A wrong outline costs one click to dismiss; an object never offered
+    cannot be tagged at all. At 0.35 two of four people on the MEVA car park
+    were dropped."""
+    assert build_segmenter({"segmenter": "yolo"}).conf == 0.25
+    assert YoloSegmenter().conf == 0.25

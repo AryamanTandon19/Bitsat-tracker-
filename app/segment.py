@@ -158,9 +158,17 @@ class YoloSegmenter(Segmenter):
 
     Loaded once, on first use, and kept. Loading per request would make every
     click pay a second of import and weight-loading.
+
+    The confidence floor is lower here than on the live cameras, deliberately.
+    Alerting wants precision — a false alarm costs someone's attention. A
+    labelling tool wants recall: a wrong outline is dismissed with one click,
+    but an object that was never offered cannot be tagged at all. People are
+    the case that forces it — on a car-park camera a person is 16-27px wide
+    where a car is 200, and a threshold tuned for cars quietly loses half of
+    them.
     """
 
-    def __init__(self, weights: str = "yolo11n-seg.pt", conf: float = 0.35,
+    def __init__(self, weights: str = "yolo11n-seg.pt", conf: float = 0.25,
                  imgsz: int = 640, device: str = "auto",
                  classes: list | None = None, max_objects: int = 40):
         self.weights = weights
@@ -366,7 +374,7 @@ def build_segmenter(cfg: dict | None = None) -> Segmenter:
     if kind in ("yolo", "yolo-seg", "yolo11-seg"):
         return YoloSegmenter(
             weights=cfg.get("seg_model", "yolo11n-seg.pt"),
-            conf=float(cfg.get("seg_confidence", 0.35)),
+            conf=float(cfg.get("seg_confidence", 0.25)),
             imgsz=int(cfg.get("seg_imgsz", 640)),
             device=cfg.get("seg_device", "auto"),
             classes=cfg.get("seg_classes"),
