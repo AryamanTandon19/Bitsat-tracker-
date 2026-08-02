@@ -36,7 +36,7 @@ import time
 from dataclasses import dataclass, field
 
 from .segment import CLASSES
-from .tagging import point_in_polygon, polygon_area, polygon_bbox
+from .tagging import polygon_area, polygon_bbox, polygon_iou
 
 # How the outline came to exist. Recorded per annotation because the answer
 # changes what the record is worth: an outline the model drew and a person
@@ -48,6 +48,12 @@ SOURCES = (
     "manual_polygon",           # drawn point by point, no model involved
     "manual_box",               # dragged as a rectangle
     "sam_refinement",           # a promptable model tightened it (not wired yet)
+    "tracked",                  # the same object, followed to this frame
+    "interpolated",             # NOT SEEN here: reconstructed between two
+                                # frames where it was. Kept distinct from
+                                # `tracked` because a training set that cannot
+                                # tell an observation from a reconstruction
+                                # will happily learn from the reconstructions.
 )
 
 STATUSES = ("draft", "submitted", "approved", "rejected")
@@ -148,38 +154,6 @@ def bbox_of(polys, fallback=None) -> tuple:
     return (r.x1, r.y1, r.x2, r.y2)
 
 
-def polygon_iou(a, b, samples: int = 96) -> float:
-    """How much two outlines agree, 0 to 1. Approximate, and honestly so.
-
-    Exact polygon intersection needs a clipping library; this rasterises both
-    shapes onto a `samples` x `samples` grid over their combined bounding box
-    and counts cells. At 96 the error is well under a percent on shapes the
-    size of a car, which is far finer than the disagreement it is measuring.
-    Identical inputs give exactly 1.0 because they light the same cells.
-    """
-    if not a or not b:
-        return 0.0
-    pts = [p for poly in list(a) + list(b) for p in poly]
-    xs = [p[0] for p in pts]
-    ys = [p[1] for p in pts]
-    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
-    if x1 <= x0 or y1 <= y0:
-        return 0.0
-    dx, dy = (x1 - x0) / samples, (y1 - y0) / samples
-    inter = union = 0
-    for j in range(samples):
-        cy = y0 + (j + 0.5) * dy
-        for i in range(samples):
-            cx = x0 + (i + 0.5) * dx
-            in_a = any(point_in_polygon(cx, cy, p) for p in a)
-            in_b = any(point_in_polygon(cx, cy, p) for p in b)
-            if in_a and in_b:
-                inter += 1
-            if in_a or in_b:
-                union += 1
-    return inter / union if union else 0.0
-
-
 def drift(original, corrected) -> float | None:
     """How far a person moved the model's outline: 0 = accepted it as drawn,
     1 = replaced it entirely. None when they never touched it, which is not
@@ -214,6 +188,10 @@ class Annotation:
     track_id: int | None = None
     temporary_object_id: str = ""
     review_status: str = "draft"
+    track_ref: int | None = None      # which tracking run produced this
+    mask_source: str = ""             # anchor | tracked | interpolated
+    needs_review: bool = False        # the tracker was not confident here
+    review_note: str = ""             # and this is what bothered it
     id: int = 0
     created_by: str = ""
     created_at: float = 0.0
@@ -264,6 +242,10 @@ class Annotation:
             "track_id": self.track_id,
             "temporary_object_id": self.temporary_object_id,
             "review_status": self.review_status,
+            "track_ref": self.track_ref,
+            "mask_source": self.mask_source,
+            "needs_review": self.needs_review,
+            "review_note": self.review_note,
             "created_by": self.created_by,
             "created_at": self.created_at,
             "updated_by": self.updated_by,
@@ -290,6 +272,9 @@ class Annotation:
             "model": self.model, "track_id": self.track_id,
             "temporary_object_id": self.temporary_object_id,
             "review_status": self.review_status,
+            "track_ref": self.track_ref, "mask_source": self.mask_source,
+            "needs_review": 1 if self.needs_review else 0,
+            "review_note": self.review_note,
             "created_by": self.created_by, "created_at": self.created_at,
             "updated_by": self.updated_by, "updated_at": self.updated_at,
             "reviewed_by": self.reviewed_by, "reviewed_at": self.reviewed_at,
@@ -312,6 +297,10 @@ class Annotation:
             model=r["model"] or "", track_id=r["track_id"],
             temporary_object_id=r["temporary_object_id"] or "",
             review_status=r["review_status"],
+            track_ref=r.get("track_ref"),
+            mask_source=r.get("mask_source") or "",
+            needs_review=bool(r.get("needs_review")),
+            review_note=r.get("review_note") or "",
             created_by=r["created_by"] or "", created_at=r["created_at"],
             updated_by=r["updated_by"] or "", updated_at=r["updated_at"],
             reviewed_by=r["reviewed_by"] or "", reviewed_at=r["reviewed_at"],
@@ -433,7 +422,12 @@ def build(payload: dict, actor: str = "", now: float | None = None) -> Annotatio
         raise ValueError(f"review status must be one of {', '.join(STATUSES)}")
 
     track_id = payload.get("track_id")
+    track_ref = payload.get("track_ref")
     return Annotation(
+        track_ref=int(track_ref) if track_ref not in (None, "", "null") else None,
+        mask_source=str(payload.get("mask_source") or ""),
+        needs_review=bool(payload.get("needs_review")),
+        review_note=clean_text(payload.get("review_note"), "note"),
         clip_id=int(payload["clip_id"]), frame_index=frame_index,
         timestamp_ms=int(round(ts)), category=category, source=source,
         bbox=bbox, frame_width=fw, frame_height=fh,
@@ -506,6 +500,12 @@ def summarise(rows) -> dict:
             drifts.append(d)
     return {
         "total": len(anns),
+        # An "annotation" produced by interpolation is not a sighting. Counted
+        # separately so a total of 800 never gets read as 800 observations.
+        "observed": sum(1 for a in anns if a.source != "interpolated"),
+        "reconstructed": sum(1 for a in anns if a.source == "interpolated"),
+        "needs_review": sum(1 for a in anns if a.needs_review),
+        "tracks": len({a.track_ref for a in anns if a.track_ref}),
         "by_status": by_status,
         "by_category": dict(sorted(by_category.items(),
                                    key=lambda kv: -kv[1])),
@@ -574,6 +574,13 @@ def to_coco(rows, clips_by_id: dict, exclude: tuple = ("rejected",)) -> dict:
                 "corrected_by_human": a.corrected,
                 "drift": drift(a.original_polygon, a.corrected_polygon),
                 "created_by": a.created_by,
+                # the honest bit: `observed` false means no model and no
+                # person ever looked at this frame — the shape was
+                # reconstructed between two frames where one of them did
+                "observed": a.source != "interpolated",
+                "track_id": a.track_ref,
+                "mask_source": a.mask_source,
+                "needs_review": a.needs_review,
             },
         })
     return {

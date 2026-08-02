@@ -135,6 +135,70 @@ def polygon_bbox(poly) -> Rect:
     return Rect(min(xs), min(ys), max(xs), max(ys))
 
 
+def polygon_centroid(poly) -> tuple:
+    """Area centroid, not the average of the vertices.
+
+    The difference matters when a contour has many points bunched along one
+    edge — which Ultralytics contours routinely do — because the vertex
+    average then drifts towards the crowded side and a tracker following it
+    sees motion that is not there.
+    """
+    pts = _points(poly)
+    if len(pts) < 3:
+        if not pts:
+            raise ValueError("an empty polygon has no centroid")
+        return (sum(p[0] for p in pts) / len(pts),
+                sum(p[1] for p in pts) / len(pts))
+    a = cx = cy = 0.0
+    for i in range(len(pts)):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % len(pts)]
+        cross = x1 * y2 - x2 * y1
+        a += cross
+        cx += (x1 + x2) * cross
+        cy += (y1 + y2) * cross
+    if abs(a) < 1e-9:                       # a sliver: fall back to the mean
+        return (sum(p[0] for p in pts) / len(pts),
+                sum(p[1] for p in pts) / len(pts))
+    return (cx / (3 * a), cy / (3 * a))
+
+
+def polygon_iou(a, b, samples: int = 96) -> float:
+    """How much two outlines agree, 0 to 1. Approximate, and honestly so.
+
+    Exact polygon intersection needs a clipping library; this rasterises both
+    shapes onto a `samples` x `samples` grid over their combined bounding box
+    and counts cells. At 96 the error is well under a percent on shapes the
+    size of a car, which is far finer than the disagreement it is measuring.
+    Identical inputs give exactly 1.0 because they light the same cells.
+
+    Both arguments are *lists of rings*: one object can be split into two
+    visible pieces by a lamp post, and comparing only the largest piece would
+    call a correctly tracked car a mismatch.
+    """
+    if not a or not b:
+        return 0.0
+    pts = [p for poly in list(a) + list(b) for p in _points(poly)]
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    dx, dy = (x1 - x0) / samples, (y1 - y0) / samples
+    inter = union = 0
+    for j in range(samples):
+        cy = y0 + (j + 0.5) * dy
+        for i in range(samples):
+            cx = x0 + (i + 0.5) * dx
+            in_a = any(point_in_polygon(cx, cy, p) for p in a)
+            in_b = any(point_in_polygon(cx, cy, p) for p in b)
+            if in_a and in_b:
+                inter += 1
+            if in_a or in_b:
+                union += 1
+    return inter / union if union else 0.0
+
+
 def point_in_polygon(x: float, y: float, poly) -> bool:
     """Ray casting, with the boundary counted as inside.
 

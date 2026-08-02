@@ -87,6 +87,25 @@ train:
   max_objects: 40              # per frame, so one busy frame cannot flood the UI
   cache_frames: 64             # segmented frames held in memory; disposable
 
+  # Following one object through moving video. Objects do not travel in
+  # straight lines, so every gate here is relative to the object's own size
+  # rather than a fixed number of pixels — the same rule that loses a car near
+  # the camera will happily swap two people at the far end of the car park.
+  tracking:
+    stride: 2                  # segment every Nth frame. 1 is twice the work
+                               # for detail nobody labels at.
+    max_frames: 400            # ceiling on one run, so a 5-minute clip cannot
+                               # turn into a 40-minute job by accident
+    iou_gate: 0.12             # below this overlap it is not the same object
+    weak_iou: 0.35             # matched, but worth a person's eye
+    distance_gate: 2.2         # in multiples of the object's own radius
+    jump_ratio: 1.1            # a step bigger than this, relative to size, is
+                               # flagged rather than silently accepted
+    area_ratio: 2.6            # a size change this big usually means it merged
+    max_gap: 6                 # processed frames we will bridge across before
+                               # admitting we lost it
+    review_gap: 2              # bridged runs longer than this get flagged
+
 # Threat scoring — replaces the old fixed severity table. Every rule still
 # fires; what changes is that a firing is scored 0..1 from the situation and
 # only becomes an alert above `dismiss`. Turn `enabled` off to go back to the

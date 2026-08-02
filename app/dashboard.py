@@ -8,11 +8,14 @@ the internet is down. Only the Google font is fetched (graceful fallback).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
 import secrets
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 # Bump when shipping a fix that must be verifiable in production. /health
@@ -34,6 +37,7 @@ from . import train as train_mod
 from . import operator as operator_mod
 from . import segment as segment_mod
 from . import tagging
+from . import track as track_mod
 from .plates import normalize_plate
 
 log = logging.getLogger(__name__)
@@ -614,6 +618,74 @@ def create_app(ctx) -> FastAPI:
         ann.id = ctx.db.add_object_annotation(ann.row())
         return ann.public()
 
+    @app.post("/api/train/annotations/batch")
+    def train_annotation_batch(
+            clip_id: int = Form(...), frame_index: int = Form(...),
+            timestamp_ms: float = Form(...), objects: str = Form(...),
+            category: str = Form(""), keep_own_class: bool = Form(True),
+            custom_label: str = Form(""), tags: str = Form(""),
+            notes: str = Form(""), user_confidence: str = Form(""),
+            user: dict = Depends(require("registry"))):
+        """Tag everything that is selected, in one go.
+
+        Selecting six cars and pressing save once is the difference between
+        this being usable on a busy frame and not. `keep_own_class` is on by
+        default because a mixed selection is the normal case — five cars and
+        the person walking between them — and forcing them all to one category
+        would silently mislabel the odd one out.
+        """
+        if ctx.db.get_training_clip(clip_id) is None:
+            raise HTTPException(404, "no such clip")
+        try:
+            items = json.loads(objects)
+        except ValueError as e:
+            raise HTTPException(400, f"objects is not valid JSON: {e}")
+        if not isinstance(items, list) or not items:
+            raise HTTPException(400, "no objects were selected")
+        if len(items) > 100:
+            raise HTTPException(400, "that is more objects than one frame has")
+        if not keep_own_class and not category:
+            raise HTTPException(400, "choose a category, or keep each own class")
+
+        built = []
+        for i, o in enumerate(items):
+            if not isinstance(o, dict):
+                raise HTTPException(400, f"object {i + 1} is not an object")
+            cls = (o.get("class_name") if keep_own_class else category) or category
+            if cls not in ann_mod.CLASSES:
+                cls = "unknown"
+            polys = o.get("polygons") or []
+            box = o.get("bbox")
+            if isinstance(box, dict):
+                box = (box.get("x_min"), box.get("y_min"),
+                       box.get("x_max"), box.get("y_max"))
+            payload = {
+                "clip_id": clip_id, "frame_index": frame_index,
+                "timestamp_ms": timestamp_ms, "category": cls,
+                "source": ("yolo_segmentation" if polys
+                           else "yolo_detection_fallback"),
+                "frame_width": o.get("frame_width"),
+                "frame_height": o.get("frame_height"),
+                "original_polygon": polys, "bbox": box,
+                "custom_label": custom_label, "tags": tags, "notes": notes,
+                "detection_confidence": o.get("confidence"),
+                "user_confidence": user_confidence,
+                "model": o.get("model", ""), "track_id": o.get("track_id"),
+                "temporary_object_id": o.get("temporary_object_id", ""),
+            }
+            try:
+                built.append(ann_mod.build(payload, user["username"]))
+            except ValueError as e:
+                # named rather than numbered: "object 3" means nothing to
+                # someone looking at a frame full of cars
+                what = o.get("class_name") or f"object {i + 1}"
+                raise HTTPException(400, f"{what}: {e}")
+
+        ids = ctx.db.add_object_annotations([a.row() for a in built])
+        for a, i in zip(built, ids):
+            a.id = i
+        return {"saved": len(ids), "annotations": [a.public() for a in built]}
+
     @app.patch("/api/train/annotations/{ann_id}")
     async def train_annotation_edit(ann_id: int, request: Request,
                                     user: dict = Depends(require("registry"))):
@@ -669,6 +741,254 @@ def create_app(ctx) -> FastAPI:
             raise HTTPException(404, "no such annotation")
         ctx.db.append_audit(user["username"], "TRAINING_CHANGE",
                             {"op": "delete_annotation", "id": ann_id})
+        return {"ok": True}
+
+    # ---- following an object through the video ---------------------------
+    _jobs: dict = {}
+    _jobs_lock = threading.Lock()
+
+    def _track_config() -> track_mod.TrackConfig:
+        cfg = (ctx.config.get("train") or {}).get("tracking") or {}
+        base = track_mod.TrackConfig()
+        for k, v in cfg.items():
+            if hasattr(base, k):
+                setattr(base, k, type(getattr(base, k))(v))
+        return base
+
+    def _run_track(job: track_mod.TrackJob, clip: dict, anchor,
+                   cfg: track_mod.TrackConfig, frame_w: int, frame_h: int,
+                   label: str, tags: str, notes: str):
+        """The whole job, on a worker thread. Never touches the request."""
+        try:
+            job.state = "running"
+            seg = _segmenter()
+
+            def frames():
+                for idx, ts, img in segment_mod.iter_frames(
+                        clip["path"], anchor.frame_index, cfg.stride,
+                        cfg.max_frames + 1):
+                    if job.cancel:
+                        return
+                    if idx == anchor.frame_index:
+                        continue
+                    yield idx, ts, seg.segment(img, idx)
+
+            def progress(n, frame_index, _f):
+                job.processed = n
+                job.at_frame = frame_index
+
+            tracklet = track_mod.follow(anchor, frames(), cfg,
+                                        model=seg.name, on_progress=progress)
+            job.tracklet = tracklet
+            if job.cancel:
+                job.state = "cancelled"
+                return
+
+            track_row = {
+                "clip_id": clip["id"], "category": tracklet.category,
+                "custom_label": label,
+                "start_frame": tracklet.span[0], "end_frame": tracklet.span[1],
+                "stride": cfg.stride, "frames": tracklet.frames,
+                "observed": tracklet.observed,
+                "reconstructed": tracklet.reconstructed,
+                "flagged": tracklet.flagged, "lost_at": tracklet.lost_at,
+                "lost_why": tracklet.lost_why, "model": tracklet.model,
+                "tags": json.dumps(ann_mod.clean_tags(tags)), "notes": notes,
+                "review_status": "draft", "created_by": job.requested_by,
+                "created_at": time.time(),
+            }
+            track_id = ctx.db.add_object_track(track_row)
+            job.track_id = track_id
+
+            rows = []
+            for o in tracklet.observations:
+                a = ann_mod.Annotation(
+                    clip_id=clip["id"], frame_index=o.frame_index,
+                    timestamp_ms=o.timestamp_ms,
+                    category=(tracklet.category
+                              if tracklet.category in ann_mod.CLASSES
+                              else "unknown"),
+                    source=("interpolated" if o.kind == "interpolated"
+                            else "tracked"),
+                    bbox=o.bbox, frame_width=frame_w, frame_height=frame_h,
+                    original_polygon=o.polygons, custom_label=label,
+                    detection_confidence=(round(o.confidence, 3)
+                                          if o.confidence else None),
+                    model=tracklet.model, track_ref=track_id,
+                    mask_source=o.kind, needs_review=o.needs_review,
+                    review_note=o.why, created_by=job.requested_by,
+                    created_at=time.time(), updated_by=job.requested_by,
+                    updated_at=time.time())
+                rows.append(a.row())
+            job.saved = ctx.db.add_object_annotations(rows)
+            job.state = "done"
+        except Exception as e:                       # noqa: BLE001
+            log.exception("tracking job %s failed", job.id)
+            job.state = "failed"
+            job.error = str(e)
+        finally:
+            job.finished = time.time()
+
+    @app.post("/api/train/clips/{clip_id}/track")
+    def train_track_start(clip_id: int, timestamp_ms: float = Form(...),
+                          temporary_object_id: str = Form(""),
+                          display_x: float = Form(None),
+                          display_y: float = Form(None),
+                          display_width: float = Form(None),
+                          display_height: float = Form(None),
+                          custom_label: str = Form(""), tags: str = Form(""),
+                          notes: str = Form(""), stride: int = Form(0),
+                          max_frames: int = Form(0),
+                          user: dict = Depends(require("registry"))):
+        """Follow one object forward from the frame it was picked on.
+
+        Identify it either by the id from a previous segment-frame call, or by
+        where it was clicked. The click form exists so following something is
+        one action rather than two, which matters when there are forty objects
+        on the frame and only one of them is walking away with a bicycle.
+        """
+        clip = ctx.db.get_training_clip(clip_id)
+        if clip is None or not Path(clip["path"]).exists():
+            raise HTTPException(404, "clip not available")
+
+        result = _segment_frame(clip_id, timestamp_ms)
+        chosen = None
+        if temporary_object_id:
+            chosen = next((o for o in result.objects
+                           if o.temporary_object_id == temporary_object_id), None)
+        elif None not in (display_x, display_y, display_width, display_height):
+            if min(display_width, display_height) <= 0:
+                raise HTTPException(400, "display size must be positive")
+            fx, fy = tagging.to_frame_coords(display_x, display_y,
+                                             display_width, display_height,
+                                             result.frame_width,
+                                             result.frame_height)
+            chosen = tagging.select(result.objects, fx, fy)["selected"]
+        if chosen is None:
+            raise HTTPException(404, "there is no object there to follow")
+        if not chosen.polygons:
+            raise HTTPException(
+                400, "that object has no outline, only a box — following it "
+                     "would have nothing to match on")
+
+        cfg = _track_config()
+        if stride:
+            cfg.stride = max(1, min(10, stride))
+        if max_frames:
+            cfg.max_frames = max(1, min(2000, max_frames))
+
+        anchor = track_mod.observation_from(chosen, result.frame_index,
+                                            result.timestamp_ms)
+        job = track_mod.TrackJob(secrets.token_hex(8), clip_id,
+                                 result.frame_index, user["username"])
+        # how many processed frames are actually left in the clip
+        try:
+            _, total_frames, _, _ = segment_mod.clip_shape(clip["path"])
+        except ValueError:
+            total_frames = 0
+        remaining = max(0, total_frames - result.frame_index - 1)
+        job.total = min(cfg.max_frames, remaining // max(1, cfg.stride))
+
+        with _jobs_lock:
+            _jobs[job.id] = job
+            # a workbench is used by one person at a time; keeping the last
+            # few dozen jobs is plenty and stops this growing without bound
+            if len(_jobs) > 40:
+                for old in sorted(_jobs.values(),
+                                  key=lambda j: j.started)[:len(_jobs) - 40]:
+                    _jobs.pop(old.id, None)
+
+        threading.Thread(
+            target=_run_track, daemon=True,
+            args=(job, clip, anchor, cfg, result.frame_width,
+                  result.frame_height, custom_label, tags, notes)).start()
+        return job.public()
+
+    @app.get("/api/train/track-jobs/{job_id}")
+    def train_track_job(job_id: str, user: dict = Depends(require("registry"))):
+        job = _jobs.get(job_id)
+        if job is None:
+            raise HTTPException(404, "no such job")
+        return job.public()
+
+    @app.delete("/api/train/track-jobs/{job_id}")
+    def train_track_cancel(job_id: str,
+                           user: dict = Depends(require("registry"))):
+        job = _jobs.get(job_id)
+        if job is None:
+            raise HTTPException(404, "no such job")
+        job.cancel = True
+        return job.public()
+
+    @app.get("/api/train/tracks")
+    def train_tracks(clip_id: int = 0,
+                     user: dict = Depends(require("registry"))):
+        return ctx.db.object_tracks(clip_id or None)
+
+    @app.get("/api/train/tracks/{track_id}")
+    def train_track(track_id: int, user: dict = Depends(require("registry"))):
+        row = ctx.db.get_object_track(track_id)
+        if row is None:
+            raise HTTPException(404, "no such track")
+        rows = ctx.db.object_annotations(track_ref=track_id)
+        return {"track": row,
+                "frames": [ann_mod.Annotation.from_row(r).public()
+                           for r in rows]}
+
+    @app.patch("/api/train/tracks/{track_id}")
+    async def train_track_edit(track_id: int, request: Request,
+                               user: dict = Depends(require("registry"))):
+        if ctx.db.get_object_track(track_id) is None:
+            raise HTTPException(404, "no such track")
+        form = await request.form()
+        fields = {k: form[k] for k in ("category", "custom_label", "notes")
+                  if k in form}
+        if "tags" in form:
+            try:
+                fields["tags"] = json.dumps(ann_mod.clean_tags(form["tags"]))
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+        if "category" in fields and fields["category"] not in ann_mod.CLASSES:
+            raise HTTPException(
+                400, f"category must be one of {', '.join(ann_mod.CLASSES)}")
+        if not fields:
+            raise HTTPException(400, "nothing to change")
+        ctx.db.update_object_track(track_id, **fields)
+        # the frames carry the label too, so they stay in step
+        for r in ctx.db.object_annotations(track_ref=track_id):
+            a = ann_mod.Annotation.from_row(r)
+            if "category" in fields:
+                a.category = fields["category"]
+            if "custom_label" in fields:
+                a.custom_label = fields["custom_label"]
+            a.updated_by, a.updated_at = user["username"], time.time()
+            ctx.db.update_object_annotation(a.id, a.row())
+        return ctx.db.get_object_track(track_id)
+
+    @app.post("/api/train/tracks/{track_id}/review")
+    def train_track_review(track_id: int, review_status: str = Form(...),
+                           user: dict = Depends(require("registry"))):
+        """One judgement about the whole path, applied to every frame in it."""
+        row = ctx.db.get_object_track(track_id)
+        if row is None:
+            raise HTTPException(404, "no such track")
+        if review_status in ("approved", "rejected") and \
+                not auth.can(user["role"], "users"):
+            raise HTTPException(403, "only an admin can approve or reject")
+        if not ann_mod.can_transition(row["review_status"], review_status):
+            raise HTTPException(
+                400, f"cannot go from {row['review_status']} to {review_status}")
+        n = ctx.db.set_track_status(track_id, review_status, user["username"])
+        return {"track_id": track_id, "review_status": review_status,
+                "frames_changed": n}
+
+    @app.delete("/api/train/tracks/{track_id}")
+    def train_track_delete(track_id: int,
+                           user: dict = Depends(require("registry"))):
+        if not ctx.db.delete_object_track(track_id):
+            raise HTTPException(404, "no such track")
+        ctx.db.append_audit(user["username"], "TRAINING_CHANGE",
+                            {"op": "delete_track", "id": track_id})
         return {"ok": True}
 
     @app.get("/api/train/annotations/stats")
@@ -1194,6 +1514,8 @@ footer{position:fixed;bottom:0;right:0;z-index:30;padding:6px 16px;font-size:10p
   <a data-v="view" class="active" onclick="show('view')">View</a>
   <a data-v="lab" onclick="show('lab')">Forensic Lab</a>
   <a data-v="events" onclick="show('events')">Events</a>
+  <a href="/train">Train</a>
+  <a href="/operator">Operator</a>
  </nav>
  <div class="aside-foot"><span class="pulse-dot"></span> System vigilant</div>
 </aside>

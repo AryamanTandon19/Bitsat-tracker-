@@ -97,8 +97,22 @@ flowchart TD
 | `app/dashboard.py` | FastAPI app + the entire single-page console (`PAGE`) |
 | `config.yaml` | Every tunable setting |
 | `validate_triggers.py` | Evaluation harness — recall + fire-rate (**no data yet**) |
+| `app/train.py` | The labelling workbench at `/train` — timeline flags, tagging, tracking |
+| `app/tagging.py` | Click-to-select geometry: display pixels → the object under them |
+| `app/segment.py` | Single-frame instance segmentation (yolo11n-seg), separate from the live detector |
+| `app/annotations.py` | Saved annotations: both polygons, review status, COCO export |
+| `app/track.py` | Following one object through moving video, and admitting when it lost it |
+| `evaluate_detector.py` | Measures the **live** detector against the labels people made in `/train` |
 | `zones.py` | Draw zone polygons on a camera view |
 | `verify_audit.py` | Verify the tamper-evident audit chain |
+
+**First measurement from that loop** (MEVA G424 car park, one followed person plus
+8 cars on one frame, `yolo11n.pt` at conf 0.35): **100% recall on cars, 44% on
+people.** Every person in the set is 40–80px. That is the argument for a bigger
+model or a lower confidence floor on person class, and it did not exist before
+the workbench could produce it. Caveat printed by the harness itself: 94% of
+those labels come from one followed object, so it measures that person at that
+distance, not the camera in general.
 
 ### 1.5 Where it runs
 

@@ -241,6 +241,19 @@ button.on{border-color:rgba(139,99,245,.7);color:#c3aeff;
 .ann .t{color:var(--muted);font-variant-numeric:tabular-nums;font-size:12.5px}
 .ann button{padding:4px 9px;font-size:12px}
 .ann .acts{display:flex;gap:6px;flex:none}
+.ann.flag{border-color:rgba(255,180,92,.45)}
+.bar{height:8px;border-radius:99px;background:rgba(255,255,255,.08);
+  overflow:hidden;border:1px solid var(--edge)}
+.bar i{display:block;height:100%;width:0;background:var(--metal);
+  transition:width .3s ease}
+.count{display:inline-flex;gap:5px;align-items:baseline;
+  font-variant-numeric:tabular-nums}
+.count b{font-size:15px;font-weight:700}
+.count span{font-size:11px;color:var(--muted);letter-spacing:.05em;
+  text-transform:uppercase}
+.tl-track{position:absolute;top:2px;height:9px;border-radius:99px;
+  background:linear-gradient(90deg,rgba(139,99,245,.9),rgba(195,174,255,.75));
+  box-shadow:0 0 8px rgba(139,99,245,.6)}
 .hint{color:var(--muted);font-size:13px;margin:10px 0 0}
 .warn{background:linear-gradient(150deg,rgba(255,180,92,.14),rgba(255,180,92,.04));
   border:1px solid rgba(255,180,92,.3);border-radius:14px;padding:13px 15px;
@@ -341,6 +354,9 @@ button.on{border-color:rgba(139,99,245,.7);color:#c3aeff;
         <button id="clearsel" class="ghost">Clear selection</button>
       </div>
       <p class="hint" id="segstat"></p>
+      <p class="hint" style="margin-top:2px">Shift-click or ctrl-click to add
+        objects to the selection — tag six cars and the person between them in
+        one go.</p>
 
       <div class="tagbox" id="tagbox" hidden>
         <div class="taghead">
@@ -360,14 +376,34 @@ button.on{border-color:rgba(139,99,245,.7);color:#c3aeff;
         <input id="tag-note" placeholder="anything the outline will not capture">
         <label for="tag-conf">How sure are you? <span id="tag-confv">80%</span></label>
         <input type="range" id="tag-conf" min="0" max="100" value="80">
+        <label class="tick" id="tag-own-wrap" hidden style="margin-top:12px">
+          <input type="checkbox" id="tag-own" checked>
+          Keep each object's own class</label>
         <div class="row" style="margin-top:16px">
           <button class="primary" id="tag-save">Save tag</button>
+          <button id="tag-follow" class="ghost" hidden>Follow through video</button>
           <button id="tag-shape" class="ghost" hidden>Adjust outline</button>
           <button id="tag-reset" class="ghost" hidden>Back to AI outline</button>
           <button id="tag-cancel" class="ghost">Cancel</button>
         </div>
         <p class="hint" id="tag-hint"></p>
       </div>
+
+      <!-- outside the panel on purpose: the panel closes when the track is
+           saved, and the summary of what the run found has to survive that -->
+      <div id="job" hidden style="margin-top:14px">
+        <div class="bar"><i id="job-fill"></i></div>
+        <p class="hint" id="job-stat" style="margin-top:7px"></p>
+        <button id="job-cancel" class="ghost" style="margin-top:8px">
+          Stop following</button>
+      </div>
+
+      <h2 style="margin-top:26px">Objects followed through this clip</h2>
+      <p class="hint" style="margin:0 0 10px">A track is one object over many
+        frames. Frames the model actually saw it on are counted separately
+        from frames reconstructed between two sightings — a training set that
+        cannot tell those apart will learn from the reconstructions.</p>
+      <div class="marks" id="tracks"></div>
 
       <h2 style="margin-top:26px">Tagged objects on this frame</h2>
       <div class="marks" id="anns"></div>
@@ -426,7 +462,10 @@ const fmt = t => { t = Math.max(0, t||0);
 let me = null, clips = [], current = null, marks = [], boxes = [];
 let sel = null;                       // {start, end} in seconds
 let anns = [];                        // saved annotations for this clip
+let tracks = [];                      // objects followed through this clip
 let annPick = null;                   // id of the saved annotation in hand
+let picks = [];                       // temporary ids of a multi-selection
+let job = null;                       // the tracking run in progress
 let tagFor = null;                    // what the panel is currently about
 let shape = null;                     // {polys, ring, i} while dragging points
 let drawPoly = null;                  // points of a hand-drawn outline
@@ -483,7 +522,7 @@ async function select(clip){
   $("#nothing").style.display = "none";
   $("#vid").src = `/api/train/clips/${clip.id}/video`;
   sel = null; seg = null; picked = null; closeTag();
-  await Promise.all([loadMarks(), loadBoxes(), loadAnns()]);
+  await Promise.all([loadMarks(), loadBoxes(), loadAnns(), loadTracks()]);
   loadClips();
 }
 
@@ -530,9 +569,28 @@ function dur(){ return $("#vid").duration || current?.duration_s || 0; }
 
 function drawTimeline(){
   const tl = $("#tl"), d = dur();
-  [...tl.querySelectorAll(".tl-mark,.tl-sel,.tl-tag")].forEach(n => n.remove());
+  [...tl.querySelectorAll(".tl-mark,.tl-sel,.tl-tag,.tl-track")]
+    .forEach(n => n.remove());
   if(!d) return;
-  for(const t of new Set(anns.map(a => a.timestamp_ms))){
+  // A track is a stretch, not a moment, so it gets a bar. Ticking each of its
+  // two hundred frames separately would paint the whole bar solid and say
+  // nothing about where one object's journey started and ended.
+  const inTrack = new Set();
+  for(const t of tracks){
+    const rows = anns.filter(a => a.track_ref === t.id);
+    if(!rows.length) continue;
+    rows.forEach(a => inTrack.add(a.timestamp_ms));
+    const a0 = Math.min(...rows.map(r => r.timestamp_ms)) / 1000;
+    const a1 = Math.max(...rows.map(r => r.timestamp_ms)) / 1000;
+    const el = document.createElement("div");
+    el.className = "tl-track";
+    el.style.left = (a0 / d * 100) + "%";
+    el.style.width = Math.max(0.8, (a1 - a0) / d * 100) + "%";
+    el.title = `${t.custom_label || t.category}: ${fmt(a0)}–${fmt(a1)}`;
+    tl.appendChild(el);
+  }
+  for(const t of new Set(anns.filter(a => !inTrack.has(a.timestamp_ms))
+                             .map(a => a.timestamp_ms))){
     const el = document.createElement("div");
     el.className = "tl-tag";
     el.style.left = (t / 1000 / d * 100) + "%";
@@ -677,7 +735,7 @@ $("#selmode").onclick = () => {
   document.querySelector(".stage").classList.toggle("selecting", selMode);
   if(selMode && !seg) runSegment();
 };
-$("#clearsel").onclick = () => { picked = null; drawBoxes(); };
+$("#clearsel").onclick = () => { picked = null; picks = []; closeTag(); };
 for(const id of ["t-mask","t-box","t-label","t-saved"])
   $("#"+id).onchange = drawBoxes;
 
@@ -748,7 +806,8 @@ function drawMasks(g, c){
   if(!seg || !$("#t-mask").checked) return;
   const sx = c.width / seg.frame_width, sy = c.height / seg.frame_height;
   for(const o of seg.objects){
-    const isPicked = o.temporary_object_id === picked;
+    const isPicked = o.temporary_object_id === picked
+                  || picks.includes(o.temporary_object_id);
     const isHover = o.temporary_object_id === hovered;
     const hue = hueFor(o.class_name);
     g.lineWidth = isPicked ? 3 : 2;
@@ -768,8 +827,10 @@ function drawMasks(g, c){
                    (o.bbox.y_max - o.bbox.y_min) * sy);
       g.setLineDash([]);
     }
-    if($("#t-label").checked && (isPicked || isHover || !picked)){
-      const text = `${o.class_name} ${Math.round(o.confidence * 100)}%`;
+    if($("#t-label").checked && (isPicked || isHover || (!picked && !picks.length))){
+      const n = picks.indexOf(o.temporary_object_id);
+      const text = (n >= 0 ? `${n + 1}. ` : "")
+        + `${o.class_name} ${Math.round(o.confidence * 100)}%`;
       g.font = "600 12px Manrope, sans-serif";
       const w = g.measureText(text).width + 10;
       const bx = o.bbox.x_min * sx, by = o.bbox.y_min * sy;
@@ -797,8 +858,19 @@ async function loadAnns(){
 // a tag half a second away is almost certainly the same moment.
 function annsHere(){
   if(seg) return anns.filter(a => a.frame_index === seg.frame_index);
+  if(!anns.length) return [];
+  // Before the frame has been segmented we do not know its index, so match on
+  // time — but on the *nearest* tagged frame only. A followed object has a
+  // tag every couple of frames, and a plain half-second window would put a
+  // dozen positions of the same car on screen at once.
   const ms = ($("#vid").currentTime || 0) * 1000;
-  return anns.filter(a => Math.abs(a.timestamp_ms - ms) < 500);
+  let near = null, best = Infinity;
+  for(const a of anns){
+    const d = Math.abs(a.timestamp_ms - ms);
+    if(d < best){ best = d; near = a; }
+  }
+  if(best > 500) return [];
+  return anns.filter(a => a.frame_index === near.frame_index);
 }
 
 function drawSaved(g, c){
@@ -807,9 +879,14 @@ function drawSaved(g, c){
     if(shape && shape.id === a.id) continue;   // being edited: drawn separately
     const hue = STATUS_HUE[a.review_status] || "#c8bfe8";
     const on = a.id === annPick;
+    const guessed = a.source === "interpolated";
     g.lineWidth = on ? 3 : 2;
     g.strokeStyle = hue;
-    g.fillStyle = hue + (on ? "44" : "22");
+    g.fillStyle = hue + (on ? "44" : guessed ? "12" : "22");
+    // Dashed means nobody saw it here — the shape was reconstructed between
+    // two frames where the model did. It has to look different on screen or
+    // it will be read as evidence.
+    if(guessed) g.setLineDash([6, 5]);
     const sx = c.width / a.frame_width, sy = c.height / a.frame_height;
     for(const poly of a.polygon){
       if(poly.length < 3) continue;
@@ -818,6 +895,7 @@ function drawSaved(g, c){
       for(let i = 1; i < poly.length; i++) g.lineTo(poly[i][0]*sx, poly[i][1]*sy);
       g.closePath(); g.fill(); g.stroke();
     }
+    g.setLineDash([]);
     if($("#t-label").checked){
       const text = a.label + (a.corrected ? " ✓" : "");
       g.font = "700 12px Manrope, sans-serif";
@@ -870,12 +948,15 @@ function drawPending(g, c){
 function listAnns(){
   const here = annsHere();
   $("#anns").innerHTML = here.length ? here.map(a => `
-    <div class="ann ${a.id===annPick?"on":""}" data-ann="${a.id}">
+    <div class="ann ${a.id===annPick?"on":""} ${a.needs_review?"flag":""}"
+         data-ann="${a.id}">
       <div><b>${esc(a.label)}</b>
         <span class="chip ${a.review_status}">${a.review_status}</span>
         <div class="t">${esc(a.source.replace(/_/g," "))}${
+          a.source === "interpolated" ? " — not seen on this frame" : ""}${
           a.corrected ? ` · you moved it ${Math.round(a.drift*100)}%` : ""}${
           a.tags.length ? " · " + esc(a.tags.join(", ")) : ""}</div>
+        ${a.review_note ? `<div class="t">⚠ ${esc(a.review_note)}</div>` : ""}
         ${a.notes ? `<div class="t">${esc(a.notes)}</div>` : ""}
       </div>
       <div class="acts">
@@ -899,11 +980,16 @@ function listAnns(){
 function elsewhere(){
   const stops = [...new Set(anns.map(a => a.timestamp_ms))].sort((a,b) => a-b);
   if(!stops.length) return '<p class="empty">Nothing tagged on this clip yet.</p>';
+  // A followed object contributes hundreds of moments; offering all of them
+  // as buttons would bury the page. The timeline bar is where a track is read.
+  const show = stops.slice(0, 12);
   return `<p class="empty" style="padding-bottom:12px">Nothing tagged on this
     frame. ${anns.length} tagged object${anns.length===1?"":"s"} elsewhere:</p>
-    <div class="row">${stops.map(t =>
+    <div class="row">${show.map(t =>
       `<button data-seek="${t}" style="flex:0 0 auto">${fmt(t/1000)}</button>`
-    ).join("")}</div>`;
+    ).join("")}${stops.length > show.length
+      ? `<span class="t" style="align-self:center">+${stops.length - show.length} more</span>`
+      : ""}</div>`;
 }
 
 $("#anns").addEventListener("click", async e => {
@@ -933,8 +1019,10 @@ $("#tag-conf").oninput = () =>
   $("#tag-confv").textContent = $("#tag-conf").value + "%";
 
 function closeTag(){
-  tagFor = null; annPick = null; shape = null; drawPoly = null;
+  tagFor = null; annPick = null; shape = null; drawPoly = null; picks = [];
   $("#tagbox").hidden = true;
+  $("#tag-own-wrap").hidden = true; $("#tag-follow").hidden = true;
+  $("#tag-cls").disabled = false; $("#tag-cls").style.opacity = "1";
   document.querySelector(".stage").classList.remove("shaping", "drawing");
   $("#draw-poly").classList.remove("on");
   $("#draw-poly").textContent = "Tag something the AI missed";
@@ -963,22 +1051,55 @@ function fillTag({title, source, category, label, tags, note, confidence,
 // An object the model found, not yet saved.
 function openNew(obj){
   tagFor = {kind:"new", obj};
-  annPick = null; shape = null;
+  annPick = null; shape = null; picks = [];
   fillTag({title: obj.class_name, category: obj.class_name,
            source: obj.polygons.length ? "yolo_segmentation"
                                        : "yolo_detection_fallback",
            confidence: 0.8, status: "",
            hint: `the model was ${Math.round(obj.confidence*100)}% sure`});
   $("#tag-shape").hidden = true; $("#tag-reset").hidden = true;
+  $("#tag-own-wrap").hidden = true;
+  $("#tag-follow").hidden = !obj.polygons.length;
   $("#tag-save").textContent = "Save tag";
   listAnns(); drawBoxes();
 }
+
+// Several at once. The category select is disabled while "keep each object's
+// own class" is on, because a mixed selection — five cars and the person
+// walking between them — is the normal case, not the exception.
+function openMany(){
+  const objs = picks.map(id =>
+    seg.objects.find(o => o.temporary_object_id === id)).filter(Boolean);
+  tagFor = {kind:"many", objs};
+  annPick = null; shape = null;
+  const kinds = [...new Set(objs.map(o => o.class_name))];
+  fillTag({title: `${objs.length} objects selected`,
+           category: kinds.length === 1 ? kinds[0] : "unknown",
+           source: "yolo_segmentation", confidence: 0.8, status: "",
+           hint: kinds.length === 1 ? `all ${kinds[0]}`
+                                    : kinds.join(", ")});
+  $("#tag-shape").hidden = true; $("#tag-reset").hidden = true;
+  $("#tag-follow").hidden = true;
+  $("#tag-own-wrap").hidden = false;
+  $("#tag-own").checked = kinds.length > 1;
+  syncOwnClass();
+  $("#tag-save").textContent = `Save ${objs.length} tags`;
+  listAnns(); drawBoxes();
+}
+function syncOwnClass(){
+  const own = $("#tag-own").checked && !$("#tag-own-wrap").hidden;
+  $("#tag-cls").disabled = own;
+  $("#tag-cls").style.opacity = own ? ".45" : "1";
+}
+$("#tag-own").onchange = syncOwnClass;
 
 // One already in the database.
 function openSaved(a){
   if(!a) return;
   tagFor = {kind:"saved", id:a.id};
-  annPick = a.id; shape = null; drawPoly = null;
+  annPick = a.id; shape = null; drawPoly = null; picks = [];
+  $("#tag-own-wrap").hidden = true; $("#tag-follow").hidden = true;
+  syncOwnClass();
   document.querySelector(".stage").classList.remove("shaping", "drawing");
   fillTag({title: a.label, category: a.category, label: a.custom_label,
            source: a.source, tags: a.tags.join(", "), note: a.notes,
@@ -1004,6 +1125,24 @@ $("#tag-save").onclick = async () => {
       await form(`/api/train/annotations/${tagFor.id}`, fields, "PATCH");
       await loadAnns(); toast("Tag updated.");
       openSaved(anns.find(a => a.id === tagFor.id));
+      return;
+    }
+    if(tagFor.kind === "many"){
+      const r = await form("/api/train/annotations/batch", {
+        clip_id: current.id, frame_index: seg.frame_index,
+        timestamp_ms: Math.round($("#vid").currentTime * 1000),
+        objects: JSON.stringify(tagFor.objs.map(o => ({
+          class_name: o.class_name, confidence: o.confidence,
+          polygons: o.polygons, bbox: o.bbox, track_id: o.track_id,
+          temporary_object_id: o.temporary_object_id,
+          frame_width: seg.frame_width, frame_height: seg.frame_height,
+          model: seg.model}))),
+        category: fields.category, keep_own_class: $("#tag-own").checked,
+        custom_label: fields.custom_label, tags: fields.tags,
+        notes: fields.notes, user_confidence: fields.user_confidence});
+      closeTag();
+      await loadAnns(); loadClips();
+      toast(`Tagged ${r.saved} object${r.saved===1?"":"s"}.`);
       return;
     }
     if(tagFor.kind === "manual"){
@@ -1038,6 +1177,128 @@ $("#tag-save").onclick = async () => {
     await loadAnns(); loadClips(); toast("Tagged.");
   } catch(e){ $("#tag-hint").textContent = e.message; }
 };
+
+/* ------------------------------- following one object through the video */
+// The video is the point. A tag on one frame says a car was there; a track
+// says where it went, and that is what the alerting rules are actually about.
+$("#tag-follow").onclick = async () => {
+  if(!tagFor || tagFor.kind !== "new" || !seg) return;
+  const o = tagFor.obj;
+  $("#job").hidden = false;
+  $("#job-fill").style.width = "0%";
+  $("#job-stat").textContent = "starting...";
+  try {
+    job = await form(`/api/train/clips/${current.id}/track`, {
+      timestamp_ms: Math.round($("#vid").currentTime * 1000),
+      temporary_object_id: o.temporary_object_id,
+      custom_label: $("#tag-label").value.trim(),
+      tags: $("#tag-tags").value, notes: $("#tag-note").value.trim()});
+    pollJob();
+  } catch(e){
+    $("#job-stat").textContent = "could not start: " + e.message;
+  }
+};
+
+$("#job-cancel").onclick = async () => {
+  if(!job) return;
+  await api(`/api/train/track-jobs/${job.id}`, {method:"DELETE"});
+  $("#job-stat").textContent = "stopping...";
+};
+
+async function pollJob(){
+  if(!job) return;
+  let state;
+  try { state = await api(`/api/train/track-jobs/${job.id}`); }
+  catch(e){ $("#job-stat").textContent = "lost track of the job: " + e.message;
+            return; }
+  job = state;
+  const pct = state.total ? Math.min(100, state.processed / state.total * 100)
+                          : (state.state === "done" ? 100 : 6);
+  $("#job-fill").style.width = pct + "%";
+  if(state.state === "running" || state.state === "queued"){
+    $("#job-stat").textContent =
+      `following it — frame ${state.at_frame}, ${state.processed}`
+      + (state.total ? ` of about ${state.total}` : "") + " frames done";
+    setTimeout(pollJob, 900);
+    return;
+  }
+  if(state.state === "failed"){
+    $("#job-stat").textContent = "tracking failed: " + state.error;
+    return;
+  }
+  if(state.state === "cancelled"){
+    $("#job-stat").textContent = "stopped.";
+    return;
+  }
+  const r = state.result || {};
+  $("#job-stat").innerHTML =
+    `followed it across <b>${r.frames}</b> frames — `
+    + `<b>${r.observed}</b> seen, <b>${r.reconstructed}</b> reconstructed`
+    + (r.flagged ? `, <b>${r.flagged}</b> worth checking` : "")
+    + (r.lost_why ? `.<br>Stopped at frame ${r.lost_at}: ${esc(r.lost_why)}`
+                  : ".");
+  closeTag();
+  await Promise.all([loadAnns(), loadTracks()]);
+  loadClips();
+  $("#job").hidden = false;                 // keep the summary on screen
+}
+
+async function loadTracks(){
+  if(!current){ tracks = []; return; }
+  tracks = await api(`/api/train/tracks?clip_id=${current.id}`);
+  listTracks(); drawTimeline();
+}
+
+function listTracks(){
+  $("#tracks").innerHTML = tracks.length ? tracks.map(t => `
+    <div class="ann ${t.flagged ? "flag" : ""}" data-track="${t.id}">
+      <div><b>${esc(t.custom_label || t.category)}</b>
+        <span class="chip ${t.review_status}">${t.review_status}</span>
+        <div class="t">frames ${t.start_frame}–${t.end_frame} ·
+          <span class="count"><b>${t.observed}</b><span>seen</span></span> ·
+          <span class="count"><b>${t.reconstructed}</b><span>filled in</span></span>
+          ${t.flagged ? ` · <span class="count"><b>${t.flagged}</b><span>to check</span></span>` : ""}
+        </div>
+        ${t.lost_why ? `<div class="t">stopped: ${esc(t.lost_why)}</div>` : ""}
+      </div>
+      <div class="acts">
+        <button data-tgo="${t.id}">Go to</button>
+        ${t.review_status === "draft"
+          ? `<button data-treview="${t.id}" data-to="submitted">Submit</button>` : ""}
+        ${t.review_status === "submitted" && me && me.can.includes("users")
+          ? `<button data-treview="${t.id}" data-to="approved">Approve</button>
+             <button data-treview="${t.id}" data-to="rejected">Reject</button>` : ""}
+        <button data-tdel="${t.id}">Remove</button>
+      </div>
+    </div>`).join("")
+    : '<p class="empty">Nothing followed on this clip yet. Click an object, '
+      + 'then “Follow through video”.</p>';
+}
+
+$("#tracks").addEventListener("click", async e => {
+  const go = e.target.dataset.tgo, del = e.target.dataset.tdel,
+        rev = e.target.dataset.treview;
+  if(go){
+    const t = tracks.find(x => x.id === +go);
+    const first = anns.filter(a => a.track_ref === t.id)
+                      .sort((a,b) => a.timestamp_ms - b.timestamp_ms)[0];
+    if(first) $("#vid").currentTime = first.timestamp_ms / 1000;
+    return;
+  }
+  if(del){
+    await api(`/api/train/tracks/${del}`, {method:"DELETE"});
+    await Promise.all([loadAnns(), loadTracks()]); loadClips();
+    toast("Track removed."); return;
+  }
+  if(rev){
+    try {
+      const r = await form(`/api/train/tracks/${rev}/review`,
+                           {review_status: e.target.dataset.to});
+      await Promise.all([loadAnns(), loadTracks()]);
+      toast(`${r.frames_changed} frames marked ${e.target.dataset.to}.`);
+    } catch(err){ toast(err.message); }
+  }
+});
 
 /* ------------------------------------------- moving the outline by hand */
 $("#tag-shape").onclick = async () => {
@@ -1224,12 +1485,27 @@ $("#ov").addEventListener("pointerdown", async ev => {
     const v = $("#vid");
     if(!v.paused) v.pause();
     const r = $("#ov").getBoundingClientRect();
+    const adding = ev.shiftKey || ev.ctrlKey || ev.metaKey;
     // A tag already saved here wins over asking the model again: they are
     // reaching for the thing they can see, and it is one round trip cheaper.
-    const already = annsHere().find(a => (a.polygon || []).some(p =>
+    const already = adding ? null : annsHere().find(a => (a.polygon || []).some(p =>
       pointInPoly((ev.clientX - r.left) / r.width * a.frame_width,
                   (ev.clientY - r.top) / r.height * a.frame_height, p)));
     if(already){ openSaved(already); return; }
+    // Adding to a selection is answered locally: the outlines for this frame
+    // are already here, and a round trip per click makes picking six cars
+    // feel like six separate decisions instead of one.
+    if(adding && seg){
+      const hit = objAt((ev.clientX - r.left) / r.width * $("#ov").width,
+                        (ev.clientY - r.top) / r.height * $("#ov").height);
+      if(!hit){ toast("Nothing there to add."); return; }
+      if(picked && !picks.includes(picked)) picks.push(picked);
+      const at = picks.indexOf(hit.temporary_object_id);
+      if(at >= 0) picks.splice(at, 1); else picks.push(hit.temporary_object_id);
+      picked = null;
+      if(picks.length) openMany(); else closeTag();
+      return;
+    }
     try {
       const out = await form(`/api/train/clips/${current.id}/select-object`, {
         timestamp_ms: Math.round(v.currentTime * 1000),

@@ -244,6 +244,28 @@ CREATE INDEX IF NOT EXISTS idx_annotations_clip
     ON object_annotations(clip_id, frame_index);
 CREATE INDEX IF NOT EXISTS idx_annotations_status
     ON object_annotations(review_status);
+-- One object followed through a stretch of video. The per-frame outlines are
+-- ordinary rows in object_annotations pointing back here, so a frame the
+-- tracker got wrong is corrected, reviewed and exported exactly like one
+-- somebody tagged by hand — there is no second kind of annotation.
+CREATE TABLE IF NOT EXISTS object_tracks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    clip_id INTEGER NOT NULL REFERENCES training_clips(id),
+    category TEXT NOT NULL,
+    custom_label TEXT,
+    start_frame INTEGER NOT NULL,
+    end_frame INTEGER NOT NULL,
+    stride INTEGER NOT NULL DEFAULT 1,
+    frames INTEGER NOT NULL DEFAULT 0,       -- rows written
+    observed INTEGER NOT NULL DEFAULT 0,     -- frames the model actually saw it
+    reconstructed INTEGER NOT NULL DEFAULT 0,  -- frames filled in between two
+    flagged INTEGER NOT NULL DEFAULT 0,      -- frames worth a person's eye
+    lost_at INTEGER, lost_why TEXT,
+    model TEXT, tags TEXT, notes TEXT,
+    review_status TEXT NOT NULL DEFAULT 'draft',
+    created_by TEXT, created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tracks_clip ON object_tracks(clip_id);
 """
 
 # columns added after first release — applied with ALTER TABLE on startup so
@@ -254,6 +276,14 @@ MIGRATIONS = [
     # always answer "why?" long after the frame is gone
     "ALTER TABLE events ADD COLUMN score REAL NOT NULL DEFAULT 0",
     "ALTER TABLE events ADD COLUMN score_why TEXT",
+    # tracking: which run produced this outline, whether the model actually saw
+    # it on this frame or we reconstructed it between two frames where it did,
+    # and whether the match was ugly enough to want a person's eye
+    "ALTER TABLE object_annotations ADD COLUMN track_ref INTEGER",
+    "ALTER TABLE object_annotations ADD COLUMN mask_source TEXT",
+    "ALTER TABLE object_annotations ADD COLUMN needs_review INTEGER NOT NULL"
+    " DEFAULT 0",
+    "ALTER TABLE object_annotations ADD COLUMN review_note TEXT",
 ]
 
 
@@ -889,6 +919,8 @@ class Database:
                                (clip_id,))
             self._conn.execute("DELETE FROM object_annotations WHERE clip_id = ?",
                                (clip_id,))
+            self._conn.execute("DELETE FROM object_tracks WHERE clip_id = ?",
+                               (clip_id,))
             cur = self._conn.execute("DELETE FROM training_clips WHERE id = ?",
                                      (clip_id,))
             self._conn.commit()
@@ -969,7 +1001,8 @@ class Database:
         "original_polygon", "corrected_polygon", "tags", "notes", "model",
         "track_id", "temporary_object_id", "review_status",
         "reviewed_by", "reviewed_at", "created_by", "created_at",
-        "updated_by", "updated_at")
+        "updated_by", "updated_at",
+        "track_ref", "mask_source", "needs_review", "review_note")
 
     def add_object_annotation(self, row: dict) -> int:
         """`row` comes from annotations.Annotation.row(), already validated.
@@ -985,9 +1018,32 @@ class Database:
             self._conn.commit()
             return cur.lastrowid
 
+    def add_object_annotations(self, rows: list) -> list:
+        """Many at once, in one transaction.
+
+        A tracking run writes a few hundred rows; committing each separately
+        turns a job into an fsync storm, and a half-written track is worse
+        than none — either the whole path is there or it is not.
+        """
+        cols = self._ANN_COLS
+        sql = (f"INSERT INTO object_annotations ({', '.join(cols)}) "
+               f"VALUES ({', '.join('?' * len(cols))})")
+        ids = []
+        with self._lock:
+            try:
+                for row in rows:
+                    cur = self._conn.execute(sql, [row.get(c) for c in cols])
+                    ids.append(cur.lastrowid)
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return ids
+
     def object_annotations(self, clip_id: int | None = None,
                            frame_index: int | None = None,
-                           review_status: str = "") -> list[dict]:
+                           review_status: str = "",
+                           track_ref: int | None = None) -> list[dict]:
         sql = "SELECT * FROM object_annotations"
         where, args = [], []
         if clip_id:
@@ -999,6 +1055,9 @@ class Database:
         if review_status:
             where.append("review_status = ?")
             args.append(review_status)
+        if track_ref is not None:
+            where.append("track_ref = ?")
+            args.append(track_ref)
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY clip_id, frame_index, id"
@@ -1044,6 +1103,77 @@ class Database:
         with self._lock:
             cur = self._conn.execute(
                 "DELETE FROM object_annotations WHERE id = ?", (ann_id,))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    # -- tracks --------------------------------------------------------------
+    _TRACK_COLS = ("clip_id", "category", "custom_label", "start_frame",
+                   "end_frame", "stride", "frames", "observed", "reconstructed",
+                   "flagged", "lost_at", "lost_why", "model", "tags", "notes",
+                   "review_status", "created_by", "created_at")
+
+    def add_object_track(self, row: dict) -> int:
+        cols = self._TRACK_COLS
+        sql = (f"INSERT INTO object_tracks ({', '.join(cols)}) "
+               f"VALUES ({', '.join('?' * len(cols))})")
+        with self._lock:
+            cur = self._conn.execute(sql, [row.get(c) for c in cols])
+            self._conn.commit()
+            return cur.lastrowid
+
+    def object_tracks(self, clip_id: int | None = None) -> list[dict]:
+        sql = "SELECT * FROM object_tracks"
+        args: list = []
+        if clip_id:
+            sql += " WHERE clip_id = ?"
+            args.append(clip_id)
+        sql += " ORDER BY clip_id, start_frame, id"
+        with self._lock:
+            return [dict(r) for r in self._conn.execute(sql, args).fetchall()]
+
+    def get_object_track(self, track_id: int) -> dict | None:
+        with self._lock:
+            r = self._conn.execute("SELECT * FROM object_tracks WHERE id = ?",
+                                   (track_id,)).fetchone()
+            return dict(r) if r else None
+
+    def update_object_track(self, track_id: int, **fields) -> bool:
+        allowed = ("category", "custom_label", "tags", "notes", "review_status")
+        sets = {k: v for k, v in fields.items() if k in allowed}
+        if not sets:
+            return False
+        sql = ("UPDATE object_tracks SET "
+               + ", ".join(f"{k} = ?" for k in sets) + " WHERE id = ?")
+        with self._lock:
+            cur = self._conn.execute(sql, list(sets.values()) + [track_id])
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def set_track_status(self, track_id: int, status: str,
+                         actor: str = "") -> int:
+        """Move a track and every frame in it at once.
+
+        A track is one judgement — "that is the same silver hatchback all the
+        way through" — so approving it frame by frame would be four hundred
+        clicks to say one thing.
+        """
+        with self._lock:
+            self._conn.execute(
+                "UPDATE object_tracks SET review_status = ? WHERE id = ?",
+                (status, track_id))
+            cur = self._conn.execute(
+                "UPDATE object_annotations SET review_status = ?,"
+                " reviewed_by = ?, reviewed_at = ? WHERE track_ref = ?",
+                (status, actor, time.time(), track_id))
+            self._conn.commit()
+            return cur.rowcount
+
+    def delete_object_track(self, track_id: int) -> bool:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM object_annotations WHERE track_ref = ?", (track_id,))
+            cur = self._conn.execute("DELETE FROM object_tracks WHERE id = ?",
+                                     (track_id,))
             self._conn.commit()
             return cur.rowcount > 0
 

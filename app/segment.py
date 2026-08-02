@@ -361,6 +361,65 @@ def read_frame(path: str, timestamp_ms: float):
         cap.release()
 
 
+def iter_frames(path: str, start_index: int = 0, stride: int = 1,
+                limit: int = 0):
+    """Walk a clip forward from a frame, yielding (index, timestamp_ms, frame).
+
+    Sequential, and that is the whole point. `cap.set(POS_FRAMES)` makes the
+    decoder seek to the nearest keyframe and roll forward again for *every*
+    frame; on a clip with keyframes two seconds apart, reading two hundred
+    frames that way decodes several thousand. Reading straight through decodes
+    two hundred. On the same MEVA clip that is the difference between a
+    tracking run finishing and someone giving up on it.
+
+    `stride` skips frames without decoding cost being wasted on them — we
+    still have to decode each one, but only every Nth goes to the model, which
+    is where the time actually goes.
+    """
+    import cv2
+
+    cap = cv2.VideoCapture(str(path))
+    if not cap.isOpened():
+        raise ValueError("this clip could not be opened")
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+        if fps <= 0:
+            raise ValueError("this clip reports no frame rate; it may be corrupt")
+        if start_index > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(start_index))
+        idx = int(start_index)
+        given = 0
+        stride = max(1, int(stride))
+        while True:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                return
+            if (idx - start_index) % stride == 0:
+                yield idx, int(round(idx / fps * 1000)), frame
+                given += 1
+                if limit and given >= limit:
+                    return
+            idx += 1
+    finally:
+        cap.release()
+
+
+def clip_shape(path: str) -> tuple:
+    """(fps, frame_count, width, height) without decoding anything."""
+    import cv2
+
+    cap = cv2.VideoCapture(str(path))
+    if not cap.isOpened():
+        raise ValueError("this clip could not be opened")
+    try:
+        return (cap.get(cv2.CAP_PROP_FPS) or 0.0,
+                int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0),
+                int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+    finally:
+        cap.release()
+
+
 def build_segmenter(cfg: dict | None = None) -> Segmenter:
     """Pick the segmenter from config, lazily and once.
 
