@@ -23,6 +23,7 @@ from .detector import Detector, annotate
 from .enhance import enhance_frame
 from .fusion import AI_REVIEW, CONFIRMED_INCIDENT, fuse
 from .hybrid import HybridSecurityMonitor, build_evidence, route_from_reasons
+from .incidents import IncidentGate
 from .notify import TelegramNotifier
 from .plates import PlateReader, fuzzy_match
 from .rules import SUSPICIOUS_ACTIVITY, Event, RulesEngine
@@ -154,6 +155,12 @@ class CameraPipeline(threading.Thread):
             # Feed the guards' verdicts back into scoring. Read every few
             # minutes, not every frame: it is a slow-moving aggregate and this
             # is the hot loop.
+            # Close incidents that have gone quiet. Without this an incident
+            # stays open until the next event, so "it ended" is never noticed
+            # on a camera that has fallen silent — which is exactly what
+            # happens when the incident is over.
+            self.ctx.incident_gate.tick(ts)
+
             if ts - self._rates_refreshed > 300:
                 self._rates_refreshed = ts
                 try:
@@ -345,6 +352,20 @@ class CameraPipeline(threading.Thread):
             ev.ts, ev.camera, ev.event_type, ev.severity, ev.plate,
             ev.track_ids, ev.confidence, ev.description,
             score=ev.score, score_why=ev.score_why)
+
+        # Rising edge: the event is always recorded, but it only interrupts
+        # somebody if it opens an incident or makes an open one worse. Decided
+        # here rather than at notify time because the state machine has to see
+        # every event, in order, and clip saving is asynchronous.
+        decision = self.ctx.incident_gate.observe(
+            ev.camera, ev.ts, ev.severity, ev.event_type,
+            score=ev.score, track_ids=ev.track_ids)
+        self.ctx.remember_decision(event_id, decision)
+        if not decision.notify:
+            log.info("EVENT [%s] held: %s (%d events, %d held since the last "
+                     "alert)", ev.camera, decision.reason,
+                     decision.incident_events, decision.suppressed_since_alert)
+
         self.ctx.clip_saver.save_async(self.worker, ev, event_id)
 
 
@@ -381,10 +402,39 @@ class AppContext:
         self.analyzer = VideoAnalyzer(config, acfg.get("out_dir", "clips/uploads")) \
             if acfg.get("enabled", True) else None
         self.assistant = TuningAssistant(config.get("assistant", {}))
+        self.incident_gate = IncidentGate(config.get("incidents", {}))
+        # event_id -> Decision, handed from _handle_event to _on_clip_ready.
+        # Bounded: clip saving is asynchronous but not unbounded, and a
+        # decision nobody collected must not pin memory forever.
+        self._decisions: dict[int, object] = {}
+        self._decisions_lock = threading.Lock()
         self.workers: dict[str, CameraWorker] = {}
         self.pipelines: dict[str, CameraPipeline] = {}
 
+    def remember_decision(self, event_id: int, decision) -> None:
+        with self._decisions_lock:
+            self._decisions[event_id] = decision
+            if len(self._decisions) > 500:
+                for old in sorted(self._decisions)[:len(self._decisions) - 500]:
+                    self._decisions.pop(old, None)
+
+    def take_decision(self, event_id: int):
+        """Pop the gate's verdict for this event. Missing means 'let it
+        through' — a lost decision must never silence a real alert."""
+        with self._decisions_lock:
+            return self._decisions.pop(event_id, None)
+
     def _on_clip_ready(self, event, event_id: int, clip_path: str):
+        decision = self.take_decision(event_id)
+        # A held event still gets its clip and its database row — what is
+        # withheld is the interruption, not the record. It also skips the paid
+        # AI review, because re-reviewing the same incident every few seconds
+        # is the same waste in money that the alert was in attention.
+        if decision is not None and not decision.notify:
+            log.info("clip saved for held event %s (%s)", event_id,
+                     decision.reason)
+            return
+
         desc = None
         keyframes = None
         # full pipeline: two-tier AI review (Haiku screen -> Opus findings).

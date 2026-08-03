@@ -126,6 +126,26 @@ scoring:
   #   registered: -0.34
   #   false_alarms: -0.26
 
+# Rising-edge alerting. Events are ALWAYS recorded; this decides which of them
+# are allowed to interrupt a person. One continuing situation should produce
+# one alert, plus one more if it gets meaningfully worse — not one every few
+# seconds until `max_notifications_per_hour` silences the camera completely.
+incidents:
+  enabled: true
+  cooldown_s: 60             # quiet this long and the next event is a NEW
+                             # incident. Wants to be comfortably longer than
+                             # the gap the tracker leaves when it loses
+                             # somebody behind a vehicle, or one person walking
+                             # past a van becomes two incidents and two alerts.
+  remind_after_s: 900        # a still-running incident may interrupt again
+                             # this rarely, so a long event is not forgotten
+  escalate_score_delta: 0.15 # how far the 0..1 score must rise above the
+                             # incident's peak to count as "worse". Below this
+                             # is jitter, not escalation.
+  always_notify:             # never suppressed: these are the reason the
+    - camera_tamper          # operator can no longer SEE the incident, not
+    - camera_offline         # more of the incident itself
+
 rules:
   night_hours: { start: "23:00", end: "05:00" }
   debounce_s: 120              # one event type per tracked object per N seconds

@@ -256,22 +256,28 @@ already scores at incident level; extend it to report:
 * per-camera breakdown, unseen cameras separated
 * stability across lighting / distance / angle
 
-### Rising-edge logic — a real gap
+### Rising-edge logic — DONE (step 0, `app/incidents.py`)
 
-`_merge_incidents(gap_s=20)` exists but is **offline only**. The live path
-needs the same state machine:
+*This section originally overstated the problem; corrected after reading
+`notify.py` properly.* The live path already grouped events into incidents
+(`db.insert_event`) and already labelled follow-ups "UPDATE — same incident".
+What it did not do was **stop sending**, and the only brake was
+`max_notifications_per_hour`.
 
-```
-state per (camera, subject_track_id):
-  QUIET --(fusion >= CONFIRMED)--> OPEN     [emit exactly one alert]
-  OPEN  --(fusion sustained)-----> OPEN     [no further alerts]
-  OPEN  --(quiet for cooldown_s)-> QUIET    [emit "incident ended"]
-```
+That crude cap was the actual danger. Measured on a realistic four-minute
+incident — 40 MEDIUM events as track ids churn, then the break-in:
 
-Without this, one continuous break-in produces an alert every 2 seconds, the
-guard silences notifications, and the product is dead regardless of accuracy.
-This is arguably the highest-value change in the whole plan and needs no
-training at all.
+| | messages | did the HIGH break-in arrive? |
+|---|---|---|
+| before | 10, then 39 events dropped by the cap | **No — silenced by the cap** |
+| after | 2 (open, escalate) | **Yes** |
+
+A rate limit that suppresses the most important alert because thirty
+unimportant ones came first is worse than no rate limit. `app/incidents.py`
+gates on the rising edge instead: open → alert, sustained → record quietly,
+**worse → always alert**, long-running → remind rarely, quiet → close.
+Grouping is by camera and time, deliberately *not* by track id, because the
+tracker demonstrably loses and re-acquires people.
 
 ---
 
