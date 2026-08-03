@@ -197,16 +197,23 @@ accumulates.
 
 ### 3.4 Source separation — the rule that must not bend
 
-Splits are assigned by hashing `source_video`, **never** per clip:
+**Implemented: `training/splits.py`.** Splits are assigned by a sha1 of
+`source_video`, never per clip, and `check_separation()` raises if any source
+ever appears in two splits.
 
-```python
-split = "test" if sha1(source_video) % 10 < 2 else \
-        "val"  if sha1(source_video) % 10 < 4 else "train"
-```
+Measured on a realistic 40-source / 480-clip set: a naive per-clip random
+split puts **39 of 40 source videos into more than one split**. Validation on
+that is almost entirely memorisation. Source-separated assignment gives a
+clean 288 / 96 / 96 with both classes present in every split.
 
-Twelve clips cut from `Burglary017` are twelve views of one event. Split them
-at random and your validation score measures memorisation. A test asserts this
-invariant and fails the build if any `source_video` appears in two splits.
+Three further properties, each with a test:
+
+* **Stable** — sha1, not Python's `hash()`, which is salted per process. Same
+  manifest, same splits, every machine, every run.
+* **Additive** — next week's batch does not reshuffle last week's test set, so
+  a number reported last week still means something.
+* **Stratified** — sources are grouped by dominant label before the fractions
+  are taken, so a pure hash cannot put every positive in test.
 
 ### 3.5 Hard-negative queue
 
@@ -287,8 +294,8 @@ Every step: branch, change, `pytest`, commit. Rollback is `git checkout`.
 
 | Step | Deliverable | Trains? | Est. |
 |---|---|---|---|
-| **0** | Live rising-edge incident logic + tests | no | 1 day |
-| **1** | `training/` skeleton, manifest schema, split invariant test | no | 1 day |
+| ~~0~~ | ~~Live rising-edge incident logic~~ — **done**, `app/incidents.py` | no | ✅ |
+| ~~1~~ | ~~`training/` skeleton, manifest, split invariant~~ — **done** | no | ✅ |
 | **2** | `clipmine.py` for MEVA normals — 500 verified clips | no | 2 days |
 | **3** | `profile_gpu.py` on your laptop | no | 1 hour |
 | **4** | Feature extractor: candidate window → track feature vector | no | 2 days |
