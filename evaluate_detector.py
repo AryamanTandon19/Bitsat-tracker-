@@ -21,82 +21,31 @@ not the detector.
     python evaluate_detector.py
     python evaluate_detector.py --status submitted --iou 0.4
     python evaluate_detector.py --clip 3 --json report.json
+
+To compare several settings instead of measuring one, use sweep_detector.py.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from app import measure
 from app import segment as segment_mod
 from app.annotations import Annotation
 from app.db import Database
 from app.main import load_config
 
-# The workbench vocabulary is wider than the detector's. Anything the live
-# model has no class for cannot be a miss on its part, so it is left out of
-# the score rather than counted against it.
-COMPARABLE = {"person", "car", "motorcycle", "bicycle", "bus", "truck"}
-
-# Size buckets in pixels of box diagonal. Chosen because this is where the
-# answer changes: on a car-park camera a person at 40px is a different
-# detection problem from a car at 250px, and one average hides both.
-BUCKETS = [(0, 40, "tiny (<40px)"), (40, 80, "small (40-80px)"),
-           (80, 160, "medium (80-160px)"), (160, 10 ** 9, "large (>160px)")]
-
-
-def bucket_for(diag: float) -> str:
-    for lo, hi, name in BUCKETS:
-        if lo <= diag < hi:
-            return name
-    return BUCKETS[-1][2]
-
-
-def box_iou(a, b) -> float:
-    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
-    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
-    if ix2 <= ix1 or iy2 <= iy1:
-        return 0.0
-    inter = (ix2 - ix1) * (iy2 - iy1)
-    area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
-    area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
-    union = area_a + area_b - inter
-    return inter / union if union > 0 else 0.0
-
-
-def match(truth: list, found: list, iou_gate: float) -> tuple:
-    """Greedy one-to-one matching, best overlap first.
-
-    Greedy rather than optimal (Hungarian) on purpose: at these object counts
-    the two agree almost always, and a matcher somebody can follow in their
-    head is worth more here than the last half percent.
-    """
-    pairs = []
-    for i, t in enumerate(truth):
-        for j, d in enumerate(found):
-            v = box_iou(t["bbox"], d["bbox"])
-            if v >= iou_gate:
-                pairs.append((v, i, j))
-    pairs.sort(reverse=True)
-    used_t, used_d, matched = set(), set(), []
-    for v, i, j in pairs:
-        if i in used_t or j in used_d:
-            continue
-        used_t.add(i)
-        used_d.add(j)
-        matched.append((i, j, v))
-    missed = [i for i in range(len(truth)) if i not in used_t]
-    extra = [j for j in range(len(found)) if j not in used_d]
-    return matched, missed, extra
-
 
 def main() -> int:
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", default="config.yaml")
     p.add_argument("--status", default="approved",
                    help="which labels to trust: approved (default), "
@@ -121,22 +70,16 @@ def main() -> int:
     finally:
         db.close()
 
-    # Reconstructed frames are not sightings. Scoring against them would
-    # measure our own interpolation, and it would flatter or damn the detector
-    # for a shape no camera ever produced.
-    usable = [a for a in anns
-              if a.source != "interpolated" and a.category in COMPARABLE]
-    dropped_interp = sum(1 for a in anns if a.source == "interpolated")
-    dropped_class = sum(1 for a in anns
-                        if a.source != "interpolated"
-                        and a.category not in COMPARABLE)
-
+    usable, interpolated, off_vocabulary = measure.usable_labels(anns)
     if not usable:
         print(f"No usable labels with status '{args.status}'.")
         print(f"  {len(anns)} annotations found"
-              + (f", {dropped_interp} reconstructed by the tracker" if dropped_interp else "")
-              + (f", {dropped_class} outside the detector's classes" if dropped_class else ""))
-        print("\nTag some objects in /train and approve them, then run this again.")
+              + (f", {interpolated} reconstructed by the tracker"
+                 if interpolated else "")
+              + (f", {off_vocabulary} outside the detector's classes"
+                 if off_vocabulary else ""))
+        print("\nTag objects in /train and approve them, then run this again.")
+        print("To get a head start:  python prelabel.py --all-clips")
         return 1
 
     by_frame: dict = defaultdict(list)
@@ -145,14 +88,16 @@ def main() -> int:
 
     from app.detector import Detector
     det = Detector(cfg["detection"])
-    print(f"detector: {cfg['detection'].get('model')} at conf "
-          f"{cfg['detection'].get('confidence')} on {det.device}")
+    name = (f"{cfg['detection'].get('model')} @"
+            f"{cfg['detection'].get('imgsz')} conf "
+            f"{cfg['detection'].get('confidence')}")
+    print(f"detector: {name} on {det.device}")
     print(f"labels:   {len(usable)} objects on {len(by_frame)} frames "
           f"({args.status})\n")
 
-    stats = defaultdict(lambda: {"truth": 0, "hit": 0, "extra": 0})
+    tally = measure.Tally(name)
+    matcher = measure.match if args.class_agnostic else measure.match_per_class
     per_frame = []
-    total_extra = 0
 
     for (clip_id, frame_index), truth_anns in sorted(by_frame.items()):
         clip = clips.get(clip_id)
@@ -160,50 +105,21 @@ def main() -> int:
             print(f"  ! clip {clip_id} is gone from disk, skipping its "
                   f"{len(truth_anns)} labels")
             continue
-        fps, _, _, _ = segment_mod.clip_shape(clip["path"])
         got = list(segment_mod.iter_frames(clip["path"], frame_index, 1, 1))
         if not got:
             print(f"  ! clip {clip_id} frame {frame_index} would not decode")
             continue
         _, _, img = got[0]
 
+        t0 = time.time()
         found = [{"bbox": d.xyxy, "cls": d.cls_name, "conf": d.conf}
                  for d in det.track(img)]
+        took = time.time() - t0
         truth = [{"bbox": a.bbox, "cls": a.category, "id": a.id}
                  for a in truth_anns]
-
-        if not args.class_agnostic:
-            # match within class, so a car found where a person is does not
-            # count as seeing the person
-            matched, missed, extra = [], [], list(range(len(found)))
-            for cls in {t["cls"] for t in truth}:
-                ti = [i for i, t in enumerate(truth) if t["cls"] == cls]
-                di = [j for j in extra if found[j]["cls"] == cls]
-                m, ms, _ = match([truth[i] for i in ti],
-                                 [found[j] for j in di], args.iou)
-                for a, b, v in m:
-                    matched.append((ti[a], di[b], v))
-                    extra.remove(di[b])
-                missed += [ti[i] for i in ms]
-        else:
-            matched, missed, extra = match(truth, found, args.iou)
-
-        for i, _j, _v in matched:
-            t = truth[i]
-            diag = ((t["bbox"][2] - t["bbox"][0]) ** 2
-                    + (t["bbox"][3] - t["bbox"][1]) ** 2) ** 0.5
-            stats[t["cls"]]["truth"] += 1
-            stats[t["cls"]]["hit"] += 1
-            stats[bucket_for(diag)]["truth"] += 1
-            stats[bucket_for(diag)]["hit"] += 1
-        for i in missed:
-            t = truth[i]
-            diag = ((t["bbox"][2] - t["bbox"][0]) ** 2
-                    + (t["bbox"][3] - t["bbox"][1]) ** 2) ** 0.5
-            stats[t["cls"]]["truth"] += 1
-            stats[bucket_for(diag)]["truth"] += 1
-        total_extra += len(extra)
-
+        matched, missed, extra = matcher(truth, found, args.iou)
+        tally.add_frame(truth, matched, missed, extra, took,
+                        {"clip": clip["filename"], "frame": frame_index})
         per_frame.append({
             "clip": clip["filename"], "clip_id": clip_id,
             "frame": frame_index, "labelled": len(truth),
@@ -214,37 +130,34 @@ def main() -> int:
                                for i in missed],
         })
 
-    hits = sum(v["hit"] for k, v in stats.items() if k in COMPARABLE)
-    truths = sum(v["truth"] for k, v in stats.items() if k in COMPARABLE)
-
     print("BY CLASS")
-    for cls in sorted(COMPARABLE):
-        s = stats.get(cls)
-        if not s or not s["truth"]:
+    for cls in measure.COMPARABLE:
+        c = tally.counts.get(cls)
+        if not c or not c["truth"]:
             continue
-        print(f"  {cls:12s} {s['hit']:4d}/{s['truth']:<4d} seen   "
-              f"{s['hit'] / s['truth'] * 100:5.1f}% recall")
+        print(f"  {cls:12s} {c['hit']:4d}/{c['truth']:<4d} seen   "
+              f"{c['hit'] / c['truth'] * 100:5.1f}% recall")
 
     print("\nBY SIZE  (this is the one that tells you what to do)")
-    for _lo, _hi, name in BUCKETS:
-        s = stats.get(name)
-        if not s or not s["truth"]:
+    for _lo, _hi, bucket in measure.BUCKETS:
+        c = tally.counts.get(bucket)
+        if not c or not c["truth"]:
             continue
-        print(f"  {name:20s} {s['hit']:4d}/{s['truth']:<4d} seen   "
-              f"{s['hit'] / s['truth'] * 100:5.1f}% recall")
+        print(f"  {bucket:20s} {c['hit']:4d}/{c['truth']:<4d} seen   "
+              f"{c['hit'] / c['truth'] * 100:5.1f}% recall")
 
-    print(f"\nOVERALL  {hits}/{truths} labelled objects found "
-          f"({hits / truths * 100:.1f}% recall) across {len(per_frame)} frames")
+    recall = tally.recall()
+    print(f"\nOVERALL  {tally.found}/{tally.labelled} labelled objects found "
+          f"({recall * 100:.1f}% recall) across {tally.frames} frames "
+          f"at {tally.seconds_per_frame:.2f}s each")
 
     # Two hundred labels off one followed object is one object measured two
     # hundred times, not two hundred measurements. Saying so here is the
     # difference between a number somebody can act on and one that will
     # embarrass them in a meeting.
-    from_tracks = sum(1 for a in usable if a.track_ref)
-    distinct = len({a.track_ref for a in usable if a.track_ref})
-    if from_tracks > len(usable) * 0.4:
-        share = from_tracks / len(usable) * 100
-        print(f"\n  ! {share:.0f}% of these labels come from "
+    share, distinct = measure.track_share(usable)
+    if share > 0.4:
+        print(f"\n  ! {share * 100:.0f}% of these labels come from "
               f"{distinct} followed object{'' if distinct == 1 else 's'}. "
               "The same object on 200 frames is one object measured 200")
         print("    times, not 200 independent measurements — this tells you "
@@ -253,14 +166,22 @@ def main() -> int:
               "camera in general. Tag")
         print("    objects on scattered frames, in different light, before "
               "quoting the percentage.")
-    print(f"         {total_extra} detections had no label — some are real "
-          "objects nobody tagged, so this is an upper bound on false "
-          "positives, not a count of them")
-    if dropped_interp:
-        print(f"         {dropped_interp} reconstructed frames left out: they "
+
+    if args.status != "approved":
+        print(f"\n  ! these are '{args.status}' labels, not approved ones. If "
+              "they were proposed by a")
+        print("    model, anything that model also missed is invisible here "
+              "and recall is flattered.")
+
+    print(f"\n         {tally.extra} detections had no label — some are real "
+          "objects nobody tagged, so")
+    print("         this is an upper bound on false positives, not a count "
+          "of them")
+    if interpolated:
+        print(f"         {interpolated} reconstructed frames left out: they "
               "are not sightings")
-    if dropped_class:
-        print(f"         {dropped_class} objects outside the detector's "
+    if off_vocabulary:
+        print(f"         {off_vocabulary} objects outside the detector's "
               "classes left out")
 
     worst = sorted(per_frame, key=lambda f: -f["missed"])[:5]
@@ -273,20 +194,17 @@ def main() -> int:
                   f"{f['labelled']} — "
                   + ", ".join(m["class"] for m in f["missed_objects"][:6]))
 
+    print("\nNext:  python sweep_detector.py    "
+          "# is a config change enough, before training anything?")
+
     if args.json:
-        report = {"status": args.status, "iou": args.iou,
-                  "class_agnostic": args.class_agnostic,
-                  "model": cfg["detection"].get("model"),
-                  "confidence": cfg["detection"].get("confidence"),
-                  "overall": {"labelled": truths, "found": hits,
-                              "recall": round(hits / truths, 4) if truths else None,
-                              "unlabelled_detections": total_extra},
-                  "by_class": {k: dict(v) for k, v in stats.items()
-                               if k in COMPARABLE},
-                  "by_size": {name: dict(stats[name])
-                              for _l, _h, name in BUCKETS if name in stats},
-                  "frames": per_frame}
-        Path(args.json).write_text(json.dumps(report, indent=1))
+        Path(args.json).write_text(json.dumps(
+            {"status": args.status, "iou": args.iou,
+             "class_agnostic": args.class_agnostic,
+             "model": cfg["detection"].get("model"),
+             "confidence": cfg["detection"].get("confidence"),
+             "track_share": round(share, 3), "distinct_tracks": distinct,
+             **tally.summary(), "frames_detail": per_frame}, indent=1))
         print(f"\nfull report written to {args.json}")
     return 0
 

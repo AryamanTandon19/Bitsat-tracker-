@@ -114,6 +114,42 @@ the workbench could produce it. Caveat printed by the harness itself: 94% of
 those labels come from one followed object, so it measures that person at that
 distance, not the camera in general.
 
+### 1.4b Training the module on public footage
+
+| Tool | What it does |
+|---|---|
+| `prelabel.py` | A big slow model (`yolo11m-seg` @1280, conf 0.12) proposes outlines as **drafts**; a person corrects and approves them in `/train`. 1423 proposals across 9 clips in ~60s. |
+| `sweep_detector.py` | Runs many detector configs over the *same* frames and prints recall by object size against seconds/frame. |
+| `export_yolo_dataset.py` | Approved annotations → YOLO dataset, **split by clip** (never by frame — frames of one tracked object are near-duplicates and random splitting inflates validation). |
+| `app/measure.py` | The one matching rule, shared by both harnesses so they cannot disagree. |
+
+**Do the config sweep before any training.** Measured on 52 pre-labelled MEVA frames:
+
+| configuration | recall | s/frame | 40–80px objects |
+|---|---|---|---|
+| yolo11n @640 conf0.35 *(production)* | 47.8% | 0.04 | **6%** |
+| yolo11n @1280 conf0.15 | 69.1% | 0.11 | 40% |
+| yolo11s @1280 conf0.15 | **79.8%** | 0.27 | **63%** |
+
++32 points of recall for 6.3× the inference time, and on the size band where
+people live it is 6% → 63%. That is a config change, not a training run. It is
+**not applied** — 0.27 s/frame is ~3.5 fps on one CPU camera, so it is a real
+trade against how many cameras one box can watch.
+
+**The finding that matters most.** Night footage of the same camera
+(`--hours night --spread` now fetches it; 2018-03-11 23:55, mean brightness 30
+vs ~110 by day). Across 9 frames, with the pipeline's own low-light
+enhancement applied (raises mean to 88):
+
+* daylight, same camera: strong model 332 objects (220 cars, 72 people), production 143
+* **night: strong model 10 objects — classed `bench`, `cow`, `fire hydrant`. Production 0.**
+
+Those classes are a model fitting sensor noise, not seeing a car park. Whether
+the lot was also empty needs a human to label it, which is exactly why night
+clips must be in the test set. But a product whose premise is overnight
+vehicle security cannot be evaluated on daylight alone, and nothing measured
+so far says it works after dark.
+
 ### 1.5 Where it runs
 
 | Environment | URL / entry | Purpose | State |
