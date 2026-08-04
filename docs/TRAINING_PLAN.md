@@ -176,13 +176,35 @@ This single change is worth more than any architecture swap.
 | Class | Source | Status |
 |---|---|---|
 | Positives — break-in, vehicle tampering | UCF-Crime (Stealing / Burglary / Vandalism / Robbery) | Manual download; you used it before |
-| **Normal + hard negatives** | MEVA — **329 hours verified reachable**, free, CC BY-4.0 | `fetch_testset.py` already pulls it |
-| Site-specific hard negatives | Your own pilot footage | Later, and worth more than all of the above |
+| Empty-car-park negatives | MEVA — **329 hours verified reachable**, free, CC BY-4.0 | `fetch_testset.py` already pulls it |
+| **Hard negatives — people using cars normally** | **Not yet sourced.** See below. | **The gap** |
+| Site-specific hard negatives | Your own pilot footage | Worth more than all of the above |
 
-MEVA is the asset here. Your stated lesson — false alarms are more dangerous
-than misses — means the *negative* class is what you are short of, and MEVA is
-329 hours of exactly that: people walking to cars, opening doors, loading
-boots, deliveries, maintenance, reversing, standing around.
+**A claim in the first draft of this plan was wrong, and measuring it is what
+found out.** It said MEVA is "329 hours of exactly that: people walking to
+cars, opening doors, loading boots, deliveries, maintenance, reversing". That
+was an assumption, never checked.
+
+Measured over 78 mined clips of camera G424 — 598 seconds, 378 candidate
+(person, vehicle) pairs:
+
+* **0 pairs** came within half a vehicle-radius of a car.
+* **32 pairs** came within one radius.
+* The single closest approach in the entire set is **a cyclist riding past a
+  parked van** at 0.61 radii — verified by rendering the frame.
+
+MEVA G424 is a car park with cars *parked in it* and people walking and
+cycling *past* them. It is an excellent source of "nothing is happening" and a
+poor source of the hard negatives this product lives or dies by — a resident
+unlocking a boot, a delivery at a door, someone leaning on a bonnet.
+
+Where those have to come from instead:
+1. **Other MEVA cameras** — G341 (coach and service vehicles), G301 (garage
+   forecourt), G506 (entrance with parked cars) see vehicles at much closer
+   range. Untested; worth one mining run each.
+2. **Staged footage in your own car park.** Half an hour of you and a friend
+   unlocking doors, loading a boot, standing around and making a delivery is
+   worth more than another hundred hours of MEVA, and it is your camera.
 
 ### 3.2 Storage-safe cycle — **implemented, `training/clipmine.py`**
 
@@ -358,7 +380,7 @@ Every step: branch, change, `pytest`, commit. Rollback is `git checkout`.
 | ~~2~~ | ~~`clipmine.py`~~ — **done**; run it for 500 MEVA normals | no | ✅ |
 | **3** | `profile_gpu.py` on your laptop | no | 1 hour |
 | ~~4~~ | ~~Feature extractor~~ — **done**, `training/features.py` | no | ✅ |
-| **5** | **Tier 0 GBM baseline + measured FP/hour** | CPU only | 1 day |
+| ~~5~~ | ~~Tier 0 baseline~~ — **built**, `training/tier0.py`; the number is blocked on data, see §6b | CPU | ⚠️ |
 | **6** | `clipmine.py` for UCF positives — 400 clips | no | 2 days |
 | **7** | Crop extractor (person∪vehicle, +40%, 128×128) | no | 1 day |
 | **8** | **Tier 1: frozen encoder + GRU head on crops** | ~1 GB | 2 days |
@@ -369,6 +391,43 @@ Every step: branch, change, `pytest`, commit. Rollback is `git checkout`.
 
 Roughly **three weeks**, and you have a measurable false-alarm number by the
 end of step 5 — before any video model is trained.
+
+### 6b. What step 5 actually produced, and why it is not a number yet
+
+`training/extract.py` runs the **production** detector over mined clips and
+writes feature rows; `training/tier0.py` scores them; and
+`training/evaluate_continuous.py` walks whole videos with a sliding window and
+passes firings through the real `app.incidents.IncidentGate`.
+
+All three ran on real footage. The result was **0 alerts per hour** — and that
+is not a result, for three reasons found in order:
+
+1. **The first attempt was arithmetic, not measurement.** Scored over
+   6-second clips, a gate asking for twelve unbroken seconds near a vehicle
+   can never fire. Clip length has to exceed the dwell threshold. Fixed by
+   measuring on continuous video, which is what step 12 asked for anyway.
+2. **The gate still cannot fire on this footage**, because nobody in it
+   approaches a car (§3.1). Zero of 378 pairs came within half a radius.
+3. **So the gate is unfalsified, not validated.** A rule that can never fire
+   has a perfect false-alarm rate and no value whatsoever.
+
+A positive control was run to prove the machinery works. Relaxing the gate
+until the data can reach it:
+
+| gate | firings | per hour |
+|---|---|---|
+| as shipped (12 s, straightness ≤ 0.45, touching) | 0 | 0.0 |
+| drop the contact requirement | 0 | 0.0 |
+| drop contact, 2 s dwell | 16 | **120.5** |
+| drop contact, 1 s dwell, straightness ≤ 0.9 | 19 | 143.1 |
+
+The machinery fires. It also shows a naive dwell-only rule would be **worse
+than the 47/hour the system already produces** — so the strict clauses are
+doing real work, and the gate is worth keeping once there is footage that can
+test it.
+
+**The blocker is data, not code.** Everything from here needs footage in which
+people actually use vehicles.
 
 ### Windows notes
 
