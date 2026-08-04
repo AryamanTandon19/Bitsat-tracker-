@@ -159,6 +159,26 @@ def test_standing_upright_shows_no_height_drop():
     assert pair_features(walk([500] * 6))["height_drop_ratio"] == 0.0
 
 
+# ------------------------------------------------------- static furniture
+def test_something_that_never_moves_reads_as_completely_still():
+    """Measured on real footage: 70% of candidate pairs involved a "person"
+    that never moved a pixel, and rendering one showed a fire hydrant detected
+    as a person in 45 of 45 frames at median confidence 0.46."""
+    hydrant = pair_features(walk([500] * 12, step_s=2.0))
+    assert hydrant["stillness"] == 1.0
+
+
+def test_a_person_who_shifts_while_waiting_is_not_furniture():
+    """The distinction that matters: a loiterer stands still too, and that is
+    the behaviour we are hunting. Furniture never moves at all."""
+    waiting = pair_features(walk([500, 503, 499, 506, 501, 508], step_s=2.0))
+    assert waiting["stillness"] < 1.0
+
+
+def test_someone_walking_is_not_still_at_all():
+    assert pair_features(walk([100, 300, 500, 700]))["stillness"] == 0.0
+
+
 # ---------------------------------------------------------------- context
 def test_the_hour_is_cyclical_so_midnight_is_next_to_one_am():
     a = pair_features([], Context(hour=23.5))

@@ -198,13 +198,59 @@ cycling *past* them. It is an excellent source of "nothing is happening" and a
 poor source of the hard negatives this product lives or dies by — a resident
 unlocking a boot, a delivery at a door, someone leaning on a bonnet.
 
-Where those have to come from instead:
-1. **Other MEVA cameras** — G341 (coach and service vehicles), G301 (garage
-   forecourt), G506 (entrance with parked cars) see vehicles at much closer
-   range. Untested; worth one mining run each.
-2. **Staged footage in your own car park.** Half an hour of you and a friend
-   unlocking doors, loading a boot, standing around and making a delivery is
-   worth more than another hundred hours of MEVA, and it is your camera.
+**The other cameras were surveyed and are no better.**
+`training/survey_cameras.py` samples one source per camera and reports how
+close people actually get to vehicles. With a *sensitive* detector (yolo11s
+@1280 conf 0.15 — the production one answers a different question):
+
+| camera | people | vehicles | closest approach | frames within 1 radius |
+|---|---|---|---|---|
+| G424 car park | 0 | 485 | — | 0 |
+| G340 car park at distance | 0 | 136 | — | 0 |
+| G341 service vehicles | 0 | 0 | — | 0 |
+| G301 garage forecourt | 61 | 93 | 9.98 | 0 |
+| G506 entrance + parked cars | 0 | 324 | — | 0 |
+
+**No MEVA camera in this sample shows anyone at a vehicle.** So:
+
+1. MEVA stays what it is: an excellent source of "nothing is happening".
+2. **Staged footage in your own car park is now the critical path.** Half an
+   hour of you and a friend unlocking doors, loading a boot, standing around
+   and making a delivery is worth more than another hundred hours of MEVA —
+   and it is your camera, your height, your light.
+
+### 3.1b The fire hydrant
+
+Surveying with the production detector first, then the sensitive one, produced
+a contradiction: the *more* capable model found **more vehicles and zero
+people** on the identical video. That is not a sensitivity effect, so it was
+chased down.
+
+On one frame, raw model, same class filter: `yolo11n@640 conf0.35` finds one
+person; `yolo11s@1280 conf0.15` finds none. Rendering the box showed **a red
+fire hydrant**, detected as a person in **45 of 45 sampled frames** at a
+median confidence of **0.46** — comfortably above the live threshold of 0.35.
+
+Then, across the whole extracted feature set: **264 of 378 candidate pairs
+(70%) involve a "person" that never moved a pixel.**
+
+A static object misread as a person, permanently beside a car park, is a
+standing generator of loitering alerts — it is always present, always near
+vehicles, and never leaves. This is a strong candidate mechanism for the
+47 false alarms per hour, and it was invisible until the features made
+"never moved" measurable.
+
+Two consequences:
+
+* A `stillness` feature was appended (see `training/features.py`). It does not
+  say "ignore anything that stands still" — a loiterer stands still too, and
+  that is the behaviour being hunted. It says *how completely* still, and lets
+  the model weigh that against how long the thing was there. Furniture sits at
+  1.0 for ever; a person waiting eventually shifts.
+* The real fix is a per-camera map of places where a "person" is detected in a
+  large fraction of all frames over hours. That is furniture, learnable per
+  site, and it is the Learned Normalcy idea from the older plan — now with a
+  measured reason to build it.
 
 ### 3.2 Storage-safe cycle — **implemented, `training/clipmine.py`**
 

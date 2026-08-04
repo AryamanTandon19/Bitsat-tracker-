@@ -75,7 +75,25 @@ FEATURES = (
     "people_in_frame",
     "vehicles_in_frame",
     "camera_false_alarm_rate",
+    # Appended after a measurement, not designed in: 70% of the candidate
+    # pairs found on real MEVA footage involved a "person" that never moved a
+    # pixel. Rendering one showed a red fire hydrant, detected as a person in
+    # 45 of 45 frames at a median confidence of 0.46 — comfortably above the
+    # live threshold. Static furniture misread as a person, permanently beside
+    # a car park, is a standing generator of loitering alerts.
+    #
+    # This does NOT say "ignore anything that stands still" — a loiterer
+    # stands still too, and that is the behaviour we are hunting. It says how
+    # completely still it was, and lets the model weigh that against how long
+    # it was there. Furniture never moves across the whole window; a person
+    # waiting eventually shifts.
+    "stillness",
 )
+
+# Below this mean speed (in radii per second) an object has not meaningfully
+# moved at all. Set from the observed split between static detections and
+# people who were merely waiting.
+STILL_SPEED = 0.02
 
 
 @dataclass
@@ -263,6 +281,11 @@ def pair_features(frames: list, ctx: Context | None = None,
         if mean > 1e-9 and len(speeds) > 1:
             var = sum((s - mean) ** 2 for s in speeds) / len(speeds)
             out["speed_variation"] = round(math.sqrt(var) / mean, 4)
+        # 1.0 = did not move at all across the window. Furniture misread as a
+        # person sits at 1.0; somebody waiting by a door drifts below it.
+        out["stillness"] = round(
+            max(0.0, 1.0 - (max(speeds) / STILL_SPEED)), 4) \
+            if max(speeds) < STILL_SPEED else 0.0
 
     # heading reversals: only count steps big enough to have a real direction
     headings = [h for a, b, step in zip(pts, pts[1:], steps)
