@@ -161,22 +161,58 @@ than misses — means the *negative* class is what you are short of, and MEVA is
 329 hours of exactly that: people walking to cars, opening doors, loading
 boots, deliveries, maintenance, reversing, standing around.
 
-### 3.2 Storage-safe cycle (your spec, made concrete)
+### 3.2 Storage-safe cycle — **implemented, `training/clipmine.py`**
 
 ```
-training/clipmine.py --source ucf --batch-gb 2
-  1. download <= 2 GB of raw video
-  2. read annotations / temporal bounds
-  3. cut 4-8 s clips at 128x128 (and crops), CRF 28
-  4. verify: decodes, right length, non-black, has the labelled object
-  5. append to manifest.jsonl  (one row per clip)
+python -m training.clipmine --source meva --camera G424 --sources 20 --clips 10
+  1. download one source video at a time, to a byte budget
+  2. plan clips SPREAD across it, not taken from the front
+  3. cut 4-8 s clips at 640px wide, CRF 28
+  4. verify: decodes, right length, not blank, not frozen, has the object
+  5. append to manifest.jsonl after each clip (crash-safe)
   6. DELETE the raw video
-  7. next batch
+  7. next source
 ```
 
-A verified 6 s clip at 128×128 is **~150 KB**. 3,000 clips ≈ **450 MB**. The
-whole training set fits in under a gigabyte; the raw footage never
-accumulates.
+**Correction: clips are stored at 640px wide, not 128×128.** The first draft
+of this plan said 128, since that is what the model reads. That would have
+quietly foreclosed §2.3 — cropping to the person–vehicle pair — because a crop
+cannot be taken from a thumbnail whose pixels are gone. Downscaling to 128
+happens at training time, from the crop, where it stays reversible.
+
+Measured on a real run (3 MEVA sources, 300 MB downloaded): **13 clips kept, 0
+rejected, 0 raw files left, 40 KB per clip.** A near-static car park
+compresses hard, so 3,000 clips is about **0.11 GB** — far cheaper than the
+450 MB estimated here before it was measured.
+
+### 3.2b Two calibration bugs the first real run exposed
+
+Both were in this tooling, not the footage, and both would have silently
+wrecked the dataset:
+
+**The seek.** Asking ffmpeg for six seconds three ways, on one real MEVA
+source (480 frames, 30 fps):
+
+| | frames | duration |
+|---|---|---|
+| `-ss 0` **before** `-i` | 118 | 3.93 s — a third of the clip lost |
+| `-ss 0` **after** `-i` | 178 | 5.93 s ✅ |
+| `-ss 5` before `-i` | 180 | 6.00 s ✅ |
+
+Fast seek is wrong at the very start of these files and fine in the middle.
+`cut()` now does the standard hybrid — fast seek to two seconds short, then
+accurate seek for the remainder — and every start position lands within
+tolerance.
+
+**The motion floor.** The first run rejected MEVA's quiet car park for
+"nothing moves" (largest frame-to-frame change 0.42–0.49 against a floor of
+0.6). For a security product that is exactly backwards: **"nothing is
+happening" is the negative class**, and uneventful footage is what the system
+must learn to stay quiet through. The check exists to catch a *stalled
+stream* — identical frames — not a still scene, so the floor dropped to 0.1.
+Real footage always carries sensor noise, which separates the two cleanly.
+
+The rejection rate went from 4-of-6 to 0-of-13.
 
 ### 3.3 Manifest — the contract everything else reads
 
@@ -296,7 +332,7 @@ Every step: branch, change, `pytest`, commit. Rollback is `git checkout`.
 |---|---|---|---|
 | ~~0~~ | ~~Live rising-edge incident logic~~ — **done**, `app/incidents.py` | no | ✅ |
 | ~~1~~ | ~~`training/` skeleton, manifest, split invariant~~ — **done** | no | ✅ |
-| **2** | `clipmine.py` for MEVA normals — 500 verified clips | no | 2 days |
+| ~~2~~ | ~~`clipmine.py`~~ — **done**; run it for 500 MEVA normals | no | ✅ |
 | **3** | `profile_gpu.py` on your laptop | no | 1 hour |
 | **4** | Feature extractor: candidate window → track feature vector | no | 2 days |
 | **5** | **Tier 0 GBM baseline + measured FP/hour** | CPU only | 1 day |

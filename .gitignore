@@ -22,3 +22,6 @@ models/
 # test-set clips (footage stays local)
 testset/clips/*
 !testset/clips/.gitkeep
+
+# mined training clips — the manifest is the record, the clips are rebuildable
+training/data/
