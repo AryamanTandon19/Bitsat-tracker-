@@ -109,6 +109,29 @@ cannot drift on scene appearance because it never sees pixels.
 #1 is false alarms and #4 is explainability, there is a real chance this is
 the answer and you never need a video model at all.
 
+**Implemented: `training/features.py`** — 25 features, pure Python, no pixels
+read. Measured separation on the scenarios that decide the product:
+
+| scenario | closest gap | longest close run | straightness | turns | crouch |
+|---|---|---|---|---|---|
+| resident walks to their car | 0.04 | 3.0 s | 1.00 | 0 | 0.00 |
+| delivery: approach, drop, leave | 0.18 | 4.8 s | 0.21 | 1 | 0.00 |
+| walking past in front of the car | 1.43 | 0.0 s | 1.00 | 0 | 0.00 |
+| **loitering at night** | 0.04 | **36.0 s** | **0.16** | **8** | 0.00 |
+| **working at the door, crouching** | 0.00 | **28.0 s** | **0.17** | 0 | **0.50** |
+
+Benign activity sits at 0–5 s of close contact and straightness 1.0; the two
+suspicious cases sit at 28–36 s and 0.16. That is a gap a gradient-boosted
+tree will find with a few hundred examples, and every column is a sentence a
+guard can check against the video.
+
+**A false-alarm source this exposed.** The first version counted "contact" as
+box overlap. On a camera looking down a car park, a person walking ten metres
+*in front of* a parked car overlaps it in every single frame — so every
+scenario, including plain walking past, reported "touching the vehicle".
+Contact now requires overlap **and** proximity on the ground (foot-to-foot,
+within half a vehicle radius). Walking past now reads "nothing notable".
+
 **Tier 1 — frozen image encoder + small temporal head. ~1 GB VRAM.**
 
 Run a frozen ResNet-18 or MobileNetV3 over the 16 frames of a **crop** around
@@ -334,7 +357,7 @@ Every step: branch, change, `pytest`, commit. Rollback is `git checkout`.
 | ~~1~~ | ~~`training/` skeleton, manifest, split invariant~~ — **done** | no | ✅ |
 | ~~2~~ | ~~`clipmine.py`~~ — **done**; run it for 500 MEVA normals | no | ✅ |
 | **3** | `profile_gpu.py` on your laptop | no | 1 hour |
-| **4** | Feature extractor: candidate window → track feature vector | no | 2 days |
+| ~~4~~ | ~~Feature extractor~~ — **done**, `training/features.py` | no | ✅ |
 | **5** | **Tier 0 GBM baseline + measured FP/hour** | CPU only | 1 day |
 | **6** | `clipmine.py` for UCF positives — 400 clips | no | 2 days |
 | **7** | Crop extractor (person∪vehicle, +40%, 128×128) | no | 1 day |
