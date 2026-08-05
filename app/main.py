@@ -94,6 +94,20 @@ class CameraPipeline(threading.Thread):
         self.slot_cfg = ctx.config.get("slots") or {}
         self.slots = None                            # built on the first frame
         self._slots_loaded = 0.0
+        # learned normalcy: what is permanently there, so it stops alarming.
+        # No-op unless enabled. Loaded from the DB so a reboot keeps its
+        # learning; furniture track ids are recomputed every frame.
+        from .normalcy import CameraNormalcy
+        self.normalcy_on = bool((ctx.config.get("normalcy") or {})
+                                .get("enabled", True))
+        self.normalcy = CameraNormalcy(name)
+        if self.normalcy_on:
+            try:
+                self.normalcy.load_rows(ctx.db.load_normalcy(name))
+            except Exception:
+                log.exception("[%s] could not load learned normalcy", name)
+        self._furniture_tids: set = set()
+        self._normalcy_saved = 0.0
 
     def stop(self):
         self._stop.set()
@@ -132,6 +146,26 @@ class CameraPipeline(threading.Thread):
                 frame = enhance_frame(frame, low_light)   # brighten before YOLO
 
             detections = self.detector.track(frame)
+
+            # Learn what is permanently here, and mark this frame's furniture.
+            # A "person" that never moves and is always in the same spot is a
+            # fire hydrant, not a loiterer — the measured cause of this system
+            # crying wolf. Events anchored only to furniture are dropped below.
+            if self.normalcy_on:
+                h, w = frame.shape[:2]
+                self.normalcy.observe(detections, w, h, ts)
+                self._furniture_tids = {
+                    d.track_id for d in detections
+                    if d.track_id is not None
+                    and self.normalcy.classify(d, w, h, ts).static}
+                if ts - self._normalcy_saved > 300:
+                    self._normalcy_saved = ts
+                    try:
+                        self.ctx.db.save_normalcy(self.cam_name,
+                                                  self.normalcy.to_rows())
+                    except Exception:
+                        log.exception("[%s] could not save learned normalcy",
+                                      self.cam_name)
 
             # plates: only on vehicle crops, throttled inside PlateReader
             plate_info = {}
@@ -254,6 +288,10 @@ class CameraPipeline(threading.Thread):
                             confidence=0.8 if theft_chain else 0.5))
 
             for ev in events:
+                if self._is_furniture_event(ev):
+                    log.info("[%s] dropped %s on learned furniture (tracks %s)",
+                             self.cam_name, ev.event_type, ev.track_ids)
+                    continue
                 self._handle_event(ev)
 
             # annotated frame for the dashboard — flagged culprits in green
@@ -347,6 +385,18 @@ class CameraPipeline(threading.Thread):
                 log.exception("[%s] could not record slot activity",
                               self.cam_name)
             log.info("[%s] slot: %s", self.cam_name, change.message())
+
+    def _is_furniture_event(self, ev) -> bool:
+        """True if this event is anchored ONLY to learned static furniture.
+
+        A camera-tamper or offline event has no track and is never dropped —
+        those are exactly the alerts that must always get through. An event
+        naming several objects survives if even one of them is a real, moving
+        thing: a person interacting with a bollard is still a person.
+        """
+        if not self.normalcy_on or not ev.track_ids:
+            return False
+        return all(tid in self._furniture_tids for tid in ev.track_ids)
 
     def _handle_event(self, ev):
         log.warning("EVENT [%s] %s: %s", ev.severity, ev.event_type, ev.description)

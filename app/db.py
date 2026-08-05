@@ -285,6 +285,21 @@ CREATE TABLE IF NOT EXISTS cameras (
     last_ok REAL,                            -- last time a frame was decoded
     last_error TEXT
 );
+-- Learned normalcy: per camera, how persistently each class is seen in each
+-- grid cell. This is what lets the system decide, on its own and from nothing
+-- but time, that a "person" who never moves and is always in the same spot is
+-- a fire hydrant, not a loiterer. Saved so a reboot does not throw the week of
+-- learning away.
+CREATE TABLE IF NOT EXISTS normalcy (
+    camera TEXT NOT NULL,
+    cls TEXT NOT NULL,
+    col INTEGER NOT NULL,
+    row INTEGER NOT NULL,
+    occupancy REAL NOT NULL,
+    observations REAL NOT NULL,
+    last_ts REAL,
+    PRIMARY KEY (camera, cls, col, row)
+);
 """
 
 # columns added after first release — applied with ALTER TABLE on startup so
@@ -1248,6 +1263,31 @@ class Database:
             self.append_audit(actor or "system", "CAMERA_CHANGE",
                               {"op": "delete", "name": cam["name"]})
         return gone
+
+    # -- learned normalcy ----------------------------------------------------
+    def save_normalcy(self, camera: str, rows: list) -> None:
+        """Replace a camera's learned background in one transaction.
+
+        Replace rather than upsert: the in-memory map is the source of truth
+        and it prunes empty cells, so writing exactly what it holds keeps the
+        table from accumulating cells the model has already forgotten.
+        """
+        with self._lock:
+            self._conn.execute("DELETE FROM normalcy WHERE camera = ?",
+                               (camera,))
+            self._conn.executemany(
+                "INSERT INTO normalcy (camera, cls, col, row, occupancy,"
+                " observations, last_ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [(camera, r["cls"], r["col"], r["row"], r["occupancy"],
+                  r["observations"], r["last_ts"]) for r in rows])
+            self._conn.commit()
+
+    def load_normalcy(self, camera: str) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT cls, col, row, occupancy, observations, last_ts"
+                " FROM normalcy WHERE camera = ?", (camera,)).fetchall()
+            return [dict(r) for r in rows]
 
     def delete_object_track(self, track_id: int) -> bool:
         with self._lock:

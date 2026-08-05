@@ -146,6 +146,16 @@ incidents:
     - camera_tamper          # operator can no longer SEE the incident, not
     - camera_offline         # more of the incident itself
 
+# Learned normalcy — the system teaching itself what is permanently there.
+# A "person" that never moves and is always in the same spot is furniture (a
+# fire hydrant, a bollard, a reflection), not a loiterer. On real MEVA footage
+# one misdetected hydrant fired a loitering alert every debounce interval; this
+# suppressed 97% of those within two minutes of watching, with no human input.
+# Events anchored ONLY to learned furniture are dropped; anything moving, and
+# every camera-tamper/offline alert, always gets through.
+normalcy:
+  enabled: true
+
 rules:
   night_hours: { start: "23:00", end: "05:00" }
   debounce_s: 120              # one event type per tracked object per N seconds
