@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from app import dashboard
 from app.analyze import VideoAnalyzer
 from app.db import Database
+from .conftest import signin
 from app.main import load_config
 from tests.make_sample_video import make
 
@@ -38,6 +39,7 @@ def test_upload_endpoint_accepts_video(ctx, tmp_path):
     vid = str(tmp_path / "s.mp4")
     make(vid, seconds=2, fps=10)
     client = TestClient(dashboard.create_app(ctx))
+    signin(client, ctx.db, "admin")
     with open(vid, "rb") as f:
         r = client.post("/api/analyze", files={"file": ("s.mp4", f, "video/mp4")},
                         data={"zones_from": ""})
@@ -53,6 +55,7 @@ def test_upload_rejects_when_analyzer_disabled(ctx, tmp_path):
     vid = str(tmp_path / "s.mp4")
     make(vid, seconds=1, fps=10)
     client = TestClient(dashboard.create_app(ctx))
+    signin(client, ctx.db, "admin")
     with open(vid, "rb") as f:
         r = client.post("/api/analyze", files={"file": ("s.mp4", f, "video/mp4")})
     assert r.status_code == 503
@@ -60,11 +63,13 @@ def test_upload_rejects_when_analyzer_disabled(ctx, tmp_path):
 
 def test_cameras_endpoint(ctx):
     client = TestClient(dashboard.create_app(ctx))
+    signin(client, ctx.db, "admin")
     assert client.get("/api/cameras").json() == ["gate"]
 
 
 def test_upload_rejects_non_video_extension(ctx):
     client = TestClient(dashboard.create_app(ctx))
+    signin(client, ctx.db, "admin")
     r = client.post("/api/analyze",
                     files={"file": ("evil.exe", b"MZ...", "application/octet-stream")})
     assert r.status_code == 400

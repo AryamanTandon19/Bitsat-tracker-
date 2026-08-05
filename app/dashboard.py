@@ -96,15 +96,25 @@ def create_app(ctx) -> FastAPI:
     # resident. Both need a real account behind them, not a typed-in name.
     def current_user(request: Request) -> dict | None:
         token = request.cookies.get(auth.SESSION_COOKIE)
-        if not token:
-            return None
-        th = auth.token_hash(token)
-        user = ctx.db.session_user(th)
-        if user is None:
-            return None
-        # slide the expiry so a working shift is not interrupted mid-way
-        ctx.db.touch_session(th, auth.session_expiry())
-        return user
+        if token:
+            th = auth.token_hash(token)
+            user = ctx.db.session_user(th)
+            if user is not None:
+                # slide the expiry so a shift is not cut off mid-way
+                ctx.db.touch_session(th, auth.session_expiry())
+                return user
+        # HTTP Basic fallback: when the legacy shared-password gate is enabled,
+        # the app-level dependency has already authenticated the request before
+        # it reaches any endpoint, so a request that got here IS the configured
+        # admin. Treating it as an admin session lets the same require() guard
+        # protect every endpoint whether the deployment uses Basic or the real
+        # session system — and it is what keeps the resident registry, live
+        # video and recorded clips closed on a hosted install that turned the
+        # session login off.
+        if auth_cfg.get("enabled", True):
+            return {"username": str(auth_cfg.get("username", "admin")),
+                    "role": "admin"}
+        return None
 
     def require(permission: str):
         def dep(request: Request) -> dict:
@@ -255,7 +265,7 @@ def create_app(ctx) -> FastAPI:
             await asyncio.sleep(0.15)
 
     @app.get("/stream/{camera}")
-    def stream(camera: str):
+    def stream(camera: str, user: dict = Depends(require("triage"))):
         if camera not in ctx.workers:
             raise HTTPException(404, "unknown camera")
         return StreamingResponse(mjpeg_gen(camera),
@@ -263,7 +273,7 @@ def create_app(ctx) -> FastAPI:
 
     # -------------------------------------------------------------- events
     @app.get("/api/events")
-    def events(limit: int = 100):
+    def events(limit: int = 100, user: dict = Depends(require("triage"))):
         rows = ctx.db.recent_events(limit)
         # attach the triage verdict so the operator app can show what a
         # colleague has already dealt with instead of asking twice
@@ -318,7 +328,7 @@ def create_app(ctx) -> FastAPI:
         return {"ok": True, "id": nid, "recipients": sent}
 
     @app.get("/api/status")
-    def status():
+    def status(user: dict = Depends(require("triage"))):
         return {n: {"online": w.online,
                     "last_frame_age_s": None if not w.last_frame_ts else
                     round(__import__("time").time() - w.last_frame_ts, 1)}
@@ -326,13 +336,14 @@ def create_app(ctx) -> FastAPI:
 
     # ------------------------------------------------------------ registry
     @app.get("/api/registry")
-    def registry():
+    def registry(user: dict = Depends(require("triage"))):
         return ctx.db.list_vehicles()
 
     @app.post("/api/registry")
     def registry_add(plate: str = Form(...), owner_name: str = Form(""),
                      owner_phone: str = Form(""), flat_number: str = Form(""),
-                     telegram_chat_id: str = Form("")):
+                     telegram_chat_id: str = Form(""),
+                     user: dict = Depends(require("registry"))):
         p = normalize_plate(plate)
         if not p:
             raise HTTPException(400, "invalid plate")
@@ -341,7 +352,7 @@ def create_app(ctx) -> FastAPI:
         return {"ok": True, "plate": p}
 
     @app.delete("/api/registry/{plate}")
-    def registry_remove(plate: str):
+    def registry_remove(plate: str, user: dict = Depends(require("registry"))):
         if not ctx.db.remove_vehicle(normalize_plate(plate), actor="dashboard"):
             raise HTTPException(404, "plate not found")
         return {"ok": True}
@@ -1247,14 +1258,14 @@ def create_app(ctx) -> FastAPI:
 
     # --------------------------------------------------------------- clips
     @app.get("/clips/{clip_id}")
-    def clip_file(clip_id: int):
+    def clip_file(clip_id: int, user: dict = Depends(require("triage"))):
         clip = ctx.db.get_clip(clip_id)
         if not clip or clip["deleted"] or not Path(clip["path"]).exists():
             raise HTTPException(404, "clip not available")
         return FileResponse(clip["path"], media_type="video/mp4")
 
     @app.post("/api/clips/{clip_id}/delete")
-    def clip_delete(clip_id: int, name: str = Form(...), reason: str = Form(...)):
+    def clip_delete(clip_id: int, name: str = Form(...), reason: str = Form(...), user: dict = Depends(require("registry"))):
         if not name.strip() or not reason.strip():
             raise HTTPException(400, "name and reason are required")
         if not clips_mod.delete_clip_file(ctx.db, clip_id, name.strip(), reason.strip()):
@@ -1265,7 +1276,8 @@ def create_app(ctx) -> FastAPI:
     @app.post("/api/analyze")
     async def analyze_upload(file: UploadFile = File(...),
                              zones_from: str = Form(""),
-                             ai_review: str = Form("")):
+                             ai_review: str = Form(""),
+                             user: dict = Depends(require("triage"))):
         analyzer = getattr(ctx, "analyzer", None)
         if analyzer is None:
             raise HTTPException(503, "video analysis is disabled")
@@ -1300,7 +1312,7 @@ def create_app(ctx) -> FastAPI:
         return {"job_id": job.id}
 
     @app.get("/api/analyze/{job_id}")
-    def analyze_status(job_id: str):
+    def analyze_status(job_id: str, user: dict = Depends(require("triage"))):
         analyzer = getattr(ctx, "analyzer", None)
         job = analyzer.get(job_id) if analyzer else None
         if job is None:
@@ -1308,7 +1320,7 @@ def create_app(ctx) -> FastAPI:
         return job.public()
 
     @app.get("/api/analyze/{job_id}/video")
-    def analyze_video_file(job_id: str):
+    def analyze_video_file(job_id: str, user: dict = Depends(require("triage"))):
         analyzer = getattr(ctx, "analyzer", None)
         job = analyzer.get(job_id) if analyzer else None
         if job is None or not job.annotated_path or \
@@ -1317,12 +1329,13 @@ def create_app(ctx) -> FastAPI:
         return FileResponse(job.annotated_path, media_type="video/mp4")
 
     @app.get("/api/cameras")
-    def cameras():
+    def cameras(user: dict = Depends(require("triage"))):
         return [c.get("name") for c in ctx.config.get("cameras", [])]
 
     # ------------------------------------------------ Claude tuning chatbot
     @app.post("/api/assistant")
-    async def assistant_chat(request: Request):
+    async def assistant_chat(request: Request,
+                             user: dict = Depends(require("users"))):
         asst = getattr(ctx, "assistant", None)
         body = await request.json()
         message = (body.get("message") or "").strip()
@@ -1342,7 +1355,8 @@ def create_app(ctx) -> FastAPI:
         return result
 
     @app.post("/api/assistant/apply")
-    async def assistant_apply(request: Request):
+    async def assistant_apply(request: Request,
+                              user: dict = Depends(require("users"))):
         asst = getattr(ctx, "assistant", None)
         body = await request.json()
         patch = body.get("patch") or {}
@@ -1352,7 +1366,7 @@ def create_app(ctx) -> FastAPI:
 
     # -------------------------------------------------------- cost meter
     @app.get("/api/costs")
-    def costs():
+    def costs(user: dict = Depends(require("users"))):
         usd_to_inr = float((ctx.config.get("ai_review") or {})
                            .get("usd_to_inr", 90.0))
         summary = ctx.db.ai_cost_summary()
@@ -1366,7 +1380,7 @@ def create_app(ctx) -> FastAPI:
 
     # ------------------------------------------------------------ audit
     @app.get("/api/audit")
-    def audit(limit: int = 200):
+    def audit(limit: int = 200, user: dict = Depends(require("users"))):
         rows = ctx.db.audit_rows()
         return rows[-limit:]
 
@@ -2099,20 +2113,38 @@ function seekTo(t){
 }
 
 // ---- investor login gate (demo-grade, client-side) --------------------
-const AUTH_USERS={admin:"password1101",YC:"11012235"};
-const AUTH_KEY="vg_auth_user";
-function doLogin(e){e.preventDefault();
+// Real server-side login. The old version compared a password in JavaScript
+// with the credentials sitting in the page source — anyone could read them in
+// view-source, and curl never saw the check at all. Every data endpoint on
+// this console now requires a real session, so the login has to create one.
+async function doLogin(e){e.preventDefault();
  const u=(document.getElementById('lg_user').value||'').trim();
  const p=document.getElementById('lg_pass').value||'';
- if(AUTH_USERS[u]&&AUTH_USERS[u]===p){try{localStorage.setItem(AUTH_KEY,u);}catch(_){}showApp(u);}
- else{document.getElementById('lg_err').textContent='Invalid username or password.';}
+ document.getElementById('lg_err').textContent='';
+ try{
+  const r=await fetch('/api/login',{method:'POST',
+    body:new URLSearchParams({username:u,password:p})});
+  if(!r.ok){document.getElementById('lg_err').textContent=
+    'Invalid username or password.';return false;}
+  const me=await r.json();
+  showApp(me.name||u);
+ }catch(_){document.getElementById('lg_err').textContent=
+   'Could not reach the server.';}
  return false;}
-function signOut(){try{localStorage.removeItem(AUTH_KEY);}catch(_){}location.reload();}
-function showApp(u){document.getElementById('login-gate').style.display='none';
+async function signOut(){try{await fetch('/api/logout',{method:'POST'});}catch(_){}
+ location.reload();}
+function showApp(name){document.getElementById('login-gate').style.display='none';
  document.body.classList.add('authed');
- const el=document.getElementById('app-user');if(el)el.textContent=u;}
-(function(){let u=null;try{u=localStorage.getItem(AUTH_KEY);}catch(_){}
- if(u){showApp(u);}else{document.getElementById('login-gate').style.display='flex';}})();
+ const el=document.getElementById('app-user');if(el)el.textContent=name;}
+// On load, ask the server whether we already have a session. The httpOnly
+// cookie is invisible to JS, so the server is the only source of truth.
+(async function(){
+ try{
+  const r=await fetch('/api/me',{cache:'no-store'});
+  if(r.ok){const me=await r.json();showApp(me.name||me.username||'');return;}
+ }catch(_){}
+ document.getElementById('login-gate').style.display='flex';
+})();
 
 loadCams();
 refresh(); setInterval(refresh,5000);
