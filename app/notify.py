@@ -123,9 +123,11 @@ class TelegramNotifier:
             incident_id = row["incident_id"]
             is_update = self.db.notifications_for_incident(incident_id) > 0
 
+        location = self.db.describe_camera(event.camera)
         text = self.format_message(event, vlm_description,
                                    language=self.language,
-                                   incident_id=incident_id, is_update=is_update)
+                                   incident_id=incident_id, is_update=is_update,
+                                   location=location)
         keyboard = build_feedback_keyboard(event_id, self.language) \
             if self.feedback_buttons else None
         for label, chat in chats.items():
@@ -140,7 +142,8 @@ class TelegramNotifier:
     @staticmethod
     def format_message(event, vlm_description: str | None = None,
                        language: str = "en", incident_id: int | None = None,
-                       is_update: bool = False) -> str:
+                       is_update: bool = False,
+                       location: str | None = None) -> str:
         t = datetime.fromtimestamp(event.ts, IST).strftime("%d %b %Y %H:%M:%S IST")
         desc = vlm_description or event.description
         lb = LABELS.get(language, LABELS["en"])
@@ -157,7 +160,8 @@ class TelegramNotifier:
         lines = [head]
         if is_update:
             lines.append(f"\U0001F501 {lb['update']}")
-        lines.append(f"\U0001F4CD {lb['camera']}: {event.camera}  |  \U0001F550 {t}")
+        lines.append(f"\U0001F4CD {lb['camera']}: {location or event.camera}"
+                     f"  |  \U0001F550 {t}")
         lines.append(f"\U0001F697 {lb['plate']}: {event.plate or lb['unreadable']}")
         lines.append(f"\U0001F4C4 {desc}")
         return "\n".join(lines)

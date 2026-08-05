@@ -33,6 +33,7 @@ from . import assistant as assistant_mod
 from . import auth
 from . import clips as clips_mod
 from . import damage as damage_mod
+from . import db as db_mod
 from . import discovery
 from . import train as train_mod
 from . import operator as operator_mod
@@ -329,9 +330,12 @@ def create_app(ctx) -> FastAPI:
 
     @app.get("/api/status")
     def status(user: dict = Depends(require("triage"))):
+        contexts = ctx.db.list_camera_context()
         return {n: {"online": w.online,
                     "last_frame_age_s": None if not w.last_frame_ts else
-                    round(__import__("time").time() - w.last_frame_ts, 1)}
+                    round(__import__("time").time() - w.last_frame_ts, 1),
+                    "location": db_mod.describe_camera_context(
+                        n, contexts.get(n))}
                 for n, w in ctx.workers.items()}
 
     # ------------------------------------------------------------ registry
@@ -1020,20 +1024,48 @@ def create_app(ctx) -> FastAPI:
     @app.get("/api/cameras/list")
     def cameras_list(user: dict = Depends(require("registry"))):
         """Configured cameras and their live state. Passwords masked."""
+        contexts = ctx.db.list_camera_context()
+
+        def _ctx(name):
+            c = contexts.get(name, {})
+            return {"label": c.get("label", ""), "block": c.get("block", ""),
+                    "facing": c.get("facing", ""), "notes": c.get("notes", ""),
+                    "location": db_mod.describe_camera_context(name, c or None)}
+
         out = []
         for cam in ctx.db.list_cameras():
             worker = ctx.workers.get(cam["name"])
             out.append({**cam, "url": discovery.mask(cam["url"]),
                         "running": worker is not None,
                         "online": bool(worker and worker.online),
-                        "from": "database"})
+                        "from": "database", **_ctx(cam["name"])})
         for cam in ctx.config.get("cameras", []):
             worker = ctx.workers.get(cam["name"])
             out.append({"name": cam["name"], "url": discovery.mask(cam["url"]),
                         "enabled": 1, "running": worker is not None,
                         "online": bool(worker and worker.online),
-                        "from": "config.yaml"})
+                        "from": "config.yaml", **_ctx(cam["name"])})
         return out
+
+    @app.post("/api/cameras/context")
+    def cameras_context(name: str = Form(...), label: str = Form(""),
+                        block: str = Form(""), facing: str = Form(""),
+                        notes: str = Form(""),
+                        user: dict = Depends(require("registry"))):
+        """Tell the system where a camera is and what it faces.
+
+        Keyed by name, so it works the same for a camera added here and one
+        defined in config.yaml. This is what makes an alert say "B-Block gate,
+        facing main road" instead of the bare device name.
+        """
+        name = name.strip()
+        if not name:
+            raise HTTPException(400, "which camera?")
+        ctx.db.set_camera_context(name, label=label, block=block,
+                                  facing=facing, notes=notes,
+                                  actor=user["username"])
+        return {"ok": True, "name": name,
+                "location": ctx.db.describe_camera(name)}
 
     @app.post("/api/cameras/scan")
     def cameras_scan(network: str = Form(...),
@@ -1789,8 +1821,30 @@ footer{position:fixed;bottom:0;right:0;z-index:30;padding:6px 16px;font-size:10p
  <div class="glass tbl-card">
   <div class="tbl-head">Connected</div>
   <div class="tblwrap"><table id="cams-table"><thead><tr>
-   <th>Name</th><th>Stream</th><th>Size</th><th>State</th><th>Source</th><th></th>
+   <th>Name</th><th>Where it looks</th><th>Stream</th><th>Size</th>
+   <th>State</th><th>Source</th><th></th>
   </tr></thead><tbody></tbody></table></div>
+ </div>
+
+ <div id="cx-loc-panel" class="glass tbl-card" style="margin-top:16px;display:none">
+  <div class="tbl-head">Where is <span id="cx-loc-cam"></span>?</div>
+  <div style="padding:14px 16px">
+   <p class="cam-msg" style="margin-top:0">Tell the system where this camera
+    sits and what it faces. Alerts then read
+    "<i>B-Block Main Gate, facing main road</i>" instead of the device name, so
+    a guard knows where to go without opening the app.</p>
+   <div class="cam-row">
+    <label>Name it<input id="cx-loc-label" placeholder="B-Block Main Gate"></label>
+    <label>Block / side<input id="cx-loc-block" placeholder="B-Block"></label>
+    <label>Facing<input id="cx-loc-facing" placeholder="main road"></label>
+   </div>
+   <div class="cam-row">
+    <label style="flex:1">Notes<input id="cx-loc-notes" placeholder="covers the visitor lane too"></label>
+    <button class="mini-btn" onclick="camSaveCtx()">Save location</button>
+    <button class="mini-btn" onclick="camCloseCtx()">Cancel</button>
+    <span id="cx-loc-msg" class="cam-msg"></span>
+   </div>
+  </div>
  </div>
 
  <div class="glass tbl-card" style="margin-top:16px">
@@ -1857,17 +1911,47 @@ async function camList(){
  if(!tb) return;
  let rows=[];
  try{ rows=await (await fetch('/api/cameras/list')).json(); }
- catch(e){ tb.innerHTML='<tr><td colspan="6">sign in to manage cameras</td></tr>'; return; }
+ catch(e){ tb.innerHTML='<tr><td colspan="7">sign in to manage cameras</td></tr>'; return; }
  if(!Array.isArray(rows)||!rows.length){
-  tb.innerHTML='<tr><td colspan="6">No cameras yet — add one below.</td></tr>';return;}
- tb.innerHTML=rows.map(c=>`<tr>
+  tb.innerHTML='<tr><td colspan="7">No cameras yet — add one below.</td></tr>';return;}
+ tb.innerHTML=rows.map(c=>{
+  const set=(c.label||c.block||c.facing);
+  const loc=set?cxEsc(c.location):'<span style="opacity:.55">not set</span>';
+  const j=cxEsc(JSON.stringify(c));
+  return `<tr>
   <td>${cxEsc(c.name)}</td>
+  <td>${loc} <button class="mini-btn" onclick='camLocate(${j})'>${set?'Edit':'Set'}</button></td>
   <td class="mono" style="font-size:11px">${cxEsc(c.url)}</td>
   <td>${c.width?c.width+'x'+c.height:'—'}</td>
   <td>${c.online?'<span class="ok">live</span>':c.running?'connecting':'stopped'}</td>
   <td>${cxEsc(c.from)}</td>
   <td>${c.id?`<button class="mini-btn" onclick="camDrop(${c.id},'${cxEsc(c.name)}')">Remove</button>`:''}</td>
- </tr>`).join('');}
+ </tr>`;}).join('');}
+
+let _cxLocName='';
+function camLocate(c){
+ _cxLocName=c.name;
+ document.getElementById('cx-loc-cam').textContent=c.name;
+ document.getElementById('cx-loc-label').value=c.label||'';
+ document.getElementById('cx-loc-block').value=c.block||'';
+ document.getElementById('cx-loc-facing').value=c.facing||'';
+ document.getElementById('cx-loc-notes').value=c.notes||'';
+ document.getElementById('cx-loc-msg').textContent='';
+ const p=document.getElementById('cx-loc-panel');
+ p.style.display='block'; p.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function camCloseCtx(){document.getElementById('cx-loc-panel').style.display='none';}
+async function camSaveCtx(){
+ const msg=document.getElementById('cx-loc-msg'); msg.textContent='saving…';
+ try{
+  await cxPost('/api/cameras/context',{
+   name:_cxLocName,
+   label:document.getElementById('cx-loc-label').value,
+   block:document.getElementById('cx-loc-block').value,
+   facing:document.getElementById('cx-loc-facing').value,
+   notes:document.getElementById('cx-loc-notes').value});
+  camCloseCtx(); camList();
+ }catch(e){ msg.textContent=e.message; }}
 
 async function camScan(){
  const msg=document.getElementById('cx-scan-msg');

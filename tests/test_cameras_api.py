@@ -199,3 +199,58 @@ def test_deleting_a_camera_stops_it_and_removes_it(client, ctx):
 
 def test_deleting_something_that_is_not_there_is_a_404(client):
     assert client.delete("/api/cameras/999").status_code == 404
+
+
+# ---------------------------------------------------- location / context
+def test_setting_a_cameras_location_reads_back_as_a_human_phrase(client, ctx):
+    add(client)
+    r = client.post("/api/cameras/context",
+                    data={"name": "gate", "label": "B-Block Main Gate",
+                          "facing": "main road"})
+    assert r.status_code == 200
+    assert r.json()["location"] == "B-Block Main Gate, facing main road"
+    assert ctx.db.describe_camera("gate") == "B-Block Main Gate, facing main road"
+
+
+def test_the_list_carries_each_cameras_location(client):
+    add(client)
+    client.post("/api/cameras/context",
+                data={"name": "gate", "block": "B-Block", "facing": "main road"})
+    row = next(r for r in client.get("/api/cameras/list").json()
+               if r["name"] == "gate")
+    assert row["location"] == "B-Block, facing main road"
+    assert row["block"] == "B-Block"
+
+
+def test_context_can_be_set_for_a_config_file_camera_with_no_db_row(client, ctx):
+    """A camera from config.yaml has no `cameras` row, but it must still be
+    able to carry a location — the table is keyed by name for exactly this."""
+    ctx.config["cameras"] = [{"name": "old", "url": "rtsp://a:b@1.2.3.4/live"}]
+    r = client.post("/api/cameras/context",
+                    data={"name": "old", "label": "Rear Gate"})
+    assert r.status_code == 200
+    row = next(x for x in client.get("/api/cameras/list").json()
+               if x["name"] == "old")
+    assert row["location"] == "Rear Gate"
+
+
+def test_setting_context_is_refused_without_a_registry_session(ctx):
+    cl = TestClient(dashboard.create_app(ctx))
+    signin(cl, ctx.db, "guard")
+    r = cl.post("/api/cameras/context", data={"name": "gate", "label": "x"})
+    assert r.status_code == 403
+
+
+def test_a_nameless_context_is_refused(client):
+    assert client.post("/api/cameras/context",
+                       data={"name": "  ", "label": "x"}).status_code == 400
+
+
+def test_updating_a_location_overwrites_it_rather_than_duplicating(client, ctx):
+    add(client)
+    client.post("/api/cameras/context",
+                data={"name": "gate", "label": "wrong"})
+    client.post("/api/cameras/context",
+                data={"name": "gate", "label": "B-Block Gate"})
+    assert ctx.db.describe_camera("gate") == "B-Block Gate"
+    assert len(ctx.db.list_camera_context()) == 1

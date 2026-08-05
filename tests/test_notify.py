@@ -16,6 +16,27 @@ def test_message_format():
     assert "Plate: MH12CD4567" in msg
 
 
+def test_message_format_uses_the_location_when_given():
+    """When a camera has a filled-in location, the alert names the place, not
+    the device — "B-Block Main Gate, facing main road", not "gate"."""
+    ev = SimpleNamespace(ts=1751640000.0, camera="gate",
+                         event_type="unauthorized_vehicle", severity="HIGH",
+                         description="x", plate="MH12CD4567",
+                         track_ids=[3], confidence=0.9)
+    msg = TelegramNotifier.format_message(
+        ev, location="B-Block Main Gate, facing main road")
+    assert "Camera: B-Block Main Gate, facing main road" in msg
+    assert "Camera: gate" not in msg
+
+
+def test_message_format_falls_back_to_the_camera_name_without_a_location():
+    ev = SimpleNamespace(ts=1751640000.0, camera="gate",
+                         event_type="unauthorized_vehicle", severity="HIGH",
+                         description="x", plate="MH12CD4567",
+                         track_ids=[3], confidence=0.9)
+    assert "Camera: gate" in TelegramNotifier.format_message(ev)
+
+
 def test_message_format_unreadable_plate_and_vlm():
     ev = SimpleNamespace(ts=1751640000.0, camera="parking",
                          event_type="loitering", severity="MEDIUM",

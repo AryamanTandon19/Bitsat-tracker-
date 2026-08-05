@@ -300,6 +300,19 @@ CREATE TABLE IF NOT EXISTS normalcy (
     last_ts REAL,
     PRIMARY KEY (camera, cls, col, row)
 );
+-- Where a camera physically is and what it looks at. Keyed by camera NAME (not
+-- id) so a camera defined in config.yaml — which has no row in `cameras` — can
+-- carry the same context as an auto-connected one. This is what turns a bare
+-- "camera gate" alert into "B-Block gate, facing the main road": the guard
+-- reading the alert on their phone knows where to walk without opening the app.
+CREATE TABLE IF NOT EXISTS camera_context (
+    name    TEXT PRIMARY KEY,           -- matches cameras.name / config camera name
+    label   TEXT,                        -- human name, e.g. "B-Block Main Gate"
+    block   TEXT,                        -- block / side / area, e.g. "B-Block"
+    facing  TEXT,                        -- direction it looks, e.g. "main road"
+    notes   TEXT,                        -- anything else the guard wrote
+    updated_by TEXT, updated_at REAL
+);
 """
 
 # columns added after first release — applied with ALTER TABLE on startup so
@@ -319,6 +332,30 @@ MIGRATIONS = [
     " DEFAULT 0",
     "ALTER TABLE object_annotations ADD COLUMN review_note TEXT",
 ]
+
+
+def describe_camera_context(name: str, ctx: dict | None) -> str:
+    """Turn a camera's stored context into one human phrase for an alert.
+
+    Pure so it can be unit-tested and reused by the notifier without a database
+    handle. The rule is: say as much as the guard filled in, and never less
+    than the camera's own name.
+
+      label + facing  -> "B-Block Main Gate, facing main road"
+      block + facing  -> "B-Block, facing main road"
+      label only      -> "B-Block Main Gate"
+      nothing         -> "gate"        (the raw camera name)
+    """
+    ctx = ctx or {}
+    place = (ctx.get("label") or "").strip() or (ctx.get("block") or "").strip()
+    facing = (ctx.get("facing") or "").strip()
+    if place and facing:
+        return f"{place}, facing {facing}"
+    if place:
+        return place
+    if facing:
+        return f"{name}, facing {facing}"
+    return name
 
 
 def _row_payload(ts: float, actor: str, action: str, details_json: str) -> str:
@@ -1263,6 +1300,48 @@ class Database:
             self.append_audit(actor or "system", "CAMERA_CHANGE",
                               {"op": "delete", "name": cam["name"]})
         return gone
+
+    # -- camera context (where it is / what it faces) ------------------------
+    def set_camera_context(self, name: str, label: str = "", block: str = "",
+                           facing: str = "", notes: str = "",
+                           actor: str = "") -> None:
+        """Record where a camera is and what it looks at. Upsert by name so a
+        guard can correct it as many times as they like without piling up rows.
+        """
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO camera_context"
+                " (name, label, block, facing, notes, updated_by, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(name) DO UPDATE SET"
+                " label=excluded.label, block=excluded.block,"
+                " facing=excluded.facing, notes=excluded.notes,"
+                " updated_by=excluded.updated_by, updated_at=excluded.updated_at",
+                (name, label.strip(), block.strip(), facing.strip(),
+                 notes.strip(), actor, time.time()))
+            self._conn.commit()
+        self.append_audit(actor or "system", "CAMERA_CHANGE",
+                          {"op": "context", "name": name})
+
+    def get_camera_context(self, name: str) -> dict | None:
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT * FROM camera_context WHERE name = ?", (name,)).fetchone()
+            return dict(r) if r else None
+
+    def list_camera_context(self) -> dict[str, dict]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM camera_context").fetchall()
+            return {r["name"]: dict(r) for r in rows}
+
+    def describe_camera(self, name: str) -> str:
+        """A human phrase for `name`, for alerts and the wall.
+
+        "B-Block gate, facing main road" when the guard has filled it in;
+        the raw camera name when they have not — never blank, never worse than
+        what the alert said before this feature existed.
+        """
+        return describe_camera_context(name, self.get_camera_context(name))
 
     # -- learned normalcy ----------------------------------------------------
     def save_normalcy(self, camera: str, rows: list) -> None:
