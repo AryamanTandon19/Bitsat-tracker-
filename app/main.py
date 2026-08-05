@@ -455,6 +455,15 @@ class AppContext:
             if acfg.get("enabled", True) else None
         self.assistant = TuningAssistant(config.get("assistant", {}))
         self.incident_gate = IncidentGate(config.get("incidents", {}))
+        # Delete old footage on a timer so the box never fills up and never
+        # hoards a resident's video. Watches the clip directory's disk.
+        ret_cfg = config.get("retention") or {}
+        self.janitor = None
+        if ret_cfg.get("enabled", True):
+            from . import retention
+            disk = (config.get("clips") or {}).get("out_dir", "clips")
+            self.janitor = retention.Janitor(self.db, ret_cfg, disk)
+            self.janitor.start()
         # event_id -> Decision, handed from _handle_event to _on_clip_ready.
         # Bounded: clip saving is asynchronous but not unbounded, and a
         # decision nobody collected must not pin memory forever.
@@ -583,6 +592,8 @@ class AppContext:
         return worker is not None
 
     def stop(self):
+        if self.janitor is not None:
+            self.janitor.stop()
         for p in self.pipelines.values():
             p.stop()
         for w in self.workers.values():

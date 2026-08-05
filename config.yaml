@@ -146,6 +146,17 @@ incidents:
     - camera_tamper          # operator can no longer SEE the incident, not
     - camera_offline         # more of the incident itself
 
+# Retention. Old clips are deleted on a timer, so the box never fills up and no
+# resident's footage is kept indefinitely (a DPDP requirement as much as a disk
+# one). Only clip FILES are removed, through the audited deletion path; events,
+# the audit chain and the registry are never touched.
+retention:
+  enabled: true
+  clip_days: 14                # delete clips older than this, always
+  min_free_gb: 2.0             # if the disk is tighter than this, delete the
+                               # oldest surviving clips until it is not
+  interval_s: 3600             # how often to sweep
+
 # Zero-touch connect. With no cameras configured, the box scans its own network
 # on startup, tries the factory-default DVR logins (and any you list here), and
 # connects every channel that streams — no file to edit, no page to click. A DVR

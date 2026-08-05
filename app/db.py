@@ -1363,6 +1363,15 @@ class Database:
             r = cur.fetchone()
             return dict(r) if r else None
 
+    def all_clips(self, include_deleted: bool = False) -> list[dict]:
+        """Every clip on record, oldest first. For the retention janitor."""
+        sql = "SELECT * FROM clips"
+        if not include_deleted:
+            sql += " WHERE deleted = 0"
+        sql += " ORDER BY created_at ASC"
+        with self._lock:
+            return [dict(r) for r in self._conn.execute(sql).fetchall()]
+
     def mark_clip_deleted(self, clip_id: int, actor: str, reason: str) -> None:
         with self._lock:
             self._conn.execute("UPDATE clips SET deleted = 1 WHERE id = ?", (clip_id,))
