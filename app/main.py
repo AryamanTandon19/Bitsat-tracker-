@@ -294,9 +294,14 @@ class CameraPipeline(threading.Thread):
                     continue
                 self._handle_event(ev)
 
-            # annotated frame for the dashboard — flagged culprits in green
-            flagged = self.rules.active_flags(ts) | \
-                {tid for tid, exp in self._trig_flags.items() if exp >= ts}
+            # annotated frame for the dashboard — flagged culprits in green.
+            # Learned furniture is never a culprit: once the system has decided
+            # a "person" that never moves is a fire hydrant and stopped
+            # alerting on it, flagging it green on the live view would tell the
+            # operator the opposite of what the alerting layer has concluded.
+            flagged = (self.rules.active_flags(ts) |
+                       {tid for tid, exp in self._trig_flags.items()
+                        if exp >= ts}) - self._furniture_tids
             vis = annotate(frame.copy(), detections, self.zones,
                            flagged=flagged,
                            trails=self.rules.flag_trails(ts))
