@@ -211,11 +211,18 @@ def create_app(ctx) -> FastAPI:
         # journey tracking, and it fails silently — so report it here too.
         from .plates import PlateReader
         _pr = PlateReader({**(ctx.config.get("plates") or {}), "enabled": True})
+        # camera health, so "is it connected and seeing anything" is answerable
+        # from one URL — the first thing to check on a fresh install
+        cams = []
+        for name, worker in ctx.workers.items():
+            cams.append({"name": name, "online": bool(worker.online)})
         return {
             "ok": True,
             "ui": "console",
             "build": BUILD,
             "cameras": list(ctx.workers),
+            "camera_health": cams,
+            "autoconnect": getattr(ctx, "autoconnect_result", None),
             "plate_ocr": {
                 "available": _pr._ocr is not None,
                 "backend": _pr._ocr_kind or None,

@@ -532,6 +532,26 @@ class AppContext:
         except Exception:                          # noqa: BLE001
             log.exception("could not start cameras stored in the database")
 
+        # Zero-touch connect: if nothing is configured, find the cameras on the
+        # network by ourselves. Plug the box into the DVR's switch, power it on,
+        # walk away. Runs on a background thread so the dashboard is up at once.
+        ac_cfg = self.config.get("autoconnect") or {}
+        if ac_cfg.get("enabled", True) and not self.workers:
+            from . import autoconnect
+
+            def _add(name, url, vendor, channel, width, height):
+                cid = self.db.add_camera(name, url, vendor, channel, width,
+                                         height, added_by="autoconnect")
+                self.db.append_audit("autoconnect", "CAMERA_CHANGE",
+                                     {"op": "auto-add", "name": name,
+                                      "url": discovery.mask(url)})
+                self.start_camera(name, url)
+                return cid
+
+            autoconnect.start(self, ac_cfg, _add,
+                              lambda: set(self.workers) |
+                              {c["name"] for c in self.db.list_cameras()})
+
     def start_camera(self, name: str, url: str, zones: dict | None = None,
                      loop_file: bool = False) -> bool:
         """Start one camera now. Safe to call while the system is running."""

@@ -146,6 +146,19 @@ incidents:
     - camera_tamper          # operator can no longer SEE the incident, not
     - camera_offline         # more of the incident itself
 
+# Zero-touch connect. With no cameras configured, the box scans its own network
+# on startup, tries the factory-default DVR logins (and any you list here), and
+# connects every channel that streams — no file to edit, no page to click. A DVR
+# whose password was changed at install will not answer the defaults; add those
+# once from the console's Cameras tab and they are remembered.
+autoconnect:
+  enabled: true
+  networks: [auto]             # auto = the /24 this machine is on. Or list them:
+                               #   networks: ["192.168.1.0/24"]
+  channels: 4                  # channels to try per DVR
+  credentials: []              # your own first, e.g.:
+                               #   - {username: admin, password: yoursecret}
+
 # Learned normalcy — the system teaching itself what is permanently there.
 # A "person" that never moves and is always in the same spot is furniture (a
 # fire hydrant, a bollard, a reflection), not a loiterer. On real MEVA footage
