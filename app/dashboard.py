@@ -33,6 +33,7 @@ from . import assistant as assistant_mod
 from . import auth
 from . import clips as clips_mod
 from . import damage as damage_mod
+from . import discovery
 from . import train as train_mod
 from . import operator as operator_mod
 from . import segment as segment_mod
@@ -991,6 +992,137 @@ def create_app(ctx) -> FastAPI:
                             {"op": "delete_track", "id": track_id})
         return {"ok": True}
 
+    # ---- connecting cameras, without editing a file or restarting ---------
+    # Every one of these is behind `require("registry")` — the real
+    # server-side session, not the HTTP Basic gate that config.yaml disables.
+    # They scan the local network and store DVR passwords, so an open endpoint
+    # here would be considerably worse than an open one anywhere else.
+    _scan_lock = threading.Lock()
+
+    @app.get("/api/cameras/list")
+    def cameras_list(user: dict = Depends(require("registry"))):
+        """Configured cameras and their live state. Passwords masked."""
+        out = []
+        for cam in ctx.db.list_cameras():
+            worker = ctx.workers.get(cam["name"])
+            out.append({**cam, "url": discovery.mask(cam["url"]),
+                        "running": worker is not None,
+                        "online": bool(worker and worker.online),
+                        "from": "database"})
+        for cam in ctx.config.get("cameras", []):
+            worker = ctx.workers.get(cam["name"])
+            out.append({"name": cam["name"], "url": discovery.mask(cam["url"]),
+                        "enabled": 1, "running": worker is not None,
+                        "online": bool(worker and worker.online),
+                        "from": "config.yaml"})
+        return out
+
+    @app.post("/api/cameras/scan")
+    def cameras_scan(network: str = Form(...),
+                     user: dict = Depends(require("registry"))):
+        """Which hosts on this network have an RTSP port open."""
+        if not _scan_lock.acquire(blocking=False):
+            raise HTTPException(429, "a scan is already running")
+        try:
+            found = discovery.scan(network)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        finally:
+            _scan_lock.release()
+        return {"network": network, "found": [d.public() for d in found],
+                "hint": ("Nothing answered on port 554. Check you are on the "
+                         "same network as the DVR, and that the range is "
+                         "right — it is usually a /24 like 192.168.1.0/24."
+                         if not found else "")}
+
+    @app.post("/api/cameras/probe")
+    def cameras_probe(host: str = Form(...), username: str = Form("admin"),
+                      password: str = Form(""), channels: int = Form(4),
+                      port: int = Form(discovery.RTSP_PORT),
+                      user: dict = Depends(require("registry"))):
+        """Try the known RTSP paths for each channel until one gives a frame.
+
+        Substreams are tried before main streams: a 4K main stream saturates a
+        cheap box and buys nothing, because detection runs at 640px.
+        """
+        if channels < 1 or channels > 32:
+            raise HTTPException(400, "channels must be between 1 and 32")
+        dev = discovery.probe_device(host, username, password, channels, port)
+        ok = discovery.working(dev)
+        return {"host": host, "channels": [c.public() for c in dev.channels],
+                "working": len(ok), "advice": discovery.advice(dev)}
+
+    @app.post("/api/cameras/add")
+    def cameras_add(name: str = Form(...), host: str = Form(...),
+                    channel: int = Form(1), username: str = Form("admin"),
+                    password: str = Form(""),
+                    port: int = Form(discovery.RTSP_PORT),
+                    vendor: str = Form(""),
+                    user: dict = Depends(require("registry"))):
+        """Prove the stream works, store it, and start it — no restart.
+
+        The URL is rebuilt here from host/channel/credentials rather than
+        accepted from the browser, so the password never has to make a round
+        trip through a page where it could be logged or cached.
+        """
+        name = name.strip()
+        if not name:
+            raise HTTPException(400, "the camera needs a name")
+        if ctx.db.camera_by_name(name) or name in ctx.workers:
+            raise HTTPException(409, f"a camera called {name!r} already exists")
+
+        found = discovery.probe_channel(host, username, password, channel, port)
+        if found is None or not found.ok:
+            raise HTTPException(
+                400, f"no working stream on channel {channel}: "
+                     f"{found.error if found else 'nothing tried'}")
+
+        cam_id = ctx.db.add_camera(name, found.url, vendor or found.vendor,
+                                   channel, found.width, found.height,
+                                   added_by=user["username"])
+        ctx.db.append_audit(user["username"], "CAMERA_CHANGE",
+                            {"op": "add", "name": name,
+                             "url": discovery.mask(found.url)})
+        started = False
+        if hasattr(ctx, "start_camera"):
+            try:
+                started = ctx.start_camera(name, found.url)
+            except Exception as e:                       # noqa: BLE001
+                log.exception("could not start camera %s", name)
+                raise HTTPException(
+                    500, f"stored, but it would not start: {e}")
+        return {"id": cam_id, "name": name, "url": found.safe_url,
+                "vendor": found.vendor, "channel": channel,
+                "width": found.width, "height": found.height,
+                "running": started,
+                "note": "" if started else
+                        "stored — it will start when the system next runs"}
+
+    @app.delete("/api/cameras/{camera_id}")
+    def cameras_delete(camera_id: int,
+                       user: dict = Depends(require("registry"))):
+        cam = ctx.db.get_camera(camera_id)
+        if cam is None:
+            raise HTTPException(404, "no such camera")
+        if hasattr(ctx, "stop_camera"):
+            ctx.stop_camera(cam["name"])
+        ctx.db.delete_camera(camera_id, user["username"])
+        return {"ok": True, "name": cam["name"]}
+
+    @app.post("/api/cameras/{camera_id}/enabled")
+    def cameras_enabled(camera_id: int, enabled: bool = Form(...),
+                        user: dict = Depends(require("registry"))):
+        cam = ctx.db.get_camera(camera_id)
+        if cam is None:
+            raise HTTPException(404, "no such camera")
+        ctx.db.set_camera_enabled(camera_id, enabled)
+        if hasattr(ctx, "start_camera"):
+            if enabled:
+                ctx.start_camera(cam["name"], cam["url"])
+            else:
+                ctx.stop_camera(cam["name"])
+        return {"ok": True, "name": cam["name"], "enabled": enabled}
+
     @app.get("/api/train/annotations/stats")
     def train_annotation_stats(clip_id: int = 0,
                                user: dict = Depends(require("registry"))):
@@ -1358,6 +1490,15 @@ body:not(.authed) .app-chrome{display:none!important}
 .tag{padding:1px 7px;background:var(--surface-2);border-radius:5px;font-size:9px;color:var(--muted)}
 
 /* enlarged camera modal */
+/* camera onboarding */
+.cam-row{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;
+  margin-bottom:12px}
+.cam-row label{display:flex;flex-direction:column;gap:4px;font-size:11px;
+  letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.cam-row input{font:inherit;padding:8px 10px;border-radius:8px;
+  border:1px solid rgba(0,0,0,.14);background:#fff;min-width:150px}
+.cam-msg{font-size:12.5px;color:var(--muted);align-self:center}
+.cam-msg .ok,td .ok{color:#0a7c3f;font-weight:650}
 .cam-modal{position:fixed;inset:0;z-index:150;display:none;align-items:center;justify-content:center;
  padding:24px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px)}
 .cam-modal-inner{width:100%;max-width:1100px;padding:12px}
@@ -1514,6 +1655,7 @@ footer{position:fixed;bottom:0;right:0;z-index:30;padding:6px 16px;font-size:10p
   <a data-v="view" class="active" onclick="show('view')">View</a>
   <a data-v="lab" onclick="show('lab')">Forensic Lab</a>
   <a data-v="events" onclick="show('events')">Events</a>
+  <a data-v="cameras" onclick="show('cameras')">Cameras</a>
   <a href="/train">Train</a>
   <a href="/operator">Operator</a>
  </nav>
@@ -1613,6 +1755,44 @@ footer{position:fixed;bottom:0;right:0;z-index:30;padding:6px 16px;font-size:10p
  </div>
 </section>
 
+<!-- ===================== CAMERAS / CONNECT A DVR ===================== -->
+<section class="view" id="view-cameras">
+ <div class="page-head">
+  <div><h1>Cameras</h1>
+  <p>Connect a DVR without editing a file or restarting anything. Scan the
+     network, enter the DVR's username and password once, and the working
+     channels are found for you. Passwords are stored on this machine and are
+     never shown again.</p></div>
+ </div>
+
+ <div class="glass tbl-card">
+  <div class="tbl-head">Connected</div>
+  <div class="tblwrap"><table id="cams-table"><thead><tr>
+   <th>Name</th><th>Stream</th><th>Size</th><th>State</th><th>Source</th><th></th>
+  </tr></thead><tbody></tbody></table></div>
+ </div>
+
+ <div class="glass tbl-card" style="margin-top:16px">
+  <div class="tbl-head">Add a camera</div>
+  <div style="padding:14px 16px">
+   <div class="cam-row">
+    <label>Network<input id="cx-net" value="192.168.1.0/24"></label>
+    <button class="mini-btn" onclick="camScan()">Scan for DVRs</button>
+    <span id="cx-scan-msg" class="cam-msg"></span>
+   </div>
+   <div class="cam-row">
+    <label>DVR address<input id="cx-host" placeholder="192.168.1.108"></label>
+    <label>Username<input id="cx-user" value="admin"></label>
+    <label>Password<input id="cx-pass" type="password" autocomplete="off"></label>
+    <label>Channels<input id="cx-chans" type="number" value="4" min="1" max="32"></label>
+    <button class="mini-btn" onclick="camProbe()">Find cameras</button>
+   </div>
+   <div id="cx-results"></div>
+   <p id="cx-msg" class="cam-msg"></p>
+  </div>
+ </div>
+</section>
+
 </main>
 
 <div id="cam-modal" class="cam-modal" onclick="closeCam()">
@@ -1639,7 +1819,82 @@ function show(v){
  document.getElementById('view-'+v).classList.add('active');
  document.querySelectorAll('nav a').forEach(a=>
   a.classList.toggle('active',a.dataset.v===v));
+ if(v==='cameras') camList();
 }
+
+// ---- cameras: scan, probe, add ----------------------------------------
+const cxEsc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;',
+ '>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function cxPost(url,data){
+ const r=await fetch(url,{method:'POST',body:new URLSearchParams(data)});
+ const body=await r.json().catch(()=>({}));
+ if(!r.ok) throw new Error(body.detail||('failed ('+r.status+')'));
+ return body;}
+
+async function camList(){
+ const tb=document.querySelector('#cams-table tbody');
+ if(!tb) return;
+ let rows=[];
+ try{ rows=await (await fetch('/api/cameras/list')).json(); }
+ catch(e){ tb.innerHTML='<tr><td colspan="6">sign in to manage cameras</td></tr>'; return; }
+ if(!Array.isArray(rows)||!rows.length){
+  tb.innerHTML='<tr><td colspan="6">No cameras yet — add one below.</td></tr>';return;}
+ tb.innerHTML=rows.map(c=>`<tr>
+  <td>${cxEsc(c.name)}</td>
+  <td class="mono" style="font-size:11px">${cxEsc(c.url)}</td>
+  <td>${c.width?c.width+'x'+c.height:'—'}</td>
+  <td>${c.online?'<span class="ok">live</span>':c.running?'connecting':'stopped'}</td>
+  <td>${cxEsc(c.from)}</td>
+  <td>${c.id?`<button class="mini-btn" onclick="camDrop(${c.id},'${cxEsc(c.name)}')">Remove</button>`:''}</td>
+ </tr>`).join('');}
+
+async function camScan(){
+ const msg=document.getElementById('cx-scan-msg');
+ msg.textContent='scanning…';
+ try{
+  const r=await cxPost('/api/cameras/scan',{network:document.getElementById('cx-net').value});
+  if(!r.found.length){ msg.textContent=r.hint||'nothing found'; return; }
+  msg.innerHTML=r.found.map(d=>`<a href="#" onclick="document.getElementById('cx-host').value='${d.ip}';return false">${d.ip}</a>`).join(' · ')
+   +' &nbsp;— click one, then enter the password';
+ }catch(e){ msg.textContent=e.message; }}
+
+async function camProbe(){
+ const msg=document.getElementById('cx-msg'), out=document.getElementById('cx-results');
+ msg.textContent='trying the usual RTSP paths…'; out.innerHTML='';
+ try{
+  const r=await cxPost('/api/cameras/probe',{
+   host:document.getElementById('cx-host').value,
+   username:document.getElementById('cx-user').value,
+   password:document.getElementById('cx-pass').value,
+   channels:document.getElementById('cx-chans').value});
+  const ok=r.channels.filter(c=>c.ok);
+  if(!ok.length){ msg.textContent=r.advice||'no working stream found'; return; }
+  msg.textContent=`${ok.length} camera${ok.length>1?'s':''} found.`;
+  out.innerHTML=ok.map(c=>`<div class="cam-row">
+    <b>Channel ${c.channel}</b> <span class="mono" style="font-size:11px">${cxEsc(c.vendor)} · ${c.width}x${c.height}</span>
+    <label>Call it<input id="cx-name-${c.channel}" value="cam${c.channel}"></label>
+    <button class="mini-btn" onclick="camAdd(${c.channel},'${cxEsc(c.vendor)}')">Add</button>
+    <span id="cx-add-${c.channel}" class="cam-msg"></span></div>`).join('');
+ }catch(e){ msg.textContent=e.message; }}
+
+async function camAdd(channel,vendor){
+ const el=document.getElementById('cx-add-'+channel);
+ el.textContent='connecting…';
+ try{
+  const r=await cxPost('/api/cameras/add',{
+   name:document.getElementById('cx-name-'+channel).value,
+   host:document.getElementById('cx-host').value,
+   username:document.getElementById('cx-user').value,
+   password:document.getElementById('cx-pass').value,
+   channel:channel, vendor:vendor});
+  el.innerHTML='<span class="ok">added'+(r.running?' and live':'')+'</span>';
+  camList();
+ }catch(e){ el.textContent=e.message; }}
+
+async function camDrop(id,name){
+ if(!confirm('Remove '+name+'? Recorded clips and events are kept.')) return;
+ await fetch('/api/cameras/'+id,{method:'DELETE'});
+ camList();}
 
 // ---- clock ------------------------------------------------------------
 setInterval(()=>{document.getElementById('clock').textContent=

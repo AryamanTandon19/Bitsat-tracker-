@@ -266,6 +266,25 @@ CREATE TABLE IF NOT EXISTS object_tracks (
     created_by TEXT, created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tracks_clip ON object_tracks(clip_id);
+-- Cameras added from the console rather than by hand-editing config.yaml.
+--
+-- The URL carries `user:password@host`, and config.yaml is tracked in git —
+-- putting a DVR password there is the mistake the security audit flagged.
+-- Credentials live here instead, and everything shown to a browser or written
+-- to a log goes through discovery.mask() first.
+CREATE TABLE IF NOT EXISTS cameras (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    url TEXT NOT NULL,                       -- rtsp://user:pass@host/path
+    vendor TEXT,                             -- which pattern matched
+    channel INTEGER,
+    width INTEGER, height INTEGER,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    zones_json TEXT,                         -- same shape as config.yaml zones
+    added_by TEXT, added_at REAL NOT NULL,
+    last_ok REAL,                            -- last time a frame was decoded
+    last_error TEXT
+);
 """
 
 # columns added after first release — applied with ALTER TABLE on startup so
@@ -1167,6 +1186,68 @@ class Database:
                 (status, actor, time.time(), track_id))
             self._conn.commit()
             return cur.rowcount
+
+    # -- cameras -------------------------------------------------------------
+    def add_camera(self, name: str, url: str, vendor: str = "",
+                   channel: int = 0, width: int = 0, height: int = 0,
+                   added_by: str = "", zones_json: str = "") -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO cameras (name, url, vendor, channel, width,"
+                " height, enabled, zones_json, added_by, added_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
+                (name, url, vendor, channel, width, height, zones_json,
+                 added_by, time.time()))
+            self._conn.commit()
+            return cur.lastrowid
+
+    def list_cameras(self, enabled_only: bool = False) -> list[dict]:
+        sql = "SELECT * FROM cameras"
+        if enabled_only:
+            sql += " WHERE enabled = 1"
+        sql += " ORDER BY name"
+        with self._lock:
+            return [dict(r) for r in self._conn.execute(sql).fetchall()]
+
+    def get_camera(self, camera_id: int) -> dict | None:
+        with self._lock:
+            r = self._conn.execute("SELECT * FROM cameras WHERE id = ?",
+                                   (camera_id,)).fetchone()
+            return dict(r) if r else None
+
+    def camera_by_name(self, name: str) -> dict | None:
+        with self._lock:
+            r = self._conn.execute("SELECT * FROM cameras WHERE name = ?",
+                                   (name,)).fetchone()
+            return dict(r) if r else None
+
+    def set_camera_enabled(self, camera_id: int, enabled: bool) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE cameras SET enabled = ? WHERE id = ?",
+                (1 if enabled else 0, camera_id))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def record_camera_health(self, name: str, ok: bool, error: str = "") -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE cameras SET last_ok = CASE WHEN ? THEN ? ELSE last_ok"
+                " END, last_error = ? WHERE name = ?",
+                (1 if ok else 0, time.time(), "" if ok else error, name))
+            self._conn.commit()
+
+    def delete_camera(self, camera_id: int, actor: str = "") -> bool:
+        cam = self.get_camera(camera_id)
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM cameras WHERE id = ?",
+                                     (camera_id,))
+            self._conn.commit()
+            gone = cur.rowcount > 0
+        if gone and cam:
+            self.append_audit(actor or "system", "CAMERA_CHANGE",
+                              {"op": "delete", "name": cam["name"]})
+        return gone
 
     def delete_object_track(self, track_id: int) -> bool:
         with self._lock:

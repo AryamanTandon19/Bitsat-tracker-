@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import threading
@@ -20,6 +21,7 @@ from .camera import CameraWorker, frame_stats
 from .clips import ClipSaver
 from .db import Database
 from .detector import Detector, annotate
+from . import discovery
 from .enhance import enhance_frame
 from .fusion import AI_REVIEW, CONFIRMED_INCIDENT, fuse
 from .hybrid import HybridSecurityMonitor, build_evidence, route_from_reasons
@@ -461,17 +463,54 @@ class AppContext:
         self.notifier.notify_event(event, event_id, clip_path, desc)
 
     def start_cameras(self):
-        buffer_s = int(self.config["clips"].get("buffer_s", 60))
+        """Cameras from config.yaml, then any added from the console.
+
+        Both sources are supported on purpose: a headless install still
+        configures itself from a file, while a guard adding a camera from the
+        console should not have to edit YAML or restart anything.
+        """
         for cam in self.config.get("cameras", []):
-            name = cam["name"]
-            worker = CameraWorker(name, cam["url"], buffer_s=buffer_s,
-                                  loop_file=bool(cam.get("loop_file")))
-            worker.start()
-            pipe = CameraPipeline(name, worker, cam.get("zones", {}), self)
-            pipe.start()
-            self.workers[name] = worker
-            self.pipelines[name] = pipe
-            log.info("camera '%s' started (%s)", name, cam["url"])
+            self.start_camera(cam["name"], cam["url"],
+                              zones=cam.get("zones", {}),
+                              loop_file=bool(cam.get("loop_file")))
+        try:
+            for row in self.db.list_cameras(enabled_only=True):
+                if row["name"] in self.workers:
+                    continue                      # config.yaml wins on a clash
+                zones = json.loads(row["zones_json"] or "{}")
+                self.start_camera(row["name"], row["url"], zones=zones)
+        except Exception:                          # noqa: BLE001
+            log.exception("could not start cameras stored in the database")
+
+    def start_camera(self, name: str, url: str, zones: dict | None = None,
+                     loop_file: bool = False) -> bool:
+        """Start one camera now. Safe to call while the system is running."""
+        if name in self.workers:
+            return False
+        buffer_s = int(self.config["clips"].get("buffer_s", 60))
+        worker = CameraWorker(name, url, buffer_s=buffer_s,
+                              loop_file=loop_file)
+        worker.start()
+        pipe = CameraPipeline(name, worker, zones or {}, self)
+        pipe.start()
+        self.workers[name] = worker
+        self.pipelines[name] = pipe
+        # masked: an RTSP URL carries its password, and logs get pasted into
+        # tickets and screenshots
+        log.info("camera '%s' started (%s)", name, discovery.mask(url))
+        return True
+
+    def stop_camera(self, name: str) -> bool:
+        """Stop and forget one camera, without disturbing the others."""
+        pipe = self.pipelines.pop(name, None)
+        worker = self.workers.pop(name, None)
+        if pipe is not None:
+            pipe.stop()
+        if worker is not None:
+            worker.stop()
+        self.incident_gate.reset(name)
+        log.info("camera '%s' stopped", name)
+        return worker is not None
 
     def stop(self):
         for p in self.pipelines.values():
