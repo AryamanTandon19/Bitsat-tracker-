@@ -109,6 +109,16 @@ class PlateReader:
         if backend in ("auto", "fast-plate-ocr"):
             model = self.cfg.get("ocr_model", "global-plates-mobile-vit-v2-model")
             try:
+                # This ONNX model emits ~20 harmless "MergeShapeInfo ... falling
+                # back to lenient merge" warnings at load. On a real box those
+                # scroll the actually-useful startup lines off the screen and
+                # look like errors to whoever is installing it. Quiet
+                # onnxruntime to errors-only before the model is built.
+                try:
+                    import onnxruntime
+                    onnxruntime.set_default_logger_severity(3)  # 3 = error
+                except Exception:                                # noqa: BLE001
+                    pass
                 # fast-plate-ocr >= 1.0 renamed the class; keep the old name
                 # working so either version of the package is usable.
                 try:
