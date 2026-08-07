@@ -45,6 +45,7 @@ from .vlm import VLMDescriber
 SUSPICIOUS_REFRACTORY_S = 60.0  # min gap between live suspicious events/camera
 ESCALATION_REFRACTORY_S = 30.0  # min gap between HIGH break-in/theft alerts
 TRIG_FLAG_HOLD_S = 10.0         # keep the green box on trigger subjects
+BRAIN_FEATURE_MAX_AGE_S = 5.0   # attach a brain window to an alert within this
 
 log = logging.getLogger("watchdog")
 
@@ -90,6 +91,10 @@ class CameraPipeline(threading.Thread):
         if self.brain is not None and self.brain.ready:
             self.brain_scorer = brain_live.LiveBrainScorer(
                 self.brain, name, ctx.config.get("brain") or {})
+        # the most recent brain window (ts, features, night), stashed so an
+        # alert can carry the geometry behind it — that is what an operator's
+        # later "false alarm" turns into a training hard negative.
+        self._last_brain = None
         self.pose = None
         if trig_cfg.get("on_pose", True):
             from .pose import PoseEstimator
@@ -340,6 +345,7 @@ class CameraPipeline(threading.Thread):
                         if reading is not None:
                             self.brain.contribute(ev_bundle, reading.features,
                                                   confirmed=reading.confirmed)
+                            self._last_brain = (ts, reading.features, night)
                     fusion_result = fuse(ev_bundle)
                 except Exception:
                     log.exception("[%s] hybrid/brain layer failed; free layer "
@@ -513,6 +519,16 @@ class CameraPipeline(threading.Thread):
             ev.ts, ev.camera, ev.event_type, ev.severity, ev.plate,
             ev.track_ids, ev.confidence, ev.description,
             score=ev.score, score_why=ev.score_why)
+
+        # keep the geometry behind this alert if the brain scored it recently, so
+        # a later "false alarm" verdict can become a training hard negative.
+        lb = self._last_brain
+        if lb is not None and 0 <= ev.ts - lb[0] <= BRAIN_FEATURE_MAX_AGE_S:
+            try:
+                self.ctx.db.save_event_features(event_id, lb[1], ev.camera, lb[2])
+            except Exception:                            # noqa: BLE001
+                log.exception("[%s] could not store alert features",
+                              self.cam_name)
 
         # Rising edge: the event is always recorded, but it only interrupts
         # somebody if it opens an incident or makes an open one worse. Decided

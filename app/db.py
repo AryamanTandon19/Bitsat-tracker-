@@ -324,6 +324,23 @@ CREATE TABLE IF NOT EXISTS camera_zones (
     zones_json TEXT NOT NULL,            -- {"entry": [[x,y],...], "parking": [...], ...}
     updated_by TEXT, updated_at REAL
 );
+-- The geometry features behind an alert, kept so an operator's later "false
+-- alarm" verdict can become a training hard negative. This is what closes the
+-- loop from a guard's ❌ tap all the way to a better model — see
+-- training/hardneg.py `from-feedback`.
+CREATE TABLE IF NOT EXISTS event_features (
+    event_id INTEGER PRIMARY KEY,
+    features_json TEXT NOT NULL,
+    camera TEXT, night INTEGER, created_at REAL
+);
+-- Alerts an operator marked false: queued to become hard negatives. Keyed by
+-- event_id so a verdict changed twice never double-queues.
+CREATE TABLE IF NOT EXISTS hard_negative_queue (
+    event_id INTEGER PRIMARY KEY,
+    features_json TEXT NOT NULL,
+    camera TEXT, night INTEGER,
+    verdict_by TEXT, queued_at REAL, promoted_at REAL
+);
 """
 
 # columns added after first release — applied with ALTER TABLE on startup so
@@ -667,6 +684,11 @@ class Database:
             fid = cur.lastrowid
         self.append_audit(user_name or "telegram", "FEEDBACK",
                           {"event_id": event_id, "verdict": verdict})
+        # closing the loop: a 'false alarm' verdict, from Telegram or the
+        # console, queues this alert's features as a training hard negative — if
+        # we captured them (a behaviour-window alert). Silent no-op otherwise.
+        if verdict == "false_alarm":
+            self.queue_hard_negative_from_event(event_id, user_name)
         return fid
 
     def feedback_summary(self) -> dict:
@@ -1428,6 +1450,84 @@ class Database:
             except (ValueError, TypeError):
                 continue
         return out
+
+    # -- alert features -> operator feedback -> training hard negatives -------
+    def save_event_features(self, event_id: int, features: dict,
+                            camera: str = "", night: bool = False) -> None:
+        """Keep the geometry behind an alert, so a later 'false alarm' verdict
+        can be turned into a training example. Cheap and small; overwrites if
+        the same event is re-recorded."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO event_features"
+                " (event_id, features_json, camera, night, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (event_id, json.dumps(features), camera,
+                 1 if night else 0, time.time()))
+            self._conn.commit()
+
+    def queue_hard_negative_from_event(self, event_id: int,
+                                       verdict_by: str = "") -> bool:
+        """An operator called this alert a false alarm: queue its features as a
+        hard negative. No-op (returns False) if we never stored the features —
+        a free-layer-only alert has no geometry window to learn from."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT features_json, camera, night FROM event_features"
+                " WHERE event_id = ?", (event_id,)).fetchone()
+            if not row:
+                return False
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO hard_negative_queue"
+                " (event_id, features_json, camera, night, verdict_by, queued_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (event_id, row["features_json"], row["camera"], row["night"],
+                 verdict_by, time.time()))
+            self._conn.commit()
+            inserted = cur.rowcount > 0
+        if inserted:
+            self.append_audit(verdict_by or "operator", "HARD_NEGATIVE_QUEUED",
+                              {"event_id": event_id})
+        return True
+
+    def export_hard_negative_rows(self, include_promoted: bool = False) -> list:
+        """The queued operator false-alarms, as training feature rows.
+
+        Shaped exactly like `training.extract` rows (suspicious=0,
+        hard_negative=1, train split, a uniquely-tagged source) so they promote
+        into the features file through the ordinary hard-negative path.
+        """
+        sql = ("SELECT event_id, features_json, camera, night"
+               " FROM hard_negative_queue")
+        if not include_promoted:
+            sql += " WHERE promoted_at IS NULL"
+        with self._lock:
+            rows = self._conn.execute(sql).fetchall()
+        out = []
+        for r in rows:
+            try:
+                feats = json.loads(r["features_json"])
+            except (ValueError, TypeError):
+                continue
+            out.append({
+                "clip_id": f"op-{r['event_id']}",
+                "source_video": f"operator:{r['event_id']}",
+                "split": "train", "label": "hard_negative:operator",
+                "specialist": "behavior", "suspicious": 0, "hard_negative": 1,
+                "person_id": 0, "vehicle_id": 0,
+                "camera_id": r["camera"] or "", "night": int(r["night"] or 0),
+                "duration_s": 0.0, "features": feats,
+                "why": "operator marked this alert a false alarm",
+            })
+        return out
+
+    def mark_hard_negatives_promoted(self, event_ids: list) -> None:
+        with self._lock:
+            self._conn.executemany(
+                "UPDATE hard_negative_queue SET promoted_at = ?"
+                " WHERE event_id = ?",
+                [(time.time(), int(e)) for e in event_ids])
+            self._conn.commit()
 
     # -- learned normalcy ----------------------------------------------------
     def save_normalcy(self, camera: str, rows: list) -> None:

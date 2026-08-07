@@ -158,6 +158,50 @@ def cmd_mine(args) -> int:
     return 0
 
 
+def _db_path(arg: str) -> str:
+    if arg:
+        return arg
+    try:
+        import yaml
+        return yaml.safe_load(open("config.yaml"))["storage"]["db_path"]
+    except Exception:                                # noqa: BLE001
+        return "watchdog.db"
+
+
+def cmd_from_feedback(args) -> int:
+    """Pull the alerts operators marked 'false alarm' out of the live database
+    and add them to the hard-negative queue file, ready to promote.
+
+    This is the other end of the loop that begins when a guard taps ❌ on an
+    alert: that verdict already queued the alert's features (app/db.py); here we
+    export them for the next retrain.
+    """
+    from app.db import Database
+
+    path = _db_path(args.db)
+    db = Database(path)
+    try:
+        rows = db.export_hard_negative_rows(include_promoted=args.include_promoted)
+        if rows and not args.keep_unmarked:
+            db.mark_hard_negatives_promoted([int(r["clip_id"][3:]) for r in rows])
+    finally:
+        db.close()
+    if not rows:
+        print(f"no operator-flagged false alarms queued in {path}")
+        print("  (they appear here after a guard taps ❌ on an alert)")
+        return 0
+    existing = read_rows(args.out)
+    have = {r.get("clip_id") for r in existing}
+    fresh = [r for r in rows if r.get("clip_id") not in have]
+    write_rows(args.out, existing + fresh)
+    print(f"exported {len(fresh)} operator false-alarms -> {args.out} "
+          f"({len(rows) - len(fresh)} already there)")
+    print("  now promote them into training, then retrain:")
+    print(f"    python -m training.hardneg promote --queue {args.out} "
+          "--into training/data/features.jsonl")
+    return 0
+
+
 def cmd_promote(args) -> int:
     queue = read_rows(args.queue)
     if not queue:
@@ -190,6 +234,17 @@ def main(argv=None) -> int:
     m.add_argument("--synth-count", type=int, default=40)
     m.add_argument("--seed", type=int, default=0)
     m.set_defaults(func=cmd_mine)
+
+    ff = sub.add_parser("from-feedback",
+                        help="export operator 'false alarm' verdicts as hard negatives")
+    ff.add_argument("--db", default="",
+                    help="live database (default: storage.db_path in config.yaml)")
+    ff.add_argument("--out", default="training/data/hard_negatives.jsonl")
+    ff.add_argument("--include-promoted", action="store_true",
+                    help="re-export ones already exported before")
+    ff.add_argument("--keep-unmarked", action="store_true",
+                    help="do not mark them exported (for a dry run)")
+    ff.set_defaults(func=cmd_from_feedback)
 
     pr = sub.add_parser("promote", help="add reviewed hard negatives to training")
     pr.add_argument("--queue", default="training/data/hard_negatives.jsonl")
