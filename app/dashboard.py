@@ -37,6 +37,7 @@ from . import db as db_mod
 from . import discovery
 from . import train as train_mod
 from . import operator as operator_mod
+from . import owner as owner_mod
 from . import segment as segment_mod
 from . import tagging
 from . import track as track_mod
@@ -156,6 +157,110 @@ def create_app(ctx) -> FastAPI:
             ctx.db.drop_session(auth.token_hash(token))
         response.delete_cookie(auth.SESSION_COOKIE, path="/")
         return {"ok": True}
+
+    # ==================== resident owner app (/owner) ====================
+    # A separate, magic-link identity from the operator console: a resident is
+    # not a staff account. Everything it can reach is scoped to ONE plate, and
+    # every action re-checks ownership, so one resident can never see another's.
+    OWNER_COOKIE = "vg_owner"
+
+    def current_owner(request: Request) -> dict | None:
+        token = request.cookies.get(OWNER_COOKIE)
+        return ctx.db.owner_for_token(token) if token else None
+
+    def require_owner(request: Request) -> dict:
+        owner = current_owner(request)
+        if owner is None:
+            raise HTTPException(401, "open your access link to sign in")
+        return owner
+
+    def _keep_only_confirmed() -> bool:
+        return bool((ctx.config.get("clips") or {}).get("keep_only_confirmed", True))
+
+    @app.get("/owner", response_class=HTMLResponse)
+    def owner_page():
+        return HTMLResponse(owner_mod.page(), headers=_NO_CACHE)
+
+    @app.get("/owner/manifest.webmanifest")
+    def owner_manifest():
+        return JSONResponse(owner_mod.MANIFEST,
+                            media_type="application/manifest+json")
+
+    @app.get("/owner/sw.js")
+    def owner_sw():
+        return Response(owner_mod.SW, media_type="application/javascript",
+                        headers={"Cache-Control": "no-cache"})
+
+    @app.get("/owner/icon.svg")
+    def owner_icon():
+        return Response(owner_mod.ICON_SVG, media_type="image/svg+xml")
+
+    @app.post("/api/owner/login")
+    def owner_login(request: Request, response: Response, token: str = Form(...)):
+        owner = ctx.db.owner_for_token(token)
+        if owner is None:
+            raise HTTPException(401, "invalid or expired link")
+        response.set_cookie(
+            OWNER_COOKIE, token, httponly=True, samesite="lax",
+            secure=request.url.scheme == "https", path="/",
+            max_age=60 * 60 * 24 * 90)
+        return {"ok": True, **owner}
+
+    @app.post("/api/owner/logout")
+    def owner_logout(response: Response):
+        response.delete_cookie(OWNER_COOKIE, path="/")
+        return {"ok": True}
+
+    @app.get("/api/owner/me")
+    def owner_me(owner: dict = Depends(require_owner)):
+        return owner
+
+    @app.get("/api/owner/alerts")
+    def owner_alerts(owner: dict = Depends(require_owner)):
+        rows = ctx.db.events_for_plate(owner["plate"], 50)
+        verdicts = ctx.db.event_verdicts([r["id"] for r in rows])
+        out = []
+        for r in rows:
+            v = verdicts.get(r["id"])
+            out.append({
+                "id": r["id"], "ts": r["ts"], "camera": r["camera"],
+                "location": ctx.db.describe_camera(r["camera"]),
+                "event_type": r["event_type"], "severity": r["severity"],
+                "description": r["description"], "ai_summary": r.get("ai_summary"),
+                "has_clip": bool(r.get("clip_id") and not r.get("clip_deleted")),
+                "verdict": v["verdict"] if v else None})
+        return out
+
+    @app.get("/api/owner/visits")
+    def owner_visits(owner: dict = Depends(require_owner)):
+        return ctx.db.recent_visits(limit=50, plate=owner["plate"])
+
+    @app.get("/owner/clip/{event_id}")
+    def owner_clip(event_id: int, owner: dict = Depends(require_owner)):
+        # ownership is the gate: the clip is served only if this event is about
+        # this resident's own vehicle.
+        if not ctx.db.event_belongs_to_plate(event_id, owner["plate"]):
+            raise HTTPException(404, "not found")
+        clip = ctx.db.clip_for_event(event_id)
+        if not clip or not clip.get("path") or not os.path.exists(clip["path"]):
+            raise HTTPException(404, "no clip")
+        return FileResponse(clip["path"], media_type="video/mp4")
+
+    @app.post("/api/owner/alerts/{event_id}/feedback")
+    def owner_alert_feedback(event_id: int, verdict: str = Form(...),
+                             owner: dict = Depends(require_owner)):
+        if verdict not in ("real", "false_alarm"):
+            raise HTTPException(400, "verdict must be 'real' or 'false_alarm'")
+        if not ctx.db.event_belongs_to_plate(event_id, owner["plate"]):
+            raise HTTPException(404, "not found")
+        who = f"owner:{owner['plate']}"
+        ctx.db.insert_feedback(event_id, verdict, who)
+        discarded = False
+        if verdict == "false_alarm" and _keep_only_confirmed() and \
+                hasattr(ctx, "discard_event_clip"):
+            discarded = ctx.discard_event_clip(
+                event_id, "owner marked false alarm", who)
+        return {"ok": True, "verdict": verdict, "clip_discarded": discarded}
 
     def _me(user: dict) -> dict:
         return {"username": user["username"], "name": user["display_name"],
@@ -389,6 +494,20 @@ def create_app(ctx) -> FastAPI:
         if not ctx.db.remove_vehicle(normalize_plate(plate), actor="dashboard"):
             raise HTTPException(404, "plate not found")
         return {"ok": True}
+
+    @app.post("/api/registry/{plate}/owner-link")
+    def registry_owner_link(plate: str, request: Request,
+                            user: dict = Depends(require("registry"))):
+        """Mint a resident's access link for their vehicle. Hand this to the
+        owner once (it carries a secret) — they open it and see only their own
+        alerts in the owner app."""
+        p = normalize_plate(plate)
+        if ctx.db.vehicle_by_plate(p) is None:
+            raise HTTPException(404, "no such vehicle in the registry")
+        token = ctx.db.issue_owner_token(p, label=user["username"])
+        base = str(request.base_url).rstrip("/")
+        return {"plate": p, "path": f"/owner?token={token}",
+                "link": f"{base}/owner?token={token}"}
 
     # ------------------------------------------------------------ training
     # The labelling workbench. Every threshold in this system is tuned against

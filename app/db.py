@@ -341,6 +341,18 @@ CREATE TABLE IF NOT EXISTS hard_negative_queue (
     camera TEXT, night INTEGER,
     verdict_by TEXT, queued_at REAL, promoted_at REAL
 );
+-- Resident access to the owner app. A committee mints a magic link per
+-- registered vehicle; the resident opens it and sees only alerts about THEIR
+-- car/flat. Only the token's hash is stored, exactly like an operator session,
+-- so the database never holds anything that would grant access if leaked.
+CREATE TABLE IF NOT EXISTS owner_tokens (
+    token_hash TEXT PRIMARY KEY,
+    plate TEXT NOT NULL,
+    label TEXT,
+    created_at REAL,
+    last_seen_ts REAL,
+    revoked INTEGER NOT NULL DEFAULT 0
+);
 """
 
 # columns added after first release — applied with ALTER TABLE on startup so
@@ -1528,6 +1540,73 @@ class Database:
                 " WHERE event_id = ?",
                 [(time.time(), int(e)) for e in event_ids])
             self._conn.commit()
+
+    # -- owner app: magic-link access, strictly per-plate ---------------------
+    def issue_owner_token(self, plate: str, label: str = "") -> str:
+        """Mint an access link for one registered vehicle. Returns the raw token
+        (shown once, put in the link); only its hash is stored."""
+        from . import auth
+        raw, th = auth.new_token()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO owner_tokens (token_hash, plate, label, created_at,"
+                " revoked) VALUES (?, ?, ?, ?, 0)",
+                (th, plate, label, time.time()))
+            self._conn.commit()
+        self.append_audit("system", "OWNER_LINK",
+                          {"op": "issue", "plate": plate})
+        return raw
+
+    def owner_for_token(self, token: str) -> dict | None:
+        """Resolve an owner token to the vehicle/resident it grants access to,
+        or None if unknown or revoked. Slides last-seen forward."""
+        from . import auth
+        th = auth.token_hash(token or "")
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT ot.plate, ot.token_hash, v.owner_name, v.flat_number,"
+                " v.owner_phone FROM owner_tokens ot"
+                " LEFT JOIN vehicles v ON v.plate_number = ot.plate"
+                " WHERE ot.token_hash = ? AND ot.revoked = 0", (th,)).fetchone()
+            if r is None:
+                return None
+            self._conn.execute(
+                "UPDATE owner_tokens SET last_seen_ts = ? WHERE token_hash = ?",
+                (time.time(), th))
+            self._conn.commit()
+        return {"plate": r["plate"], "owner_name": r["owner_name"],
+                "flat_number": r["flat_number"], "owner_phone": r["owner_phone"]}
+
+    def revoke_owner_token(self, token: str) -> bool:
+        from . import auth
+        th = auth.token_hash(token or "")
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE owner_tokens SET revoked = 1 WHERE token_hash = ?", (th,))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def events_for_plate(self, plate: str, limit: int = 50) -> list[dict]:
+        """Alerts about one plate, newest first, with clip + AI-summary — the
+        owner app's feed, scoped so a resident only ever sees their own."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT e.*, c.id AS clip_id, c.deleted AS clip_deleted,"
+                " (SELECT ar.summary FROM ai_reviews ar WHERE ar.event_id = e.id"
+                "  ORDER BY ar.tier DESC, ar.id DESC LIMIT 1) AS ai_summary"
+                " FROM events e LEFT JOIN clips c ON c.event_id = e.id"
+                " WHERE e.plate = ? ORDER BY e.id DESC LIMIT ?",
+                (plate, limit)).fetchall()
+            return [dict(r) for r in rows]
+
+    def event_belongs_to_plate(self, event_id: int, plate: str) -> bool:
+        """The access check behind every owner action: is this event actually
+        about this resident's vehicle?"""
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT 1 FROM events WHERE id = ? AND plate = ?",
+                (event_id, plate)).fetchone()
+            return r is not None
 
     # -- learned normalcy ----------------------------------------------------
     def save_normalcy(self, camera: str, rows: list) -> None:

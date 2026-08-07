@@ -51,6 +51,25 @@ account above.
     Changes apply immediately — no restart.
 * **Events** — anomalies, with clips.
 
+## The resident app (owners see their own alerts on their phone)
+
+Residents get a small phone app (a web app they can "Add to Home Screen") that
+shows **only their own** vehicle's alerts, the evidence clip for each, their
+gate entry/exit history, and one tap to confirm **real** or **false alarm** —
+the same tap that trains the system and, on a false alarm, deletes the clip.
+
+To give a resident access, mint their personal link (it is scoped to their
+registered plate and carries a secret, so hand it to them privately):
+
+```
+curl -X POST http://<ip>:8000/api/registry/<PLATE>/owner-link
+```
+
+The response contains a `link`. The resident opens it once on their phone; from
+then on the app remembers them. They can install it to the home screen and it
+opens like a native app. One resident can never see another's data — every
+request is checked against the plate behind their link.
+
 To check it is healthy without logging in, open
 `http://<ip>:8000/health` — it lists the connected cameras and whether each is
 online.
