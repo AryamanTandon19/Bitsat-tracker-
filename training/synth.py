@@ -247,10 +247,51 @@ def break_in(rng) -> tuple:
     return _frames(track), F.Context(hour=2.0 if night else 21.0, night=night)
 
 
+def loading(rng) -> tuple:
+    """A resident loading luggage into their own boot: reaches the car, opens
+    the trunk, makes several trips to and fro carrying things, then leaves.
+
+    This is the hardest *normal* case in the whole set — long dwell AND contact
+    AND back-and-forth motion, which is precisely what a break-in also looks
+    like. It is the natural hard negative: a fresh brain that has never seen it
+    tends to flag it, and that mistake is what the hard-negative loop mines and
+    fixes. (See training/hardneg.py.) It is a registered vehicle, because it is
+    the owner's car.
+    """
+    approach = rng.randint(8, 11)
+    trips = rng.randint(3, 5)
+    boot = (VEH_FOOT[0] + rng.uniform(-10, 12), VEH_FOOT[1] + rng.uniform(-4, 10))
+    track = []
+    for i in range(approach):
+        f = i / (approach - 1)
+        track.append((160 + (boot[0] - 160) * f + _wobble(rng, 3),
+                      440 + (boot[1] - 440) * f + _wobble(rng, 3), PERSON_H, 0.9))
+    # each trip: step away to fetch a bag, come back to the boot and set it down
+    for _ in range(trips):
+        away = (boot[0] + rng.uniform(-90, -50), boot[1] + rng.uniform(15, 45))
+        for f in (0.5, 1.0, 0.5, 0.0):           # out and back
+            cx = boot[0] + (away[0] - boot[0]) * f + _wobble(rng, 3)
+            cy = boot[1] + (away[1] - boot[1]) * f + _wobble(rng, 3)
+            track.append((cx, cy, PERSON_H, 0.9))
+        for _ in range(rng.randint(3, 6)):        # at the boot, loading
+            track.append((boot[0] + _wobble(rng, 3), boot[1] + _wobble(rng, 2),
+                          PERSON_H, 0.9))
+    for i in range(approach):                     # drive-off walk to the door
+        f = i / (approach - 1)
+        track.append((boot[0] + (760 - boot[0]) * f + _wobble(rng, 3),
+                      boot[1] + (430 - boot[1]) * f + _wobble(rng, 3),
+                      PERSON_H, 0.9))
+    return _frames(track), F.Context(hour=11.0, vehicle_registered=True)
+
+
 GENERATORS = {
     "walk_past": walk_past, "own_car": own_car, "delivery": delivery,
     "furniture": furniture, "loiter": loiter, "circle": circle,
     "break_in": break_in,
+    # available for the hard-negative loop and richer training, but deliberately
+    # NOT in SCENARIOS: it is a confuser used on purpose to exercise the miner,
+    # so it stays out of the default balanced dataset.
+    "loading": loading,
 }
 
 
@@ -293,6 +334,25 @@ def _row(scenario: str, instance: int, frames, ctx) -> dict | None:
         "features": feats,
         "why": F.explain(feats),
     }
+
+
+def make_rows(scenario: str, count: int, seed: int = 0,
+              split: str = "train") -> list:
+    """Feature rows for one scenario — handy for the hard-negative loop and for
+    topping up the normal library with a specific behaviour. Every row is tagged
+    with the given split and a unique source video, so nothing leaks."""
+    if scenario not in GENERATORS:
+        raise ValueError(f"unknown scenario {scenario!r}")
+    rng = random.Random((hash(scenario) ^ seed) & 0xFFFFFFFF)
+    rows = []
+    for i in range(count):
+        r = random.Random(rng.random())
+        frames, ctx = GENERATORS[scenario](r)
+        row = _row(scenario, i, frames, ctx)
+        if row is not None:
+            row["split"] = split
+            rows.append(row)
+    return rows
 
 
 def dataset(per_scenario: int = 60, seed: int = 0,
