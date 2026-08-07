@@ -86,6 +86,28 @@ def _confusion(rows: list, brain: BehaviorBrain) -> dict:
                                       if total_s > 0 else None)}
 
 
+def _print_night_breakdown(rows: list, brain: BehaviorBrain) -> None:
+    """Split the test metrics by day vs night.
+
+    Night is the hard case for cheap CCTV, and an overall number hides it: a
+    model can look fine on a set that is mostly daytime while quietly failing
+    after dark. Printing the two side by side makes that failure visible instead
+    of averaged away.
+    """
+    night = [r for r in rows if r.get("night")]
+    day = [r for r in rows if not r.get("night")]
+    if not night or not day:
+        return                                   # need both to compare
+    print("  by light:")
+    for name, subset in (("day  ", day), ("night", night)):
+        c = _confusion(subset, brain)
+        rec = "n/a" if c["recall"] is None else f"{c['recall']:.2f}"
+        fph = ("n/a" if c["false_alarms_per_hour"] is None
+               else f"{c['false_alarms_per_hour']:.1f}")
+        print(f"    {name}: recall {rec}  FPR {c['false_positive_rate']:.3f}  "
+              f"false-alarms/hr {fph}  (n={len(subset)})")
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(
         description=__doc__,
@@ -147,6 +169,7 @@ def main(argv=None) -> int:
         if c["false_alarms_per_hour"] is not None:
             print(f"  false alarms/hour: {c['false_alarms_per_hour']:.1f}")
         print(f"  confusion: tp={c['tp']} fp={c['fp']} fn={c['fn']} tn={c['tn']}")
+        _print_night_breakdown(by["test"], brain)
 
     out = brain.save(args.out)
     print(f"\nsaved brain -> {out}")

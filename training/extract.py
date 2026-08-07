@@ -37,14 +37,23 @@ from training import manifest as M
 VEHICLES = {"car", "truck", "bus", "motorcycle"}
 
 
-def track_clip(path, detector, stride: int = 3, max_frames: int = 0) -> list:
+def track_clip(path, detector, stride: int = 3, max_frames: int = 0,
+               low_light: str = "auto") -> list:
     """Decode a clip and return MultiFrames with tracked boxes.
 
     `stride` skips frames: the pipeline itself only infers at `process_fps`
     (6 by default against 30 fps source), so tracking every frame here would
     measure a system nobody runs.
+
+    `low_light` mirrors the live pipeline: dark night frames are brightened
+    (CLAHE + gamma) BEFORE detection, exactly as `app/main.py` does before YOLO.
+    Without this the model would learn from un-brightened night footage and then
+    meet brightened footage in production — a silent day/night train-serve skew
+    that would quietly wreck night recall. "auto" only touches dark frames.
     """
     import cv2
+
+    from app.enhance import enhance_frame
 
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
@@ -58,8 +67,10 @@ def track_clip(path, detector, stride: int = 3, max_frames: int = 0) -> list:
             if not ok:
                 break
             if idx % stride == 0:
+                proc = (enhance_frame(frame, low_light)
+                        if low_light and low_light != "off" else frame)
                 people, vehicles = {}, {}
-                for d in detector.track(frame):
+                for d in detector.track(proc):
                     box = F.Box(*d.xyxy, conf=d.conf)
                     if d.cls_name == "person":
                         people[d.track_id] = box
@@ -151,9 +162,12 @@ def main(argv=None) -> int:
     from app.detector import Detector
     cfg = yaml.safe_load(open(args.config))
     det = Detector(cfg["detection"])
+    low_light = cfg["detection"].get("low_light", "auto")
     print(f"detector : {cfg['detection'].get('model')} @"
           f"{cfg['detection'].get('imgsz')} conf "
           f"{cfg['detection'].get('confidence')} on {det.device}")
+    print(f"low-light: {low_light}  (brightens dark frames before detection, "
+          "matching live)")
     print(f"clips    : {len(records)}  (every {args.stride}th frame)\n")
 
     rows, t0, seconds = [], time.time(), 0.0
@@ -162,7 +176,7 @@ def main(argv=None) -> int:
         if not clip_path.exists():
             print(f"  ! {rec.clip_id}: file is gone")
             continue
-        frames = track_clip(clip_path, det, args.stride)
+        frames = track_clip(clip_path, det, args.stride, low_light=low_light)
         got = rows_for_clip(rec, frames)
         rows += got
         seconds += rec.duration_s
