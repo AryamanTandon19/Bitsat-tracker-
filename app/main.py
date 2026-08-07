@@ -30,7 +30,8 @@ from .hybrid import (HybridSecurityMonitor, SpecialistObservation,
 from .incidents import IncidentGate
 from .notify import TelegramNotifier
 from .plates import PlateReader, fuzzy_match
-from .rules import SUSPICIOUS_ACTIVITY, Event, RulesEngine
+from .eventgraph import EventGraph, sub_events_from_signals
+from .rules import SUSPICIOUS_ACTIVITY, Event, RulesEngine, point_in_polygon
 from . import slots as slots_mod
 from . import users as users_mod
 from . import analyze as analyze_mod
@@ -129,6 +130,18 @@ class CameraPipeline(threading.Thread):
                 log.exception("[%s] could not load learned normalcy", name)
         self._furniture_tids: set = set()
         self._normalcy_saved = 0.0
+        # event graph: each track's timeline of observable sub-events, so a
+        # sequence (approached -> lingered -> reached in) becomes a named event
+        # that fusion reads as one more line of evidence. Additive: it enriches
+        # the fusion state_chain where fusion already runs, and changes nothing
+        # about the free layer on its own.
+        eg_cfg = ctx.config.get("eventgraph") or {}
+        self.event_graph = EventGraph(
+            refractory_s=float(eg_cfg.get("refractory_s", 2.0)),
+            memory_s=float(eg_cfg.get("memory_s", 120.0)),
+            dwell_s=float(eg_cfg.get("dwell_s", 5.0)))
+        self._graph_pruned = 0.0
+        self._last_graph_event = None
 
     def stop(self):
         self._stop.set()
@@ -138,6 +151,39 @@ class CameraPipeline(threading.Thread):
         self.zones = zones or {}
         self.rules.set_zones(self.zones)
         self.trigger.set_zones(self.zones)
+
+    def _update_event_graph(self, detections, reasons, pose_signals, ts):
+        """Feed the event graph this frame; return the strongest derived chain.
+
+        Every person accrues zone membership and their own pose; the persons the
+        trigger flagged as involved also get the frame's vehicle-interaction
+        reasons. Returns the highest-severity derived chain across tracks (or
+        None) for fusion to weigh — the graph never raises an alert by itself.
+        """
+        involved = self.trigger.last_involved
+        rank = {"HIGH": 2, "MEDIUM": 1}
+        best = None
+        for d in detections:
+            if not d.is_person:
+                continue
+            tid = int(d.track_id)
+            zones_hit = [z for z, poly in self.zones.items()
+                         if poly and point_in_polygon(d.foot_point, poly)]
+            rs = reasons if tid in involved else ()
+            kinds = sub_events_from_signals(
+                zones_hit=zones_hit, reasons=rs,
+                pose=(pose_signals or {}).get(tid, ()))
+            if kinds:
+                self.event_graph.observe(tid, ts, kinds)
+            ev = self.event_graph.derive(tid, ts)
+            if ev is not None and (best is None or
+                                   rank.get(ev.severity, 0) > rank.get(best.severity, 0)):
+                best = ev
+        if ts - self._graph_pruned > 30:
+            self._graph_pruned = ts
+            self.event_graph.prune(ts)
+        self._last_graph_event = best
+        return best.chain if best is not None else None
 
     def run(self):
         while not self._stop.is_set():
@@ -250,6 +296,16 @@ class CameraPipeline(threading.Thread):
             break_in = TRIG_BREAK_IN in reasons
             theft_chain = TRIG_DEPARTURE in reasons
 
+            # event graph: accrue every person's timeline and derive sequences.
+            # Always runs (cheap, pure), so history is complete; its output only
+            # feeds fusion below, never raises an alert by itself.
+            graph_chain = None
+            try:
+                graph_chain = self._update_event_graph(
+                    detections, reasons, pose_signals, ts)
+            except Exception:                            # noqa: BLE001
+                log.exception("[%s] event graph failed", self.cam_name)
+
             # hybrid specialist scoring + fusion. Runs every analyzed frame so
             # the rolling clip buffer stays warm; when enabled, fusion is the
             # FINAL gate on severity (and can suppress an uncorroborated
@@ -271,7 +327,7 @@ class CameraPipeline(threading.Thread):
                         contradictions.add("registered_plate")
                     ev_bundle = build_evidence(
                         self.cam_name, reasons, obs, relationship=relationship,
-                        contradictions=contradictions)
+                        state_chain=graph_chain, contradictions=contradictions)
                     # the brain refines candidates; fusion stays the final gate,
                     # so a lone brain score never pages a human (see app/fusion).
                     if self.brain_scorer is not None:
@@ -309,6 +365,11 @@ class CameraPipeline(threading.Thread):
                         sev = "HIGH"
                         desc = ("POSSIBLE BREAK-IN AT VEHICLE: strike/reach "
                                 "detected at the car (" + ", ".join(reasons) + ")")
+                    # the event graph explains the *sequence* behind the alert,
+                    # e.g. "approached the vehicle → stayed 7s → reached in"
+                    if self._last_graph_event is not None:
+                        desc += " | sequence: " + " → ".join(
+                            self._last_graph_event.reasons)
                     # fusion is the final gate when the hybrid layer is on:
                     # CONFIRMED->HIGH, AI_REVIEW->MEDIUM, WATCH/NORMAL->suppress
                     if fusion_result is not None:

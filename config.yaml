@@ -180,6 +180,16 @@ autoconnect:
 normalcy:
   enabled: true
 
+# The event graph: each tracked person's timeline of observable sub-events
+# (entered a zone, approached a vehicle, lingered, reached in), from which a
+# sequence like "approached -> stayed -> interacted" is named and handed to the
+# fusion layer as one more line of evidence (see app/eventgraph.py). Additive
+# and always on; it never raises an alert by itself.
+eventgraph:
+  refractory_s: 2.0              # collapse a continuing state to one node per 2s
+  memory_s: 120                  # forget a track this long after it goes quiet
+  dwell_s: 5.0                   # "lingered" means near a vehicle this many seconds
+
 # The behaviour brain: a learned, explainable score for how a person moved near
 # a vehicle (see app/brain.py and docs/THE_BRAIN.md). It reads a trained model
 # from model_path; if that file does not exist the whole system runs on the
