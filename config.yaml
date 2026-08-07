@@ -17,12 +17,17 @@ cameras:
       restricted: []     # A4: restricted-zone entry at odd hours
 
 detection:
-  model: "yolo11n.pt"          # nano model; auto-downloads on first run.
-                               # For dark/low-res footage use "yolo11s.pt" or
-                               # "yolo11m.pt" — much better at small/dim people.
+  # Measured on real 1920x1080 MEVA CCTV: yolo11n @ 640 found ~5 people across
+  # 40 frames where yolo11s @ 1280 found ~19 — the nano model is effectively
+  # BLIND to the small, distant people that a wide outdoor camera actually sees,
+  # and the whole behaviour layer depends on seeing the person. Recall of the
+  # person beats a few ms of speed for a security product, so the default is the
+  # small model at high resolution. On a CPU box watching many cameras this is
+  # heavy: drop to "yolo11n.pt" / imgsz 640 to trade recall for speed.
+  model: "yolo11s.pt"          # small model — far better on small/dim people
   device: "auto"               # auto | cpu | cuda:0
-  imgsz: 640                   # raise to 1280 for tiny/far subjects
-  confidence: 0.35             # lower (e.g. 0.15) to keep faint person detections
+  imgsz: 1280                  # tiny/far subjects on wide scenes need this
+  confidence: 0.20             # keep faint, distant person detections (measured)
   low_light: "auto"            # off | auto | on — brighten dark night frames
                                # BEFORE detection so shadowed people are visible
                                # (auto = only when the scene is dim/has dark areas)
