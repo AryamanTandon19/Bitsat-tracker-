@@ -71,3 +71,39 @@ the config note tells a CPU-bound, many-camera site how to trade back down.
 None of these are code — they are footage and GPU time. The pipelines to consume
 them are all built and tested; this cycle proved they run on real frames and
 fixed the one thing that would have quietly crippled them.
+
+---
+
+## Cycle 2 — training the brain on real footage
+
+Then the whole training path was run on real MEVA, end to end: mine → cut →
+verify → delete raw → extract features → train. It **works** — a brain was
+trained from real footage with no code changes. But the numbers are the honest
+part:
+
+- **Mined:** 120 real clips (1280-wide) from 20 hospital source videos, ~25 MB
+  after deleting the raw downloads — the storage-safe micro-batch cycle, on real
+  data.
+- **Extracted:** only **41** person-vehicle behaviour windows from those 120
+  clips — about **0.3 windows per clip**. The hospital scene has a car in nearly
+  every frame but people rarely come near one, so there is very little
+  *interaction* to learn from.
+- **Trained:** an anomaly-only brain (all 41 rows are normal — MEVA is ordinary
+  footage). It produced a model, but 11 training rows and a 1-row test split make
+  its numbers meaningless (a single test sample reported as "600 false
+  alarms/hour" — an artifact, not a measurement). **Not deployed.**
+
+**The finding is the yield, and it is actionable.** A trustworthy anomaly model
+wants a few hundred interaction windows. At ~0.3/clip on a hospital forecourt
+that is ~1000 clips; on the product's real scene — a parking lot people walk
+*through* to reach their cars — the yield per clip is far higher, so the same
+few hundred windows come from far less footage. The lesson is not "need more
+compute", it is "**mine the right scene**": cameras that watch people and cars
+*interact*, not a vehicle car-park nobody walks into.
+
+What this cycle proved: the real-data training pipeline runs on real frames and
+obeys the storage-safe cycle. What it still needs: interaction-rich footage
+(parking-lot MEVA cameras + UCF-Crime positives) and, realistically, the target
+GPU — `yolo11s` @ high resolution runs well under real time on a CPU box, so
+extracting the thousands of frames a real model needs is a GPU job, not a
+laptop-CPU one.
