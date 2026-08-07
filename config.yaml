@@ -203,6 +203,7 @@ brain:
   window_s: 40                   # how far back to look — loitering is a 30-40s story
   infer_every_s: 2.0             # score the hottest pair this often
   min_span_s: 6.0                # need this much motion history before judging
+  reload_check_s: 60             # how often to pick up a retrained model (self-improve)
 
 rules:
   night_hours: { start: "23:00", end: "05:00" }

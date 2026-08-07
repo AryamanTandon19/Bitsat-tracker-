@@ -135,6 +135,25 @@ else about running the system changes.
 
 ---
 
+## It improves itself — the self-improve loop
+
+Once the system is running with a trained brain, it gets better on its own from
+the ❌ taps guards and residents already make. One command does the whole cycle:
+
+```
+python -m training.self_improve
+```
+
+It pulls every "false alarm" verdict out of the database, adds them to the
+training set as hard negatives, retrains the brain, and **deploys the new model
+only if it did not get worse** on the held-out split (a wrong turn must never
+reach the cameras unattended). The running system watches the model file and
+loads the new brain within a minute — no restart. Put that one command on a
+schedule (cron / Task Scheduler / a Routine, e.g. nightly) and the loop runs
+itself: a guard taps ❌ today, every camera is a little better tomorrow.
+
+Use `--dry-run` to see what it would do without deploying.
+
 ## The honest status
 
 - **Built and proven on synthetic motion:** the whole chain — tracks → geometry

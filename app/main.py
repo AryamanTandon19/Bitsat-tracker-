@@ -157,6 +157,19 @@ class CameraPipeline(threading.Thread):
         self.rules.set_zones(self.zones)
         self.trigger.set_zones(self.zones)
 
+    def set_brain(self, brain) -> None:
+        """Point this camera at a newly deployed brain (or drop it if None).
+        Creates the scorer if there wasn't one, updates it if there was."""
+        self.brain = brain
+        if brain is None or not getattr(brain, "ready", False):
+            self.brain_scorer = None
+            return
+        if self.brain_scorer is None:
+            self.brain_scorer = brain_live.LiveBrainScorer(
+                brain, self.cam_name, self.ctx.config.get("brain") or {})
+        else:
+            self.brain_scorer.set_brain(brain)
+
     def _update_event_graph(self, detections, reasons, pose_signals, ts):
         """Feed the event graph this frame; return the strongest derived chain.
 
@@ -599,6 +612,16 @@ class AppContext:
             else:
                 log.info("no behaviour brain at %s — running on the free layer",
                          path)
+            # Watch the model file so a retrain (self-improve loop, separate
+            # process) goes live on its own — the cameras pick it up within a
+            # minute, no restart. Also catches a first model appearing later.
+            from .brainwatch import ModelWatcher
+            self.brain_watcher = ModelWatcher(
+                path, self.reload_brain,
+                interval_s=float(brain_cfg.get("reload_check_s", 60)))
+            self.brain_watcher.start()
+        else:
+            self.brain_watcher = None
         # Delete old footage on a timer so the box never fills up and never
         # hoards a resident's video. Watches the clip directory's disk.
         ret_cfg = config.get("retention") or {}
@@ -623,6 +646,27 @@ class AppContext:
         if pipe is not None:
             pipe.set_zones(clean)
         return clean
+
+    def reload_brain(self, path: str | None = None) -> bool:
+        """Load the brain from disk and point every running camera at it — the
+        hot half of the self-improve loop, so a retrained model goes live with
+        no restart. Returns True if a usable brain was loaded."""
+        from .brain import BehaviorBrain
+        bc = self.config.get("brain") or {}
+        path = path or bc.get("model_path", "models/brain.joblib")
+        new = BehaviorBrain.load(path)
+        if new is None or not new.ready:
+            return False
+        self.brain = new
+        for pipe in list(self.pipelines.values()):
+            if hasattr(pipe, "set_brain"):
+                try:
+                    pipe.set_brain(new)
+                except Exception:                        # noqa: BLE001
+                    log.exception("could not hand the new brain to %s",
+                                  getattr(pipe, "cam_name", "?"))
+        log.info("behaviour brain reloaded from %s", path)
+        return True
 
     def _discard_clip(self, event_id: int, clip_path: str, reason: str,
                       actor: str = "ai_review") -> None:
@@ -787,6 +831,8 @@ class AppContext:
     def stop(self):
         if self.janitor is not None:
             self.janitor.stop()
+        if getattr(self, "brain_watcher", None) is not None:
+            self.brain_watcher.stop()
         for p in self.pipelines.values():
             p.stop()
         for w in self.workers.values():

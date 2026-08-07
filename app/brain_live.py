@@ -105,6 +105,13 @@ class LiveBrainScorer:
         while self._frames and self._frames[0].ts < cutoff:
             self._frames.popleft()
 
+    def set_brain(self, brain: BehaviorBrain) -> None:
+        """Swap in a freshly retrained brain without dropping the frame window.
+        The confirmer is rebuilt because the new brain may have a new operating
+        threshold."""
+        self.brain = brain
+        self.confirmer = brain.make_confirmer()
+
     def reset(self) -> None:
         """Forget everything (camera disconnect / scene change / incident end)."""
         self._frames.clear()
