@@ -1622,6 +1622,19 @@ class Database:
                           {"clip_id": clip_id, "event_id": event_id, "path": path})
         return clip_id
 
+    def clip_for_event(self, event_id: int) -> dict | None:
+        """The (most recent, live) clip recorded for an event, or None.
+
+        Used to pull evidence back when an alert turns out to be a false one —
+        an AI review that clears it, or an operator who marks it — so the clip is
+        not kept as evidence of something that did not happen.
+        """
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT * FROM clips WHERE event_id = ? AND deleted = 0"
+                " ORDER BY id DESC LIMIT 1", (event_id,)).fetchone()
+            return dict(r) if r else None
+
     def get_clip(self, clip_id: int) -> dict | None:
         with self._lock:
             cur = self._conn.execute("SELECT * FROM clips WHERE id = ?", (clip_id,))

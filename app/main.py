@@ -624,6 +624,33 @@ class AppContext:
             pipe.set_zones(clean)
         return clean
 
+    def _discard_clip(self, event_id: int, clip_path: str, reason: str,
+                      actor: str = "ai_review") -> None:
+        """A cleared alert is not evidence: mark its clip deleted and remove the
+        file(s). Safe when there is no clip on record."""
+        row = self.db.clip_for_event(event_id)
+        if row is not None:
+            self.db.mark_clip_deleted(row["id"], actor, reason)
+            paths = [row.get("path"), row.get("sidecar_path")]
+        else:
+            paths = [clip_path]
+        for p in paths:
+            if p:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
+    def discard_event_clip(self, event_id: int, reason: str,
+                           actor: str = "operator") -> bool:
+        """Public: drop an event's clip when it turns out to be a false alarm
+        (e.g. an operator's ❌). Returns True if a clip was removed."""
+        row = self.db.clip_for_event(event_id)
+        if row is None:
+            return False
+        self._discard_clip(event_id, row.get("path", ""), reason, actor)
+        return True
+
     def remember_decision(self, event_id: int, decision) -> None:
         with self._decisions_lock:
             self._decisions[event_id] = decision
@@ -666,6 +693,20 @@ class AppContext:
                 log.info("AI review [%s]: %s (₹%.2f)", event.camera,
                          result["summary"] or "not suspicious",
                          result["cost_inr"])
+                # the evidence rule: a clip is kept ONLY when the alert is real.
+                # If the AI review clears it, there is no alert and no evidence —
+                # the clip is discarded rather than stored for 14 days. Inert
+                # unless a reviewer is configured (no key => no verdict to gate
+                # on, so nothing changes).
+                keep_only = bool((self.config.get("clips") or {})
+                                 .get("keep_only_confirmed", True))
+                if keep_only and not result.get("suspicious"):
+                    self._discard_clip(
+                        event_id, clip_path,
+                        "AI review cleared it (not suspicious)")
+                    log.info("cleared by AI review — no alert sent, clip "
+                             "discarded (event %s)", event_id)
+                    return
         # fallback: simple one-shot VLM description
         if desc is None and self.vlm.enabled:
             if keyframes is None:

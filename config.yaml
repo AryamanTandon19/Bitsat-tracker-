@@ -273,10 +273,19 @@ rules:
 
 clips:
   dir: "clips"
-  pre_event_s: 10
-  post_event_s: 20
-  buffer_s: 60                 # rolling in-memory buffer per camera
+  # The evidence clip: minutes before + after the trigger. The product spec is
+  # 3 + 3 minutes. The "before" half is served from an in-memory ring buffer, so
+  # pre_event_s is a direct memory cost: ~pre_event_s * fps JPEGs per camera
+  # (180s * 10fps ≈ 1800 frames ≈ 60-90 MB/camera). 30-60s each is plenty for
+  # most sites and far lighter — turn these down if memory is tight.
+  pre_event_s: 180             # 3 minutes before the trigger
+  post_event_s: 180            # 3 minutes after the trigger
+  buffer_s: 200                # rolling in-memory buffer per camera (>= pre_event_s)
   fps: 10                      # stored clip framerate
+  # A clip is evidence only when the alert is real. When true, an alert the AI
+  # review clears — or an operator marks a false alarm — has its clip discarded
+  # instead of stored. Inert without an AI reviewer (no verdict to act on).
+  keep_only_confirmed: true
 
 storage:
   db_path: "watchdog.db"

@@ -316,7 +316,16 @@ def create_app(ctx) -> FastAPI:
         if ctx.db.get_event(event_id) is None:
             raise HTTPException(404, "event not found")
         ctx.db.insert_feedback(event_id, verdict, user["display_name"])
-        return {"ok": True, "event_id": event_id, "verdict": verdict}
+        # a false alarm is not evidence: drop its clip if the deployment keeps
+        # only confirmed clips (and the context supports it).
+        discarded = False
+        if verdict == "false_alarm" and \
+                (ctx.config.get("clips") or {}).get("keep_only_confirmed", True) \
+                and hasattr(ctx, "discard_event_clip"):
+            discarded = ctx.discard_event_clip(
+                event_id, "operator marked false alarm", user["display_name"])
+        return {"ok": True, "event_id": event_id, "verdict": verdict,
+                "clip_discarded": discarded}
 
     # ------------------------------------------- notices (to residents)
     @app.get("/api/notices")
