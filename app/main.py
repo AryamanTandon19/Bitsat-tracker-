@@ -21,10 +21,12 @@ from .camera import CameraWorker, frame_stats
 from .clips import ClipSaver
 from .db import Database
 from .detector import Detector, annotate
+from . import brain_live
 from . import discovery
 from .enhance import enhance_frame
 from .fusion import AI_REVIEW, CONFIRMED_INCIDENT, fuse
-from .hybrid import HybridSecurityMonitor, build_evidence, route_from_reasons
+from .hybrid import (HybridSecurityMonitor, SpecialistObservation,
+                     build_evidence, route_from_reasons)
 from .incidents import IncidentGate
 from .notify import TelegramNotifier
 from .plates import PlateReader, fuzzy_match
@@ -68,6 +70,16 @@ class CameraPipeline(threading.Thread):
         self.monitor = HybridSecurityMonitor(ctx.config.get("hybrid", {}), name)
         self.monitor.warmup()
         self.hybrid_on = self.monitor.enabled
+        # behaviour brain: a learned, explainable judgement of how a person
+        # moved near a vehicle. One scorer per camera, sharing the read-only
+        # brain loaded at startup. It refines the free layer's candidates —
+        # suppressing ordinary ones, corroborating real ones — via fusion, and
+        # never alerts on its own. Absent brain => free layer unchanged.
+        self.brain = getattr(ctx, "brain", None)
+        self.brain_scorer = None
+        if self.brain is not None and self.brain.ready:
+            self.brain_scorer = brain_live.LiveBrainScorer(
+                self.brain, name, ctx.config.get("brain") or {})
         self.pose = None
         if trig_cfg.get("on_pose", True):
             from .pose import PoseEstimator
@@ -228,23 +240,39 @@ class CameraPipeline(threading.Thread):
             # FINAL gate on severity (and can suppress an uncorroborated
             # free-layer alarm). No-op / free-layer-only when disabled.
             fusion_result = None
-            if self.hybrid_on:
+            if self.hybrid_on or self.brain_scorer is not None:
                 try:
-                    route = route_from_reasons(reasons)
-                    if any(d.is_vehicle for d in detections):
-                        route["vehicle"] = True
-                    obs = self.monitor.observe(frame, ts, route=route)
+                    if self.hybrid_on:
+                        route = route_from_reasons(reasons)
+                        if any(d.is_vehicle for d in detections):
+                            route["vehicle"] = True
+                        obs = self.monitor.observe(frame, ts, route=route)
+                    else:
+                        obs = SpecialistObservation()
                     relationship = bool(self.trigger.last_involved) and bool(
                         {TRIG_NEAR_VEHICLE, TRIG_AT_VEHICLE} & set(reasons))
                     contradictions = set()
                     if any(pi.get("registered") for pi in plate_info.values()):
                         contradictions.add("registered_plate")
-                    fusion_result = fuse(build_evidence(
+                    ev_bundle = build_evidence(
                         self.cam_name, reasons, obs, relationship=relationship,
-                        contradictions=contradictions))
+                        contradictions=contradictions)
+                    # the brain refines candidates; fusion stays the final gate,
+                    # so a lone brain score never pages a human (see app/fusion).
+                    if self.brain_scorer is not None:
+                        reg_tids = {tid for tid, pi in plate_info.items()
+                                    if pi.get("registered")}
+                        hour, night = brain_live.hour_and_night(ts)
+                        reading = self.brain_scorer.observe(
+                            detections, ts, registered_tids=reg_tids,
+                            night=night, hour=hour)
+                        if reading is not None:
+                            self.brain.contribute(ev_bundle, reading.features,
+                                                  confirmed=reading.confirmed)
+                    fusion_result = fuse(ev_bundle)
                 except Exception:
-                    log.exception("[%s] hybrid layer failed; free layer only",
-                                  self.cam_name)
+                    log.exception("[%s] hybrid/brain layer failed; free layer "
+                                  "only", self.cam_name)
                     fusion_result = None
 
             if fire:
@@ -460,6 +488,25 @@ class AppContext:
             if acfg.get("enabled", True) else None
         self.assistant = TuningAssistant(config.get("assistant", {}))
         self.incident_gate = IncidentGate(config.get("incidents", {}))
+        # The behaviour brain: a learned, explainable score for how a person
+        # moved near a vehicle. Loaded from disk if a trained model exists;
+        # with none present the whole system runs on the free layer exactly as
+        # before — nothing to configure to keep today's behaviour.
+        from .brain import BehaviorBrain
+        brain_cfg = config.get("brain") or {}
+        self.brain = None
+        if brain_cfg.get("enabled", True):
+            path = brain_cfg.get("model_path", "models/brain.joblib")
+            self.brain = BehaviorBrain.load(path)
+            if self.brain is not None and self.brain.ready:
+                kind = ("supervised+anomaly" if self.brain.clf is not None
+                        else "anomaly-only")
+                synth = " [SYNTHETIC — retrain on real footage]" \
+                    if self.brain.meta.get("synthetic") else ""
+                log.info("behaviour brain loaded: %s (%s)%s", path, kind, synth)
+            else:
+                log.info("no behaviour brain at %s — running on the free layer",
+                         path)
         # Delete old footage on a timer so the box never fills up and never
         # hoards a resident's video. Watches the clip directory's disk.
         ret_cfg = config.get("retention") or {}

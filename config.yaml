@@ -180,6 +180,20 @@ autoconnect:
 normalcy:
   enabled: true
 
+# The behaviour brain: a learned, explainable score for how a person moved near
+# a vehicle (see app/brain.py and docs/THE_BRAIN.md). It reads a trained model
+# from model_path; if that file does not exist the whole system runs on the
+# free layer exactly as before, so this is safe to leave on. Train one with:
+#   python -m training.brain_train --features training/data/features.jsonl
+# or, for a pipeline self-check on synthetic motion (not a real number):
+#   python -m training.brain_train --synth --out models/brain.joblib
+brain:
+  enabled: true
+  model_path: models/brain.joblib
+  window_s: 40                   # how far back to look — loitering is a 30-40s story
+  infer_every_s: 2.0             # score the hottest pair this often
+  min_span_s: 6.0                # need this much motion history before judging
+
 rules:
   night_hours: { start: "23:00", end: "05:00" }
   debounce_s: 120              # one event type per tracked object per N seconds
