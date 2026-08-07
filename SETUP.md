@@ -41,8 +41,14 @@ Open `http://<the machine's IP>:8000` in a browser and log in with the admin
 account above.
 
 * **View** — the live camera wall, with people and vehicles boxed in real time.
-* **Cameras** — what is connected, and the manual "add a camera" flow for a DVR
-  whose password is not a default.
+* **Cameras** — what is connected, the manual "add a camera" flow for a DVR
+  whose password is not a default, and two things worth setting per camera:
+  * **Where it looks** — "B-Block Main Gate, facing main road", so alerts name
+    the place instead of the device.
+  * **Zones** — draw the **entry**, **parking** and **restricted** areas right
+    on the camera picture. This is the biggest single accuracy gain: "a vehicle
+    stopped in the entry zone" is a far sharper alert than "a vehicle appeared".
+    Changes apply immediately — no restart.
 * **Events** — anomalies, with clips.
 
 To check it is healthy without logging in, open

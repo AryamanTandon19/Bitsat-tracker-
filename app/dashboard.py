@@ -272,6 +272,26 @@ def create_app(ctx) -> FastAPI:
         return StreamingResponse(mjpeg_gen(camera),
                                  media_type="multipart/x-mixed-replace; boundary=frame")
 
+    @app.get("/snapshot/{camera}")
+    def snapshot(camera: str, user: dict = Depends(require("triage"))):
+        """One still frame — the background the zone editor draws on. Same
+        pixels the pipeline sees, so a polygon drawn here lines up with what
+        the rules test against."""
+        jpg = None
+        pipe = ctx.pipelines.get(camera)
+        if pipe is not None:
+            jpg = pipe.annotated_jpeg
+        if jpg is None:
+            worker = ctx.workers.get(camera)
+            if worker is not None:
+                snap = worker.buffer_snapshot()
+                if snap:
+                    jpg = snap[-1][1]
+        if jpg is None:
+            raise HTTPException(404, "no frame yet")
+        return Response(content=jpg, media_type="image/jpeg",
+                        headers={"Cache-Control": "no-store"})
+
     # -------------------------------------------------------------- events
     @app.get("/api/events")
     def events(limit: int = 100, user: dict = Depends(require("triage"))):
@@ -1067,6 +1087,37 @@ def create_app(ctx) -> FastAPI:
         return {"ok": True, "name": name,
                 "location": ctx.db.describe_camera(name)}
 
+    @app.get("/api/cameras/{name}/zones")
+    def cameras_zones_get(name: str,
+                          user: dict = Depends(require("registry"))):
+        """The drawn zones for a camera, plus its frame size so the editor can
+        map clicks to source pixels."""
+        zones = ctx.db.get_camera_zones(name) or db_mod.clean_zones({})
+        cam = ctx.db.camera_by_name(name)
+        w = (cam or {}).get("width") or 0
+        h = (cam or {}).get("height") or 0
+        return {"name": name, "zones": zones, "width": w, "height": h}
+
+    @app.post("/api/cameras/zones")
+    def cameras_zones_set(name: str = Form(...), zones_json: str = Form(...),
+                          user: dict = Depends(require("registry"))):
+        """Save the polygons a guard drew, and apply them to the running camera
+        at once. Keyed by name, so a config.yaml camera can carry zones too."""
+        name = name.strip()
+        if not name:
+            raise HTTPException(400, "which camera?")
+        try:
+            zones = json.loads(zones_json)
+        except (ValueError, TypeError):
+            raise HTTPException(400, "zones_json is not valid JSON")
+        if not isinstance(zones, dict):
+            raise HTTPException(400, "zones must be an object of {kind: polygon}")
+        setter = getattr(ctx, "set_camera_zones", None)
+        clean = setter(name, zones, user["username"]) if setter \
+            else ctx.db.set_camera_zones(name, zones, user["username"])
+        return {"ok": True, "name": name, "zones": clean,
+                "counts": {k: len(v) for k, v in clean.items()}}
+
     @app.post("/api/cameras/scan")
     def cameras_scan(network: str = Form(...),
                      user: dict = Depends(require("registry"))):
@@ -1847,6 +1898,35 @@ footer{position:fixed;bottom:0;right:0;z-index:30;padding:6px 16px;font-size:10p
   </div>
  </div>
 
+ <div id="zn-panel" class="glass tbl-card" style="margin-top:16px;display:none">
+  <div class="tbl-head">Zones — <span id="zn-cam"></span></div>
+  <div style="padding:14px 16px">
+   <p class="cam-msg" style="margin-top:0">Draw where things matter, so alerts
+    get sharper: a vehicle stopped in the <b>entry</b> zone, a person lingering
+    in <b>parking</b>, anyone in a <b>restricted</b> area after hours. Click on
+    the picture to drop points; finish a shape when it encloses the area.</p>
+   <div class="cam-row">
+    <span>Drawing:</span>
+    <button class="mini-btn zn-kind" data-kind="entry" onclick="znSetKind('entry')">Entry</button>
+    <button class="mini-btn zn-kind" data-kind="parking" onclick="znSetKind('parking')">Parking</button>
+    <button class="mini-btn zn-kind" data-kind="restricted" onclick="znSetKind('restricted')">Restricted</button>
+    <span style="flex:1"></span>
+    <button class="mini-btn" onclick="znFinish()">Finish shape</button>
+    <button class="mini-btn" onclick="znUndo()">Undo point</button>
+    <button class="mini-btn" onclick="znClearKind()">Clear this kind</button>
+   </div>
+   <div id="zn-stage" style="position:relative;display:inline-block;max-width:100%;margin-top:10px">
+    <img id="zn-img" alt="camera view" style="display:block;max-width:100%;height:auto;border-radius:8px">
+    <canvas id="zn-canvas" style="position:absolute;left:0;top:0;cursor:crosshair"></canvas>
+   </div>
+   <div class="cam-row" style="margin-top:10px">
+    <button class="mini-btn" onclick="znSave()">Save zones</button>
+    <button class="mini-btn" onclick="znClose()">Cancel</button>
+    <span id="zn-msg" class="cam-msg"></span>
+   </div>
+  </div>
+ </div>
+
  <div class="glass tbl-card" style="margin-top:16px">
   <div class="tbl-head">Add a camera</div>
   <div style="padding:14px 16px">
@@ -1925,7 +2005,7 @@ async function camList(){
   <td>${c.width?c.width+'x'+c.height:'—'}</td>
   <td>${c.online?'<span class="ok">live</span>':c.running?'connecting':'stopped'}</td>
   <td>${cxEsc(c.from)}</td>
-  <td>${c.id?`<button class="mini-btn" onclick="camDrop(${c.id},'${cxEsc(c.name)}')">Remove</button>`:''}</td>
+  <td><button class="mini-btn" onclick='camZones(${j})'>Zones</button>${c.id?`<button class="mini-btn" onclick="camDrop(${c.id},'${cxEsc(c.name)}')">Remove</button>`:''}</td>
  </tr>`;}).join('');}
 
 let _cxLocName='';
@@ -1952,6 +2032,86 @@ async function camSaveCtx(){
    notes:document.getElementById('cx-loc-notes').value});
   camCloseCtx(); camList();
  }catch(e){ msg.textContent=e.message; }}
+
+// ---- zones: draw entry / parking / restricted on a still frame -----------
+const ZN={name:'',kind:'entry',zones:{},current:[],natW:0,natH:0,
+ colors:{entry:'#38bdf8',parking:'#f59e0b',restricted:'#ef4444'}};
+async function camZones(c){
+ ZN.name=c.name; ZN.kind='entry'; ZN.current=[];
+ document.getElementById('zn-cam').textContent=c.name;
+ document.getElementById('zn-msg').textContent='';
+ let data={zones:{},width:c.width||0,height:c.height||0};
+ try{ data=await (await fetch('/api/cameras/'+encodeURIComponent(c.name)+'/zones')).json(); }
+ catch(e){}
+ ZN.zones=Object.assign({entry:[],parking:[],restricted:[]},data.zones||{});
+ ZN.natW=data.width||0; ZN.natH=data.height||0;
+ ZN.current=(ZN.zones[ZN.kind]||[]).slice();
+ znHighlight();
+ const img=document.getElementById('zn-img');
+ img.onload=()=>{ if(!ZN.natW){ZN.natW=img.naturalWidth;ZN.natH=img.naturalHeight;} znLayout(); };
+ img.onerror=()=>{ document.getElementById('zn-msg').textContent=
+   'no live frame yet — start the camera, then reopen to draw on it'; znLayout(); };
+ img.src='/snapshot/'+encodeURIComponent(c.name)+'?t='+Date.now();
+ const p=document.getElementById('zn-panel');
+ p.style.display='block'; p.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function znClose(){document.getElementById('zn-panel').style.display='none';}
+function znHighlight(){
+ document.querySelectorAll('.zn-kind').forEach(b=>
+  b.style.outline=b.dataset.kind===ZN.kind?('2px solid '+ZN.colors[ZN.kind]):'none');}
+function znLayout(){
+ const img=document.getElementById('zn-img'), cv=document.getElementById('zn-canvas');
+ const w=img.clientWidth||640, h=img.clientHeight||360;
+ cv.width=w; cv.height=h; cv.style.width=w+'px'; cv.style.height=h+'px';
+ if(!ZN.natW){ZN.natW=w; ZN.natH=h;}
+ znDraw();
+}
+function znS2D(p){const cv=document.getElementById('zn-canvas');
+ return [p[0]*cv.width/ZN.natW, p[1]*cv.height/ZN.natH];}
+function znD2S(x,y){const cv=document.getElementById('zn-canvas');
+ return [x*ZN.natW/cv.width, y*ZN.natH/cv.height];}
+function znPoly(ctx,pts,color,active){
+ if(!pts.length) return;
+ ctx.beginPath();
+ pts.forEach((p,i)=>{const d=znS2D(p); i?ctx.lineTo(d[0],d[1]):ctx.moveTo(d[0],d[1]);});
+ if(!active) ctx.closePath();
+ ctx.lineWidth=2; ctx.strokeStyle=color; ctx.stroke();
+ if(!active){ctx.globalAlpha=0.18; ctx.fillStyle=color; ctx.fill(); ctx.globalAlpha=1;}
+ pts.forEach(p=>{const d=znS2D(p); ctx.beginPath();
+  ctx.arc(d[0],d[1],4,0,7); ctx.fillStyle=color; ctx.fill();});
+}
+function znDraw(){
+ const cv=document.getElementById('zn-canvas'), ctx=cv.getContext('2d');
+ ctx.clearRect(0,0,cv.width,cv.height);
+ for(const k of ['entry','parking','restricted'])
+  if(k!==ZN.kind) znPoly(ctx,ZN.zones[k]||[],ZN.colors[k],false);
+ znPoly(ctx,ZN.current,ZN.colors[ZN.kind],true);   // the one being edited
+}
+document.getElementById('zn-canvas').addEventListener('click',e=>{
+ const cv=document.getElementById('zn-canvas'), r=cv.getBoundingClientRect();
+ ZN.current.push(znD2S(e.clientX-r.left, e.clientY-r.top)); znDraw();
+});
+window.addEventListener('resize',()=>{
+ if(document.getElementById('zn-panel').style.display!=='none') znLayout();});
+function znCommit(){ZN.zones[ZN.kind]=ZN.current.length>=3?ZN.current.slice():[];}
+function znSetKind(k){znCommit(); ZN.kind=k; ZN.current=(ZN.zones[k]||[]).slice();
+ znHighlight(); znDraw();}
+function znFinish(){
+ const m=document.getElementById('zn-msg');
+ if(ZN.current.length<3){m.textContent='a shape needs at least 3 points'; return;}
+ znCommit(); m.textContent=ZN.kind+' zone set ('+ZN.current.length+' points)';}
+function znUndo(){ZN.current.pop(); znDraw();}
+function znClearKind(){ZN.current=[]; ZN.zones[ZN.kind]=[]; znDraw();}
+async function znSave(){
+ znCommit();
+ const m=document.getElementById('zn-msg'); m.textContent='saving…';
+ try{
+  const r=await cxPost('/api/cameras/zones',
+    {name:ZN.name, zones_json:JSON.stringify(ZN.zones)});
+  const c=r.counts||{};
+  m.innerHTML='<span class="ok">saved</span> — entry '+(c.entry||0)+
+   ', parking '+(c.parking||0)+', restricted '+(c.restricted||0)+' points';
+ }catch(e){ m.textContent=e.message; }}
 
 async function camScan(){
  const msg=document.getElementById('cx-scan-msg');

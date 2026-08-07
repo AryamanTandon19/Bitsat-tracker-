@@ -59,6 +59,15 @@ class CameraPipeline(threading.Thread):
         self.worker = worker
         self.zones = zones or {}
         self.ctx = ctx
+        # Zones a guard drew in the console (stored by name) are the source of
+        # truth and override whatever came from config / the cameras row, so an
+        # on-site correction sticks across restarts.
+        try:
+            drawn = ctx.db.get_camera_zones(name)
+        except Exception:                            # noqa: BLE001
+            drawn = None
+        if drawn:
+            self.zones = drawn
         self.rules = RulesEngine(name, self.zones, ctx.config["rules"])
         trig_cfg = ctx.config["rules"].get("trigger", {})
         self.trig_cfg = trig_cfg
@@ -123,6 +132,12 @@ class CameraPipeline(threading.Thread):
 
     def stop(self):
         self._stop.set()
+
+    def set_zones(self, zones: dict) -> None:
+        """Apply freshly-drawn zones to this running camera immediately."""
+        self.zones = zones or {}
+        self.rules.set_zones(self.zones)
+        self.trigger.set_zones(self.zones)
 
     def run(self):
         while not self._stop.is_set():
@@ -523,6 +538,14 @@ class AppContext:
         self._decisions_lock = threading.Lock()
         self.workers: dict[str, CameraWorker] = {}
         self.pipelines: dict[str, CameraPipeline] = {}
+
+    def set_camera_zones(self, name: str, zones: dict, actor: str = "") -> dict:
+        """Persist drawn zones and apply them live if the camera is running."""
+        clean = self.db.set_camera_zones(name, zones, actor)
+        pipe = self.pipelines.get(name)
+        if pipe is not None:
+            pipe.set_zones(clean)
+        return clean
 
     def remember_decision(self, event_id: int, decision) -> None:
         with self._decisions_lock:

@@ -313,6 +313,17 @@ CREATE TABLE IF NOT EXISTS camera_context (
     notes   TEXT,                        -- anything else the guard wrote
     updated_by TEXT, updated_at REAL
 );
+-- Zones drawn on a camera: entry / parking / restricted polygons, in pixels of
+-- the camera's own frame. Keyed by NAME so a config.yaml camera can carry drawn
+-- zones too, and so this is the single source of truth the editor writes and the
+-- pipeline reads — overriding whatever zones the config or the cameras row had.
+-- Zones are the biggest accuracy lever in the free layer: "a vehicle stopped in
+-- the ENTRY zone" is a far sharper signal than "a vehicle appeared somewhere".
+CREATE TABLE IF NOT EXISTS camera_zones (
+    name    TEXT PRIMARY KEY,
+    zones_json TEXT NOT NULL,            -- {"entry": [[x,y],...], "parking": [...], ...}
+    updated_by TEXT, updated_at REAL
+);
 """
 
 # columns added after first release — applied with ALTER TABLE on startup so
@@ -332,6 +343,34 @@ MIGRATIONS = [
     " DEFAULT 0",
     "ALTER TABLE object_annotations ADD COLUMN review_note TEXT",
 ]
+
+
+# The zone kinds the free layer understands (app/rules.py). Extra kinds are
+# allowed through — a site may draw its own — but these three always exist so
+# the editor and the rules agree on what can be drawn.
+ZONE_KINDS = ("entry", "parking", "restricted")
+
+
+def clean_zones(zones: dict | None) -> dict:
+    """Normalise drawn zones into storable, runtime-safe polygons.
+
+    Coerces every point to a float [x, y] pair, drops anything malformed, and
+    discards a polygon with fewer than three points (it cannot enclose an area).
+    The three known kinds are always present — empty if nothing was drawn — so
+    the pipeline never has to guess whether a zone is 'missing' or 'cleared'.
+    """
+    out: dict = {k: [] for k in ZONE_KINDS}
+    for kind, poly in (zones or {}).items():
+        pts = []
+        for p in (poly or []):
+            try:
+                if len(p) >= 2:
+                    pts.append([float(p[0]), float(p[1])])
+            except (TypeError, ValueError):
+                continue
+        if len(pts) >= 3:
+            out[str(kind)] = pts
+    return out
 
 
 def describe_camera_context(name: str, ctx: dict | None) -> str:
@@ -1342,6 +1381,53 @@ class Database:
         what the alert said before this feature existed.
         """
         return describe_camera_context(name, self.get_camera_context(name))
+
+    # -- camera zones (entry / parking / restricted polygons) ----------------
+    def set_camera_zones(self, name: str, zones: dict, actor: str = "") -> dict:
+        """Store the polygons drawn for a camera. Returns the cleaned zones.
+
+        Upsert by name so a guard can redraw as often as they like. The zones
+        are cleaned (bad points dropped, degenerate polygons removed) before
+        they are stored, so the pipeline never has to defend against a malformed
+        polygon at runtime.
+        """
+        clean = clean_zones(zones)
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO camera_zones (name, zones_json, updated_by,"
+                " updated_at) VALUES (?, ?, ?, ?)"
+                " ON CONFLICT(name) DO UPDATE SET zones_json=excluded.zones_json,"
+                " updated_by=excluded.updated_by, updated_at=excluded.updated_at",
+                (name, json.dumps(clean), actor, time.time()))
+            self._conn.commit()
+        self.append_audit(actor or "system", "CAMERA_CHANGE",
+                          {"op": "zones", "name": name,
+                           "counts": {k: len(v) for k, v in clean.items()}})
+        return clean
+
+    def get_camera_zones(self, name: str) -> dict | None:
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT zones_json FROM camera_zones WHERE name = ?",
+                (name,)).fetchone()
+        if not r:
+            return None
+        try:
+            return clean_zones(json.loads(r["zones_json"]))
+        except (ValueError, TypeError):
+            return None
+
+    def list_camera_zones(self) -> dict[str, dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT name, zones_json FROM camera_zones").fetchall()
+        out = {}
+        for r in rows:
+            try:
+                out[r["name"]] = clean_zones(json.loads(r["zones_json"]))
+            except (ValueError, TypeError):
+                continue
+        return out
 
     # -- learned normalcy ----------------------------------------------------
     def save_normalcy(self, camera: str, rows: list) -> None:

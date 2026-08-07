@@ -45,6 +45,10 @@ class CandidateTrigger:
         self._disturb_streak: dict[int, int] = {}  # vehicle tid -> burst frames
         self.last_departure: dict | None = None   # info about the last chain fire
 
+    def set_zones(self, zones: dict) -> None:
+        """Swap in freshly-drawn zones without restarting the camera."""
+        self.zones = {k: (v or []) for k, v in (zones or {}).items()}
+
     def _night(self) -> bool:
         nh = self.cfg.get("night_hours", {"start": "23:00", "end": "05:00"})
         return is_night(self.localtime_fn(), nh.get("start", "23:00"),

@@ -176,6 +176,11 @@ class RulesEngine:
         # what the layer chose not to raise, for the tuning page
         self.dismissed: list[dict] = []
 
+    def set_zones(self, zones: dict) -> None:
+        """Swap in freshly-drawn zones without restarting the camera. New frames
+        are judged against the new polygons; per-track state is untouched."""
+        self.zones = {k: (v or []) for k, v in (zones or {}).items()}
+
     # ------------------------------------------------------------ helpers
     def _night(self) -> bool:
         nh = self.cfg.get("night_hours", {})
