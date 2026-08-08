@@ -351,9 +351,15 @@ CREATE TABLE IF NOT EXISTS owner_tokens (
     label TEXT,
     created_at REAL,
     last_seen_ts REAL,
-    revoked INTEGER NOT NULL DEFAULT 0
+    revoked INTEGER NOT NULL DEFAULT 0,
+    expires_at REAL                      -- server-enforced; NULL = legacy, never expires
 );
 """
+
+# A resident magic-link grants access to private video, so it must not live
+# forever. Six months balances "residents don't have to re-request it often"
+# against "a leaked link stops working". The committee can always revoke sooner.
+OWNER_TOKEN_TTL_S = 180 * 24 * 3600
 
 # columns added after first release — applied with ALTER TABLE on startup so
 # existing databases upgrade in place
@@ -371,6 +377,9 @@ MIGRATIONS = [
     "ALTER TABLE object_annotations ADD COLUMN needs_review INTEGER NOT NULL"
     " DEFAULT 0",
     "ALTER TABLE object_annotations ADD COLUMN review_note TEXT",
+    # resident magic-links expire (added after first release; existing rows keep
+    # NULL and are treated as legacy non-expiring until re-issued)
+    "ALTER TABLE owner_tokens ADD COLUMN expires_at REAL",
 ]
 
 
@@ -1547,11 +1556,12 @@ class Database:
         (shown once, put in the link); only its hash is stored."""
         from . import auth
         raw, th = auth.new_token()
+        now = time.time()
         with self._lock:
             self._conn.execute(
                 "INSERT INTO owner_tokens (token_hash, plate, label, created_at,"
-                " revoked) VALUES (?, ?, ?, ?, 0)",
-                (th, plate, label, time.time()))
+                " revoked, expires_at) VALUES (?, ?, ?, ?, 0, ?)",
+                (th, plate, label, now, now + OWNER_TOKEN_TTL_S))
             self._conn.commit()
         self.append_audit("system", "OWNER_LINK",
                           {"op": "issue", "plate": plate})
@@ -1562,12 +1572,15 @@ class Database:
         or None if unknown or revoked. Slides last-seen forward."""
         from . import auth
         th = auth.token_hash(token or "")
+        now = time.time()
         with self._lock:
             r = self._conn.execute(
                 "SELECT ot.plate, ot.token_hash, v.owner_name, v.flat_number,"
                 " v.owner_phone FROM owner_tokens ot"
                 " LEFT JOIN vehicles v ON v.plate_number = ot.plate"
-                " WHERE ot.token_hash = ? AND ot.revoked = 0", (th,)).fetchone()
+                " WHERE ot.token_hash = ? AND ot.revoked = 0"
+                " AND (ot.expires_at IS NULL OR ot.expires_at > ?)",
+                (th, now)).fetchone()
             if r is None:
                 return None
             self._conn.execute(

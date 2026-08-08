@@ -87,6 +87,28 @@ def test_a_revoked_link_stops_working(client, ctx):
     assert _login(client, ctx.token_a).status_code == 401
 
 
+def test_an_expired_link_stops_working(client, ctx):
+    import app.auth as auth
+    th = auth.token_hash(ctx.token_a)
+    with ctx.db._lock:                               # force it into the past
+        ctx.db._conn.execute(
+            "UPDATE owner_tokens SET expires_at = 1.0 WHERE token_hash = ?", (th,))
+        ctx.db._conn.commit()
+    assert ctx.db.owner_for_token(ctx.token_a) is None
+    assert _login(client, ctx.token_a).status_code == 401
+
+
+def test_a_freshly_minted_link_has_a_future_expiry(ctx):
+    import app.auth as auth
+    th = auth.token_hash(ctx.token_a)
+    with ctx.db._lock:
+        row = ctx.db._conn.execute(
+            "SELECT expires_at FROM owner_tokens WHERE token_hash = ?",
+            (th,)).fetchone()
+    import time
+    assert row["expires_at"] and row["expires_at"] > time.time()
+
+
 # --------------------------------------------- scoping (the security core)
 def test_a_resident_sees_only_their_own_alerts(client, ctx):
     _login(client, ctx.token_a)
